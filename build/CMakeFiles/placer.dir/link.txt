@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/placer.dir/src/main.cpp.o -o placer  /usr/lib/x86_64-linux-gnu/libhts.so.3 src/stream/libstream.a /usr/lib/x86_64-linux-gnu/libhts.so.3 
