@@ -54,10 +54,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
 
 #=============================================================================
 # Directory level rules for the build root directory
@@ -116,14 +116,14 @@ tests/clean: tests/CMakeFiles/test_stream.dir/clean
 CMakeFiles/placer.dir/all: src/stream/CMakeFiles/stream.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer.dir/build.make CMakeFiles/placer.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer.dir/build.make CMakeFiles/placer.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=1,2 "Built target placer"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=1,2 "Built target placer"
 .PHONY : CMakeFiles/placer.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/placer.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 7
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 7
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/placer.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : CMakeFiles/placer.dir/rule
 
 # Convenience name for target.
@@ -142,14 +142,14 @@ CMakeFiles/placer.dir/clean:
 src/stream/CMakeFiles/stream.dir/all:
 	$(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=3,4,5,6,7 "Built target stream"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=3,4,5,6,7 "Built target stream"
 .PHONY : src/stream/CMakeFiles/stream.dir/all
 
 # Build rule for subdir invocation for target.
 src/stream/CMakeFiles/stream.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 5
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 5
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/CMakeFiles/stream.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : src/stream/CMakeFiles/stream.dir/rule
 
 # Convenience name for target.
@@ -168,14 +168,14 @@ src/stream/CMakeFiles/stream.dir/clean:
 tests/CMakeFiles/test_stream.dir/all: src/stream/CMakeFiles/stream.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=8,9 "Built target test_stream"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=8,9 "Built target test_stream"
 .PHONY : tests/CMakeFiles/test_stream.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_stream.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 7
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 7
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_stream.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_stream.dir/rule
 
 # Convenience name for target.

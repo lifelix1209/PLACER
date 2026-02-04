@@ -4,7 +4,7 @@
 # compile CXX with /usr/bin/c++
 CXX_DEFINES = 
 
-CXX_INCLUDES = -I/mnt/home1/miska/hl725/projects/PLACER/include -I/mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib
+CXX_INCLUDES = -I/mnt/beegfs6/home1/miska/hl725/projects/PLACER/include -I/mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib
 
-CXX_FLAGS = -O3 -DNDEBUG -std=gnu++17
+CXX_FLAGS = -g -O0 -fsanitize=address -fno-omit-frame-pointer -g -std=gnu++17
 

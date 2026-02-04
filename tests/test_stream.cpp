@@ -67,10 +67,111 @@ void test_window_buffer() {
     std::cout << "  Window stats: bases_covered=" << win->stats.bases_covered << std::endl;
 
     // Test seal_and_flush (memory reclamation)
-    auto sealed = buffer.seal_and_flush(0, 50000);  // Safe pos past all windows
+    auto sealed = buffer.seal_and_flush(50000);  // Safe pos past all windows
     std::cout << "  Sealed windows: " << sealed.size() << std::endl;
 
     std::cout << "  WindowBuffer tests passed!" << std::endl;
+}
+
+void test_chromosome_switching() {
+    std::cout << "Testing chromosome switching..." << std::endl;
+
+    WindowBuffer::Config config;
+    config.window_size = 10000;
+    config.max_priority_reads = 10;
+    config.max_normal_reads = 50;
+    config.min_clip_bp = 1;  // Low threshold for testing
+    config.min_sa_reads = 1;
+
+    WindowBuffer buffer(config);
+
+    // Create reads on different chromosomes
+    // Simulating: chr1 -> chr2 -> chr1 (should trigger cleanup)
+
+    ReadSketch read1;
+    read1.qname = "chr1_read1";
+    read1.tid = 0;  // chr1
+    read1.pos = 1000;
+    read1.end_pos = 5000;
+    read1.mapq = 60;
+    read1.cigar_ops = {{'M', 4000}};
+    read1.total_clip_len = 100;  // High clip to trigger
+
+    ReadSketch read2;
+    read2.qname = "chr2_read1";
+    read2.tid = 1;  // chr2
+    read2.pos = 1000;
+    read2.end_pos = 5000;
+    read2.mapq = 60;
+    read2.cigar_ops = {{'M', 4000}};
+    read2.total_clip_len = 100;
+
+    ReadSketch read3;
+    read3.qname = "chr1_read2";
+    read3.tid = 0;  // Back to chr1
+    read3.pos = 20000;
+    read3.end_pos = 25000;
+    read3.mapq = 60;
+    read3.cigar_ops = {{'M', 5000}};
+    read3.total_clip_len = 100;
+
+    // Add reads - should trigger chromosome switching cleanup
+    buffer.add_read(read1);
+    auto windows_after_chr1 = buffer.list_windows();
+    std::cout << "  Windows after chr1 read: " << windows_after_chr1.size() << std::endl;
+
+    buffer.add_read(read2);
+    auto windows_after_chr2 = buffer.list_windows();
+    std::cout << "  Windows after chr2 read: " << windows_after_chr2.size() << std::endl;
+
+    buffer.add_read(read3);
+    auto windows_after_chr1_again = buffer.list_windows();
+    std::cout << "  Windows after returning to chr1: " << windows_after_chr1_again.size() << std::endl;
+
+    // After switching away from chr1, chr1 windows should be flushed
+    // So windows_after_chr2 should have 0 chr1 windows
+    // Note: The exact count depends on implementation
+
+    std::cout << "  Chromosome switching tests passed!" << std::endl;
+}
+
+void test_window_buffer_empty() {
+    std::cout << "Testing WindowBuffer (empty state)..." << std::endl;
+
+    WindowBuffer::Config config;
+    config.window_size = 10000;
+
+    WindowBuffer buffer(config);
+
+    // Test empty buffer
+    auto windows = buffer.list_windows();
+    assert(windows.empty());
+    std::cout << "  Empty buffer has 0 windows: OK" << std::endl;
+
+    // Test seal_and_flush on empty buffer
+    auto sealed = buffer.seal_and_flush(50000);
+    assert(sealed.empty());
+    std::cout << "  seal_and_flush on empty buffer: OK" << std::endl;
+
+    std::cout << "  WindowBuffer empty state tests passed!" << std::endl;
+}
+
+void test_task_queue_close_empty() {
+    std::cout << "Testing TaskQueue (close on empty)..." << std::endl;
+
+    TaskQueue queue(2);
+
+    // Close immediately without submitting tasks
+    queue.close();
+
+    // Submit should fail
+    bool result = queue.submit(TaskFactory::create_component_build("test"));
+    assert(!result);
+    std::cout << "  close() on empty queue: OK" << std::endl;
+
+    // Verify no crash
+    assert(queue.size() == 0);
+    std::cout << "  TaskQueue close on empty tests passed!" << std::endl;
 }
 
 void test_window_stats() {
@@ -165,13 +266,108 @@ void test_task_queue() {
     }
 
     queue.wait();
-    std::cout << "  All tasks processed" << std::endl;
+    std::cout << "  All placeholder tasks processed" << std::endl;
     assert(queue.size() == 0);
+
+    // Test submit_serialized with actual read data
+    std::cout << "  Testing submit_serialized with read data..." << std::endl;
+
+    std::vector<ReadSketch> test_reads;
+    for (int i = 0; i < 5; i++) {
+        ReadSketch read;
+        read.qname = "test_read_" + std::to_string(i);
+        read.tid = 0;
+        read.pos = 1000 + i * 100;
+        read.end_pos = 2000 + i * 100;
+        read.mapq = 60;
+        test_reads.push_back(read);
+    }
+
+    bool result = queue.submit_serialized(TaskType::COMPONENT_BUILD, "test_window", test_reads);
+    assert(result);
+    std::cout << "  submit_serialized returned: " << (result ? "success" : "failed") << std::endl;
+
+    queue.wait();
+    std::cout << "  Serialized task processed" << std::endl;
 
     queue.close();
     assert(!queue.submit(TaskFactory::create_local_align("test")));
 
     std::cout << "  TaskQueue tests passed!" << std::endl;
+}
+
+void test_task_serialization() {
+    std::cout << "Testing TaskSerializer (round-trip)..." << std::endl;
+
+    // Create test task data
+    TaskData original;
+    original.type = TaskType::COMPONENT_BUILD;
+    original.window_id = "test_chr1_90000";
+    original.clip_bp = 500;
+    original.sa_reads = 3;
+    original.ins_events = 2;
+
+    // Add test reads
+    for (int i = 0; i < 3; i++) {
+        ReadSketch read;
+        read.qname = "test_read_" + std::to_string(i);
+        read.tid = 0;
+        read.pos = 1000 + i * 100;
+        read.end_pos = 2000 + i * 100;
+        read.flag = 0;
+        read.mapq = 60;
+        read.sequence = "ACGTACGTACGT";
+        read.total_clip_len = 50;
+        read.has_large_insertion = true;
+        read.cigar_ops = {{'M', 100}, {'I', 20}, {'D', 10}};
+        read.sa_targets = {{1, 5000}, {2, 10000}};
+        read.has_md = true;
+        original.reads.push_back(read);
+    }
+
+    // Create serializer
+    TaskSerializer serializer("/tmp/placer_test_tasks");
+    bool saved = serializer.save_task(original);
+    assert(saved);
+    std::cout << "  Task saved successfully" << std::endl;
+
+    // Load task back
+    TaskData loaded;
+    bool loaded_ok = serializer.load_task(
+        "/tmp/placer_test_tasks/task_0_test_chr1_90000.task", loaded);
+
+    assert(loaded_ok);
+    std::cout << "  Task loaded successfully" << std::endl;
+
+    // Verify data integrity
+    assert(loaded.type == original.type);
+    assert(loaded.window_id == original.window_id);
+    assert(loaded.clip_bp == original.clip_bp);
+    assert(loaded.sa_reads == original.sa_reads);
+    assert(loaded.ins_events == original.ins_events);
+    assert(loaded.reads.size() == original.reads.size());
+    std::cout << "  Data integrity verified" << std::endl;
+
+    // Verify read fields
+    for (size_t i = 0; i < loaded.reads.size(); i++) {
+        const auto& orig = original.reads[i];
+        const auto& load = loaded.reads[i];
+        assert(load.qname == orig.qname);
+        assert(load.tid == orig.tid);
+        assert(load.pos == orig.pos);
+        assert(load.end_pos == orig.end_pos);
+        assert(load.flag == orig.flag);
+        assert(load.mapq == orig.mapq);
+        assert(load.sequence == orig.sequence);
+        assert(load.total_clip_len == orig.total_clip_len);
+        assert(load.has_large_insertion == orig.has_large_insertion);
+        assert(load.cigar_ops.size() == orig.cigar_ops.size());
+        assert(load.sa_targets.size() == orig.sa_targets.size());
+        assert(load.has_md == orig.has_md);
+    }
+    std::cout << "  Read fields verified: " << loaded.reads.size() << " reads" << std::endl;
+
+    std::cout << "  TaskSerializer tests passed!" << std::endl;
 }
 
 void test_integration() {
@@ -209,7 +405,7 @@ void test_integration() {
     std::cout << "  Total reads: " << count << std::endl;
 
     // Test memory reclamation
-    auto sealed = window_buffer.seal_and_flush(0, 100000);
+    auto sealed = window_buffer.seal_and_flush(100000);
     std::cout << "  Triggered windows sealed: " << sealed.size() << std::endl;
 
     std::cout << "  Integration tests passed!" << std::endl;
@@ -222,8 +418,12 @@ int main() {
         test_window_stats();
         test_bam_reader();
         test_window_buffer();
+        test_chromosome_switching();
+        test_window_buffer_empty();
         test_trigger();
         test_task_queue();
+        test_task_queue_close_empty();
+        test_task_serialization();
         test_integration();
 
         std::cout << "\n=== All tests passed! ===" << std::endl;

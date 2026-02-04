@@ -102,7 +102,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Throughput: " << (processed * 1000.0 / duration.count()) << " reads/sec" << std::endl;
 
     // Memory reclamation test
-    auto sealed = window_buffer.seal_and_flush(0, 1000000);
+    auto sealed = window_buffer.seal_and_flush(1000000);
     std::cout << "\nMemory reclamation: " << sealed.size() << " windows sealed" << std::endl;
 
     return 0;

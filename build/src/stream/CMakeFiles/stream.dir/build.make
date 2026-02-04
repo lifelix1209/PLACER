@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
 
 # Include any dependencies generated for this target.
 include src/stream/CMakeFiles/stream.dir/depend.make
@@ -72,58 +72,58 @@ include src/stream/CMakeFiles/stream.dir/flags.make
 src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o: src/stream/CMakeFiles/stream.dir/flags.make
 src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o: ../src/stream/bam_reader.cpp
 src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o: src/stream/CMakeFiles/stream.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o -MF CMakeFiles/stream.dir/bam_reader.cpp.o.d -o CMakeFiles/stream.dir/bam_reader.cpp.o -c /mnt/home1/miska/hl725/projects/PLACER/src/stream/bam_reader.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o"
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o -MF CMakeFiles/stream.dir/bam_reader.cpp.o.d -o CMakeFiles/stream.dir/bam_reader.cpp.o -c /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/bam_reader.cpp
 
 src/stream/CMakeFiles/stream.dir/bam_reader.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/stream.dir/bam_reader.cpp.i"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/home1/miska/hl725/projects/PLACER/src/stream/bam_reader.cpp > CMakeFiles/stream.dir/bam_reader.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/bam_reader.cpp > CMakeFiles/stream.dir/bam_reader.cpp.i
 
 src/stream/CMakeFiles/stream.dir/bam_reader.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/stream.dir/bam_reader.cpp.s"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/home1/miska/hl725/projects/PLACER/src/stream/bam_reader.cpp -o CMakeFiles/stream.dir/bam_reader.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/bam_reader.cpp -o CMakeFiles/stream.dir/bam_reader.cpp.s
 
 src/stream/CMakeFiles/stream.dir/window_buffer.cpp.o: src/stream/CMakeFiles/stream.dir/flags.make
 src/stream/CMakeFiles/stream.dir/window_buffer.cpp.o: ../src/stream/window_buffer.cpp
 src/stream/CMakeFiles/stream.dir/window_buffer.cpp.o: src/stream/CMakeFiles/stream.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object src/stream/CMakeFiles/stream.dir/window_buffer.cpp.o"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/stream/CMakeFiles/stream.dir/window_buffer.cpp.o -MF CMakeFiles/stream.dir/window_buffer.cpp.o.d -o CMakeFiles/stream.dir/window_buffer.cpp.o -c /mnt/home1/miska/hl725/projects/PLACER/src/stream/window_buffer.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object src/stream/CMakeFiles/stream.dir/window_buffer.cpp.o"
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/stream/CMakeFiles/stream.dir/window_buffer.cpp.o -MF CMakeFiles/stream.dir/window_buffer.cpp.o.d -o CMakeFiles/stream.dir/window_buffer.cpp.o -c /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/window_buffer.cpp
 
 src/stream/CMakeFiles/stream.dir/window_buffer.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/stream.dir/window_buffer.cpp.i"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/home1/miska/hl725/projects/PLACER/src/stream/window_buffer.cpp > CMakeFiles/stream.dir/window_buffer.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/window_buffer.cpp > CMakeFiles/stream.dir/window_buffer.cpp.i
 
 src/stream/CMakeFiles/stream.dir/window_buffer.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/stream.dir/window_buffer.cpp.s"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/home1/miska/hl725/projects/PLACER/src/stream/window_buffer.cpp -o CMakeFiles/stream.dir/window_buffer.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/window_buffer.cpp -o CMakeFiles/stream.dir/window_buffer.cpp.s
 
 src/stream/CMakeFiles/stream.dir/trigger.cpp.o: src/stream/CMakeFiles/stream.dir/flags.make
 src/stream/CMakeFiles/stream.dir/trigger.cpp.o: ../src/stream/trigger.cpp
 src/stream/CMakeFiles/stream.dir/trigger.cpp.o: src/stream/CMakeFiles/stream.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object src/stream/CMakeFiles/stream.dir/trigger.cpp.o"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/stream/CMakeFiles/stream.dir/trigger.cpp.o -MF CMakeFiles/stream.dir/trigger.cpp.o.d -o CMakeFiles/stream.dir/trigger.cpp.o -c /mnt/home1/miska/hl725/projects/PLACER/src/stream/trigger.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object src/stream/CMakeFiles/stream.dir/trigger.cpp.o"
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/stream/CMakeFiles/stream.dir/trigger.cpp.o -MF CMakeFiles/stream.dir/trigger.cpp.o.d -o CMakeFiles/stream.dir/trigger.cpp.o -c /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/trigger.cpp
 
 src/stream/CMakeFiles/stream.dir/trigger.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/stream.dir/trigger.cpp.i"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/home1/miska/hl725/projects/PLACER/src/stream/trigger.cpp > CMakeFiles/stream.dir/trigger.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/trigger.cpp > CMakeFiles/stream.dir/trigger.cpp.i
 
 src/stream/CMakeFiles/stream.dir/trigger.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/stream.dir/trigger.cpp.s"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/home1/miska/hl725/projects/PLACER/src/stream/trigger.cpp -o CMakeFiles/stream.dir/trigger.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/trigger.cpp -o CMakeFiles/stream.dir/trigger.cpp.s
 
 src/stream/CMakeFiles/stream.dir/task_queue.cpp.o: src/stream/CMakeFiles/stream.dir/flags.make
 src/stream/CMakeFiles/stream.dir/task_queue.cpp.o: ../src/stream/task_queue.cpp
 src/stream/CMakeFiles/stream.dir/task_queue.cpp.o: src/stream/CMakeFiles/stream.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object src/stream/CMakeFiles/stream.dir/task_queue.cpp.o"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/stream/CMakeFiles/stream.dir/task_queue.cpp.o -MF CMakeFiles/stream.dir/task_queue.cpp.o.d -o CMakeFiles/stream.dir/task_queue.cpp.o -c /mnt/home1/miska/hl725/projects/PLACER/src/stream/task_queue.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object src/stream/CMakeFiles/stream.dir/task_queue.cpp.o"
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/stream/CMakeFiles/stream.dir/task_queue.cpp.o -MF CMakeFiles/stream.dir/task_queue.cpp.o.d -o CMakeFiles/stream.dir/task_queue.cpp.o -c /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/task_queue.cpp
 
 src/stream/CMakeFiles/stream.dir/task_queue.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/stream.dir/task_queue.cpp.i"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/home1/miska/hl725/projects/PLACER/src/stream/task_queue.cpp > CMakeFiles/stream.dir/task_queue.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/task_queue.cpp > CMakeFiles/stream.dir/task_queue.cpp.i
 
 src/stream/CMakeFiles/stream.dir/task_queue.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/stream.dir/task_queue.cpp.s"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/home1/miska/hl725/projects/PLACER/src/stream/task_queue.cpp -o CMakeFiles/stream.dir/task_queue.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/task_queue.cpp -o CMakeFiles/stream.dir/task_queue.cpp.s
 
 # Object files for target stream
 stream_OBJECTS = \
@@ -141,19 +141,19 @@ src/stream/libstream.a: src/stream/CMakeFiles/stream.dir/trigger.cpp.o
 src/stream/libstream.a: src/stream/CMakeFiles/stream.dir/task_queue.cpp.o
 src/stream/libstream.a: src/stream/CMakeFiles/stream.dir/build.make
 src/stream/libstream.a: src/stream/CMakeFiles/stream.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Linking CXX static library libstream.a"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && $(CMAKE_COMMAND) -P CMakeFiles/stream.dir/cmake_clean_target.cmake
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/stream.dir/link.txt --verbose=$(VERBOSE)
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Linking CXX static library libstream.a"
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && $(CMAKE_COMMAND) -P CMakeFiles/stream.dir/cmake_clean_target.cmake
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/stream.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
 src/stream/CMakeFiles/stream.dir/build: src/stream/libstream.a
 .PHONY : src/stream/CMakeFiles/stream.dir/build
 
 src/stream/CMakeFiles/stream.dir/clean:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/src/stream && $(CMAKE_COMMAND) -P CMakeFiles/stream.dir/cmake_clean.cmake
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream && $(CMAKE_COMMAND) -P CMakeFiles/stream.dir/cmake_clean.cmake
 .PHONY : src/stream/CMakeFiles/stream.dir/clean
 
 src/stream/CMakeFiles/stream.dir/depend:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/home1/miska/hl725/projects/PLACER /mnt/home1/miska/hl725/projects/PLACER/src/stream /mnt/home1/miska/hl725/projects/PLACER/build /mnt/home1/miska/hl725/projects/PLACER/build/src/stream /mnt/home1/miska/hl725/projects/PLACER/build/src/stream/CMakeFiles/stream.dir/DependInfo.cmake --color=$(COLOR)
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/beegfs6/home1/miska/hl725/projects/PLACER /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream/CMakeFiles/stream.dir/DependInfo.cmake --color=$(COLOR)
 .PHONY : src/stream/CMakeFiles/stream.dir/depend
 

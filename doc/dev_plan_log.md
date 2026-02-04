@@ -743,15 +743,25 @@ Testing integration... PASS
 #### 已修复问题
 
 1. **WindowBuffer Safe Frontier 染色体切换清理**
-   - 新增 `flush_all_previous_chromosomes(int32_t new_chrom_tid)` 方法
-   - 当切换到新染色体时，自动清理所有旧染色体的窗口
-   - 确保内存不会随染色体数量线性增长
+   - 新增 `current_chrom_tid_` 成员变量，跟踪当前活跃染色体
+   - 新增 `flush_current_chromosome()` 方法，刷新前一个染色体的所有窗口
+   - `add_read()` 中检测染色体切换，自动调用刷新
+   - `seal_and_flush()` 简化为只接收 `safe_pos`，不再依赖 tid 数值比较
+   - **修复理由**：BAM header 中染色体顺序不一定按 tid 数值排列（如 chrMT/tid=0 可能在 chr1/tid=1 之前）
 
-2. **TaskQueue 序列化功能**
-   - 新增 `TaskData` 结构：包含任务类型、窗口ID、ReadSketch 向量、统计信息
-   - 新增 `TaskSerializer` 类：支持将任务二进制序列化到磁盘
-   - 新增 `TaskQueue::submit_serialized()`：提交带读数据的序列化任务
-   - 支持 ReadSketch 完整字段的二进制序列化
+2. **TaskQueue submit_serialized 实际序列化数据**
+   - 新增 `SerializedTask` 类，继承 `Task` 并包含 `std::vector<ReadSketch> reads_`
+   - `submit_serialized()` 现在使用 `SerializedTask` 而非 `PlaceholderTask`
+   - Worker 线程可通过 `get_reads()` 访问任务数据
+   - **修复理由**：原实现丢弃了 `reads` 参数，Worker 无法获取数据
+
+3. **TaskSerializer 字节序安全序列化**
+   - 新增 `endian` 命名空间，包含 `swap32()`/`swap16()` 和网络字节序转换
+   - 所有整数字段（uint32_t, int32_t, uint16_t）写入前转换为网络字节序
+   - bool 值显式转换为 0/1 写入（避免平台差异）
+   - 新增 `load_task()` 实现反序列化
+   - 新增 round-trip 测试验证
+   - **修复理由**：原实现使用原生字节序，在大端/小端机器间不兼容
 
 #### 测试结果
 ```

@@ -1,5 +1,6 @@
 #include "window_buffer.h"
 #include <random>
+#include <algorithm>
 
 namespace placer {
 
@@ -7,6 +8,16 @@ WindowBuffer::WindowBuffer(Config config) : config_(std::move(config)) {}
 
 void WindowBuffer::add_read(const ReadSketch& read) {
     if (read.pos >= read.end_pos) return;
+
+    // 检测染色体切换：当 read 的 tid 与当前活跃染色体不同时
+    // 需要先刷新前一个染色体的所有窗口
+    if (current_chrom_tid_ != read.tid) {
+        if (current_chrom_tid_ != -1) {
+            // 切换前，先刷新前一个染色体的所有窗口（无论位置）
+            flush_current_chromosome();
+        }
+        current_chrom_tid_ = read.tid;
+    }
 
     // 空间逻辑修正：read 贡献给它覆盖的所有窗口
     int32_t start_idx = read.pos / config_.window_size;
@@ -59,20 +70,17 @@ void WindowBuffer::add_reads(const std::vector<ReadSketch>& reads) {
     }
 }
 
-std::vector<std::unique_ptr<Window>> WindowBuffer::seal_and_flush(int32_t chrom_tid, int32_t safe_pos) {
+std::vector<std::unique_ptr<Window>> WindowBuffer::seal_and_flush(int32_t safe_pos) {
     std::vector<std::unique_ptr<Window>> sealed;
 
     // 真正的内存回收：清理所有 end < safe_pos 的窗口
+    // 注意：染色体切换已在 add_read 中处理，这里只处理位置推进
     while (!window_order_.empty()) {
         WindowID old_id = window_order_.front();
-        int32_t old_tid = get_chrom_tid(old_id);
         int32_t old_start = get_start(old_id);
 
-        // 跨染色体，停止清理
-        if (old_tid > chrom_tid) break;
-
-        // 当前染色体：检查是否超出安全线
-        if (old_tid == chrom_tid && old_start >= safe_pos) {
+        // 检查是否超出安全线
+        if (old_start >= safe_pos) {
             break;  // 还在活跃区，停止
         }
 
@@ -91,16 +99,19 @@ std::vector<std::unique_ptr<Window>> WindowBuffer::seal_and_flush(int32_t chrom_
     return sealed;
 }
 
-std::vector<std::unique_ptr<Window>> WindowBuffer::flush_all_previous_chromosomes(int32_t new_chrom_tid) {
+std::vector<std::unique_ptr<Window>> WindowBuffer::flush_current_chromosome() {
     std::vector<std::unique_ptr<Window>> flushed;
 
-    // 清理所有 tid < new_chrom_tid 的染色体窗口
+    // 清理当前染色体的所有窗口
+    // 这在染色体切换时被调用，确保旧染色体不会占用内存
     while (!window_order_.empty()) {
         WindowID old_id = window_order_.front();
         int32_t old_tid = get_chrom_tid(old_id);
 
-        // 如果是当前或后续染色体，停止清理
-        if (old_tid >= new_chrom_tid) break;
+        // 如果是当前染色体，继续清理
+        if (old_tid != current_chrom_tid_) {
+            break;  // 遇到其他染色体，停止
+        }
 
         auto it = active_windows_.find(old_id);
         if (it != active_windows_.end()) {

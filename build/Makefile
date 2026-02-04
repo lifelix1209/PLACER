@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -97,9 +97,9 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/home1/miska/hl725/projects/PLACER/build//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target

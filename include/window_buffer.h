@@ -71,10 +71,11 @@ public:
     void add_reads(const std::vector<ReadSketch>& reads);
 
     // 真正的内存回收：返回被触发且完成封存的窗口，清理落后于 safe_pos 的所有窗口
-    std::vector<std::unique_ptr<Window>> seal_and_flush(int32_t chrom_tid, int32_t safe_pos);
+    // 注意：此方法不再处理染色体切换，染色体切换由 add_read 自动处理
+    std::vector<std::unique_ptr<Window>> seal_and_flush(int32_t safe_pos);
 
-    // 染色体切换时的清理：清理所有旧染色体的窗口
-    std::vector<std::unique_ptr<Window>> flush_all_previous_chromosomes(int32_t new_chrom_tid);
+    // 染色体切换时的清理：刷新前一个染色体的所有窗口
+    std::vector<std::unique_ptr<Window>> flush_current_chromosome();
 
     // 获取窗口统计
     const Window* get_window(WindowID id) const;
@@ -106,6 +107,9 @@ private:
     bool check_trigger(const WindowStats& stats, uint32_t bases_covered) const;
 
     Config config_;
+
+    // 当前活跃染色体（用于检测染色体切换）
+    int32_t current_chrom_tid_ = -1;
 
     // 活跃窗口
     std::unordered_map<WindowID, std::unique_ptr<Window>> active_windows_;

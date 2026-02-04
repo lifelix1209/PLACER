@@ -51,8 +51,8 @@ public:
     // 批量保存任务
     bool save_tasks(const std::vector<TaskData>& tasks);
 
-    // 从磁盘加载任务
-    bool load_next_task(TaskData& task);
+    // 从磁盘加载任务（文件名列表由调用者管理）
+    bool load_task(const std::string& filename, TaskData& task);
 
     // 关闭序列化器
     void close();
@@ -87,6 +87,21 @@ public:
 };
 
 /**
+ * SerializedTask: 包含 ReadSketch 数据的任务
+ * 用于 TaskQueue 提交时携带读片段数据
+ */
+class SerializedTask : public Task {
+public:
+    SerializedTask(TaskType type, std::string window_id, std::vector<ReadSketch> reads);
+    void execute() override;
+
+    const std::vector<ReadSketch>& get_reads() const { return reads_; }
+
+private:
+    std::vector<ReadSketch> reads_;
+};
+
+/**
  * TaskQueue: 简单的同步任务队列
  * - 单生产者（Stream Layer）提交任务
  * - 多消费者（Task Layer workers）执行任务
@@ -107,9 +122,9 @@ public:
     // 关闭队列，停止接受新任务
     void close();
 
-    // 提交序列化的任务数据
+    // 提交序列化的任务数据（reads 通过值传递，可被移动）
     bool submit_serialized(TaskType type, const std::string& window_id,
-                          const std::vector<ReadSketch>& reads);
+                          std::vector<ReadSketch> reads);
 
     // 等待所有待处理任务完成
     void wait();

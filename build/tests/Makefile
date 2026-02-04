@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -97,14 +97,14 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/home1/miska/hl725/projects/PLACER/build/tests//CMakeFiles/progress.marks
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests//CMakeFiles/progress.marks
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
 clean:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/clean
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/clean
 .PHONY : clean
 
 # The main clean target
@@ -113,22 +113,22 @@ clean/fast: clean
 
 # Prepare targets for installation.
 preinstall: all
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/preinstall
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/preinstall
 .PHONY : preinstall
 
 # Prepare targets for installation.
 preinstall/fast:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/preinstall
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/preinstall
 .PHONY : preinstall/fast
 
 # clear depends
 depend:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 1
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 1
 .PHONY : depend
 
 # Convenience name for target.
 tests/CMakeFiles/test_stream.dir/rule:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_stream.dir/rule
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_stream.dir/rule
 .PHONY : tests/CMakeFiles/test_stream.dir/rule
 
 # Convenience name for target.
@@ -137,7 +137,7 @@ test_stream: tests/CMakeFiles/test_stream.dir/rule
 
 # fast build rule for target.
 test_stream/fast:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/build
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/build
 .PHONY : test_stream/fast
 
 test_stream.o: test_stream.cpp.o
@@ -145,7 +145,7 @@ test_stream.o: test_stream.cpp.o
 
 # target to build an object file
 test_stream.cpp.o:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/test_stream.cpp.o
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/test_stream.cpp.o
 .PHONY : test_stream.cpp.o
 
 test_stream.i: test_stream.cpp.i
@@ -153,7 +153,7 @@ test_stream.i: test_stream.cpp.i
 
 # target to preprocess a source file
 test_stream.cpp.i:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/test_stream.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/test_stream.cpp.i
 .PHONY : test_stream.cpp.i
 
 test_stream.s: test_stream.cpp.s
@@ -161,7 +161,7 @@ test_stream.s: test_stream.cpp.s
 
 # target to generate assembly for a file
 test_stream.cpp.s:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/test_stream.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/test_stream.cpp.s
 .PHONY : test_stream.cpp.s
 
 # Help Target
@@ -188,6 +188,6 @@ help:
 # No rule that depends on this can have commands that come from listfiles
 # because they might be regenerated.
 cmake_check_build_system:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 0
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 0
 .PHONY : cmake_check_build_system
 
