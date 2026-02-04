@@ -33,10 +33,11 @@ set_target_properties(hts::htslib PROPERTIES
 add_executable(placer src/main.cpp)
 
 target_include_directories(placer PRIVATE ${HTSLIB_INCLUDE_DIR})
-target_link_libraries(placer PRIVATE hts::htslib stream)
+target_link_libraries(placer PRIVATE hts::htslib stream gate1)
 
 # Add subdirectories
 add_subdirectory(src/stream)
+add_subdirectory(src/gate1)
 
 # Test configuration
 enable_testing()

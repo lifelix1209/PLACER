@@ -5,4 +5,5 @@
 # This file includes the relevant testing commands required for 
 # testing this directory and lists subdirectories to be tested as well.
 subdirs("src/stream")
+subdirs("src/gate1")
 subdirs("tests")

@@ -153,6 +153,19 @@ stream/fast:
 .PHONY : stream/fast
 
 #=============================================================================
+# Target rules for targets named gate1
+
+# Build rule for target.
+gate1: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 gate1
+.PHONY : gate1
+
+# fast build rule for target.
+gate1/fast:
+	$(MAKE) $(MAKESILENT) -f src/gate1/CMakeFiles/gate1.dir/build.make src/gate1/CMakeFiles/gate1.dir/build
+.PHONY : gate1/fast
+
+#=============================================================================
 # Target rules for targets named test_stream
 
 # Build rule for target.
@@ -198,6 +211,7 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... test"
+	@echo "... gate1"
 	@echo "... placer"
 	@echo "... stream"
 	@echo "... test_stream"

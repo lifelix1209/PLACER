@@ -1,4 +1,4 @@
-# Test configuration for Phase 1
+# Test configuration for Phase 1 & 2
 
 add_executable(test_stream
     test_stream.cpp
@@ -6,6 +6,7 @@ add_executable(test_stream
 
 target_link_libraries(test_stream PRIVATE
     stream
+    gate1
     hts::htslib
 )
 

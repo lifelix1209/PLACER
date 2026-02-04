@@ -94,6 +94,8 @@ placer: CMakeFiles/placer.dir/src/main.cpp.o
 placer: CMakeFiles/placer.dir/build.make
 placer: /usr/lib/x86_64-linux-gnu/libhts.so.3
 placer: src/stream/libstream.a
+placer: src/gate1/libgate1.a
+placer: src/stream/libstream.a
 placer: /usr/lib/x86_64-linux-gnu/libhts.so.3
 placer: CMakeFiles/placer.dir/link.txt
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable placer"

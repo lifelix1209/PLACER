@@ -93,6 +93,9 @@ test_stream_EXTERNAL_OBJECTS =
 tests/test_stream: tests/CMakeFiles/test_stream.dir/test_stream.cpp.o
 tests/test_stream: tests/CMakeFiles/test_stream.dir/build.make
 tests/test_stream: src/stream/libstream.a
+tests/test_stream: src/gate1/libgate1.a
+tests/test_stream: /usr/lib/x86_64-linux-gnu/libhts.so.3
+tests/test_stream: src/stream/libstream.a
 tests/test_stream: /usr/lib/x86_64-linux-gnu/libhts.so.3
 tests/test_stream: tests/CMakeFiles/test_stream.dir/link.txt
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable test_stream"

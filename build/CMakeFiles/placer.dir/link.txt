@@ -1,1 +1,1 @@
-/usr/bin/c++ -g -O0 -fsanitize=address -fno-omit-frame-pointer -g CMakeFiles/placer.dir/src/main.cpp.o -o placer  /usr/lib/x86_64-linux-gnu/libhts.so.3 src/stream/libstream.a /usr/lib/x86_64-linux-gnu/libhts.so.3 
+/usr/bin/c++ -g -O0 -fsanitize=address -fno-omit-frame-pointer -O3 -DNDEBUG CMakeFiles/placer.dir/src/main.cpp.o -o placer  /usr/lib/x86_64-linux-gnu/libhts.so.3 src/stream/libstream.a src/gate1/libgate1.a src/stream/libstream.a /usr/lib/x86_64-linux-gnu/libhts.so.3 

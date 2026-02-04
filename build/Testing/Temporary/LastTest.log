@@ -1,0 +1,78 @@
+Start testing: Feb 04 17:30 UTC
+----------------------------------------------------------
+1/1 Testing: StreamTest
+1/1 Test: StreamTest
+Command: "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/test_stream"
+Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
+"StreamTest" start time: Feb 04 17:30 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Phase 1 Tests ===
+Testing WindowStats...
+  Quantile estimate: 980.1
+  Observations: 100
+  Q99 clip for chr1: 298
+  WindowStats tests passed!
+Testing BamReader...
+  Processed 79 records
+  BamReader tests passed!
+Testing WindowBuffer...
+  Windows created: 3
+  Window stats: bases_covered=5000
+  Sealed windows: 0
+  WindowBuffer tests passed!
+Testing chromosome switching...
+  Windows after chr1 read: 1
+  Windows after chr2 read: 1
+  Windows after returning to chr1: 1
+  Chromosome switching tests passed!
+Testing WindowBuffer (empty state)...
+  Empty buffer has 0 windows: OK
+  seal_and_flush on empty buffer: OK
+  WindowBuffer empty state tests passed!
+Testing Trigger...
+  Trigger score: 1
+  Triggered: yes
+  Clip trig: yes
+  Trigger tests passed!
+Testing TaskQueue...
+  All placeholder tasks processed
+  Testing submit_serialized with read data...
+  submit_serialized returned: success
+  Serialized task processed
+  TaskQueue tests passed!
+Testing TaskQueue (close on empty)...
+  close() on empty queue: OK
+  TaskQueue close on empty tests passed!
+Testing TaskSerializer (round-trip)...
+  Task saved successfully
+  Task loaded successfully
+  Data integrity verified
+  Read fields verified: 3 reads
+  TaskSerializer tests passed!
+Testing integration (full pipeline)...
+  Total reads: 79
+  Triggered windows sealed: 3
+  Integration tests passed!
+
+=== PLACER Phase 2 Tests ===
+Testing HashTEIndex (bit-packed k-mers)...
+  Index size: 8 k-mers
+  Query 'ACGT': hit_count=2, density=1
+  Query 'GGGGGGGG': hit_count=0
+  Query 'ACGTACGT' passes strict: yes
+  Query 'ACGT' passes strict: no
+  HashTEIndex tests passed!
+Testing HashTEIndex build_from_fasta...
+  Index size: 64 k-mers
+  Family names: 116
+test_stream: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_stream.cpp:482: void test_hash_te_index_fasta(): Assertion `family_names.size() == 3' failed.
+<end of output>
+Test time =   0.18 sec
+----------------------------------------------------------
+Test Failed.
+"StreamTest" end time: Feb 04 17:30 UTC
+"StreamTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Feb 04 17:30 UTC

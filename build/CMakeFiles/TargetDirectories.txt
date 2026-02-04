@@ -6,6 +6,10 @@
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream/CMakeFiles/test.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream/CMakeFiles/edit_cache.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream/CMakeFiles/rebuild_cache.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/gate1/CMakeFiles/gate1.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/gate1/CMakeFiles/test.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/gate1/CMakeFiles/edit_cache.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/gate1/CMakeFiles/rebuild_cache.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_stream.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/edit_cache.dir

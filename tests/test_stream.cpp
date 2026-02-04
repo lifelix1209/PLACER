@@ -5,6 +5,7 @@
 #include "window_stats.h"
 #include "trigger.h"
 #include "task_queue.h"
+#include "gate1.h"
 
 using namespace placer;
 
@@ -411,6 +412,289 @@ void test_integration() {
     std::cout << "  Integration tests passed!" << std::endl;
 }
 
+// ============= Phase 2 Tests =============
+
+void test_hash_te_index() {
+    std::cout << "Testing HashTEIndex (bit-packed k-mers)..." << std::endl;
+
+    HashTEIndexConfig config;
+    config.kmer_size = 3;  // Small for testing
+
+    auto index = std::make_unique<HashTEIndex>(config);
+
+    // Build from sequences
+    std::vector<std::pair<int, std::string>> sequences = {
+        {0, "ACGTACGTACGT"},  // Family 0: contains ACG, GTA, TAC, etc.
+        {1, "TTTTAAAA"},      // Family 1
+    };
+
+    bool built = index->build_from_sequences(sequences);
+    assert(built);
+    std::cout << "  Index size: " << index->size() << " k-mers" << std::endl;
+    assert(index->size() > 0);
+
+    // Test query - exact match
+    TEHit hit = index->query("ACGT");
+    std::cout << "  Query 'ACGT': hit_count=" << hit.hit_count << ", density=" << hit.hit_density << std::endl;
+    assert(hit.hit_count > 0);
+
+    // Test query - partial match
+    TEHit hit2 = index->query("GGGGGGGG");  // No match for family 0/1
+    std::cout << "  Query 'GGGGGGGG': hit_count=" << hit2.hit_count << std::endl;
+    assert(hit2.hit_count == 0);
+
+    // Test passes_gate1
+    HashTEIndexConfig strict_config;
+    strict_config.kmer_size = 3;
+    strict_config.min_hit_count = 3;  // Require 3+ hits to pass
+    strict_config.min_hit_density = 0.5;
+
+    auto strict_index = std::make_unique<HashTEIndex>(strict_config);
+    strict_index->build_from_sequences(sequences);
+
+    TEHit pass_hit = strict_index->query("ACGTACGT");
+    bool passes = strict_index->passes_gate1(pass_hit);
+    std::cout << "  Query 'ACGTACGT' passes strict: " << (passes ? "yes" : "no") << std::endl;
+    assert(passes);  // 4 k-mers match, should pass
+
+    TEHit fail_hit = strict_index->query("ACGT");
+    bool fails = strict_index->passes_gate1(fail_hit);
+    std::cout << "  Query 'ACGT' passes strict: " << (fails ? "yes" : "no") << std::endl;
+    assert(!fails);  // Only 2 k-mers match, should fail with min=3
+
+    std::cout << "  HashTEIndex tests passed!" << std::endl;
+}
+
+void test_hash_te_index_fasta() {
+    std::cout << "Testing HashTEIndex build_from_fasta..." << std::endl;
+
+    HashTEIndexConfig config;
+    config.kmer_size = 3;
+
+    auto index = HashTEIndex::build_from_fasta("/mnt/home1/miska/hl725/projects/PLACER/test_data/te_test.fa", config);
+    assert(index != nullptr);
+    std::cout << "  Index size: " << index->size() << " k-mers" << std::endl;
+    assert(index->size() > 0);
+
+    // Verify family names were parsed (flexible for any FASTA file)
+    const auto& family_names = index->family_ids();
+    std::cout << "  Family names: " << family_names.size() << std::endl;
+    assert(family_names.size() > 0);  // At least one family
+    assert(!family_names[0].empty());  // First family name not empty
+
+    // Test query with L1-like sequence (GGGTGGGG pattern)
+    TEHit hit = index->query("GGGTGGGGATGGGGTT");
+    std::cout << "  Query L1-like seq: hit_count=" << hit.hit_count << std::endl;
+    assert(hit.hit_count > 0);
+    assert(hit.family_hits.size() > 0);
+
+    std::cout << "  HashTEIndex FASTA tests passed!" << std::endl;
+}
+
+void test_hash_te_index_n_handling() {
+    std::cout << "Testing HashTEIndex N character handling..." << std::endl;
+
+    HashTEIndexConfig config;
+    config.kmer_size = 3;
+
+    auto index = std::make_unique<HashTEIndex>(config);
+
+    // Build with sequence containing N
+    std::vector<std::pair<int, std::string>> sequences = {
+        {0, "ACGTACNGTACGT"},  // N in the middle
+    };
+
+    index->build_from_sequences(sequences);
+
+    // Query with N - should skip the N and count valid k-mers
+    TEHit hit = index->query("ACGTACNGTACGT");
+    std::cout << "  Query with N: hit_count=" << hit.hit_count << std::endl;
+    assert(hit.hit_count > 0);
+
+    // Query with only N - should have 0 hits
+    TEHit hit2 = index->query("NNNNNNNN");
+    std::cout << "  Query 'NNNNNNNN': hit_count=" << hit2.hit_count << std::endl;
+    assert(hit2.hit_count == 0);
+
+    std::cout << "  N handling tests passed!" << std::endl;
+}
+
+void test_gate1_extract_probes() {
+    std::cout << "Testing Gate1 probe extraction..." << std::endl;
+
+    Gate1Config config;
+    config.probe_len = 50;
+    config.min_clip_len = 20;
+    config.min_ins_len = 10;
+    config.ins_neighborhood = 20;
+
+    auto te_index = HashTEIndex::build_from_fasta("/mnt/home1/miska/hl725/projects/PLACER/test_data/te_test.fa",
+                                                   HashTEIndexConfig());
+    assert(te_index != nullptr);
+
+    Gate1 gate1(std::shared_ptr<HashTEIndex>(te_index.release()), config);
+
+    // Create a test read with various CIGAR ops
+    ReadSketch read;
+    read.qname = "test_read";
+    read.sequence = "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+    read.cigar_ops = {
+        {'M', 30},
+        {'S', 25},  // Soft clip - should be extracted
+        {'I', 15},  // Insertion - should be extracted
+        {'M', 25}
+    };
+
+    std::vector<ProbeFragment> probes;
+    gate1.extract_probes(read, probes);
+
+    std::cout << "  Probes extracted: " << probes.size() << std::endl;
+    // Should have: END5, END3, SOFTCLIP, INSERTION
+    assert(probes.size() >= 4);
+
+    // Check probe types
+    int end_count = 0, clip_count = 0, ins_count = 0;
+    for (const auto& p : probes) {
+        if (p.source_type == 0) end_count++;
+        else if (p.source_type == 1) clip_count++;
+        else if (p.source_type == 2) ins_count++;
+    }
+    std::cout << "  END probes: " << end_count << ", CLIP: " << clip_count << ", INS: " << ins_count << std::endl;
+    assert(end_count == 2);  // END5 and END3
+    assert(clip_count == 1); // SOFTCLIP
+    assert(ins_count == 1);  // INSERTION
+
+    std::cout << "  Probe extraction tests passed!" << std::endl;
+}
+
+void test_gate1_evaluate() {
+    std::cout << "Testing Gate1 evaluate..." << std::endl;
+
+    Gate1Config config;
+    config.probe_len = 50;
+    config.min_clip_len = 10;
+    config.min_ins_len = 5;
+    config.ins_neighborhood = 20;
+    config.min_hit_count = 1;
+    config.min_density = 0.01;
+
+    // Build index with synthetic sequence for testing
+    HashTEIndexConfig idx_config;
+    idx_config.kmer_size = 3;
+    auto test_index = std::make_unique<HashTEIndex>(idx_config);
+    std::vector<std::pair<int, std::string>> sequences = {
+        {0, "GGGTGGGGATGGGGTTGGGGTTGGGGATGGGGTT"}  // Test TE sequence
+    };
+    test_index->build_from_sequences(sequences);
+
+    Gate1 gate1(std::move(test_index), config);
+
+    // Test 1: Read with matching TE sequence
+    ReadSketch te_read;
+    te_read.qname = "te_read";
+    te_read.sequence = "GGGTGGGGATGGGGTTGGGGTTGGGGATGGGGTTGGGGTTGGGGATGGGGTTGGGGTTGGGGATGGGGTTGGGGTTGGGGATGGGGTTGGGG";
+    te_read.cigar_ops = {{'M', (int)te_read.sequence.size()}};
+
+    auto result = gate1.evaluate(te_read);
+    std::cout << "  TE-like read: passed=" << (result.passed ? "yes" : "no")
+              << ", total_hits=" << result.total_hits
+              << ", dominant_family=" << result.dominant_family << std::endl;
+    assert(result.passed);
+    assert(result.total_hits > 0);
+    assert(!result.dominant_family.empty());  // Family name should be populated
+
+    // Test 2: Read with no TE signal
+    ReadSketch bg_read;
+    bg_read.qname = "bg_read";
+    bg_read.sequence = "ACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACACAC";
+    bg_read.cigar_ops = {{'M', (int)bg_read.sequence.size()}};
+
+    auto result2 = gate1.evaluate(bg_read);
+    std::cout << "  Background read: passed=" << (result2.passed ? "yes" : "no")
+              << ", total_hits=" << result2.total_hits << std::endl;
+    assert(!result2.passed);  // Should not pass - no TE signal
+
+    std::cout << "  Gate1 evaluate tests passed!" << std::endl;
+}
+
+void test_gate1_passes() {
+    std::cout << "Testing Gate1 passes (fast path)..." << std::endl;
+
+    Gate1Config config;
+    config.probe_len = 50;
+    config.min_hit_count = 1;
+    config.min_density = 0.01;
+
+    // Build index with synthetic sequence for testing
+    HashTEIndexConfig idx_config;
+    idx_config.kmer_size = 3;
+    auto test_index = std::make_unique<HashTEIndex>(idx_config);
+    std::vector<std::pair<int, std::string>> sequences = {
+        {0, "GGGTGGGGATGGGGTTGGGGTTGGGGATGGGGTT"}  // Test TE sequence
+    };
+    test_index->build_from_sequences(sequences);
+
+    Gate1 gate1(std::move(test_index), config);
+
+    // Test TE-like read
+    ReadSketch te_read;
+    te_read.qname = "te_read";
+    te_read.sequence = "GGGTGGGGATGGGGTTGGGG";  // Matching sequence
+
+    bool passed = gate1.passes(te_read);
+    std::cout << "  TE-like read passes: " << (passed ? "yes" : "no") << std::endl;
+    assert(passed);
+
+    // Test background read
+    ReadSketch bg_read;
+    bg_read.qname = "bg_read";
+    bg_read.sequence = "ACACACACACACACACACAC";  // No TE signal
+
+    bool bg_passed = gate1.passes(bg_read);
+    std::cout << "  Background read passes: " << (bg_passed ? "yes" : "no") << std::endl;
+    assert(!bg_passed);  // Should not pass
+
+    std::cout << "  Gate1 passes tests passed!" << std::endl;
+}
+
+void test_gate1_real_bam() {
+    std::cout << "Testing Gate1 with real BAM data..." << std::endl;
+
+    Gate1Config config;
+    config.probe_len = 100;
+    config.min_clip_len = 30;
+    config.min_ins_len = 20;
+    config.ins_neighborhood = 50;
+    config.min_hit_count = 3;
+    config.min_density = 0.05;
+
+    auto te_index = HashTEIndex::build_from_fasta("/mnt/home1/miska/hl725/projects/PLACER/test_data/te_test.fa",
+                                                   HashTEIndexConfig());
+    assert(te_index != nullptr);
+
+    Gate1 gate1(std::shared_ptr<HashTEIndex>(te_index.release()), config);
+
+    BamReader reader("/mnt/home1/miska/hl725/projects/tldr_optimized/test/test.bam");
+    assert(reader.is_valid());
+
+    int64_t count = 0;
+    int64_t passed = 0;
+
+    auto callback = [&gate1, &count, &passed](const ReadSketch& read) {
+        count++;
+        if (gate1.passes(read)) {
+            passed++;
+        }
+    };
+
+    int64_t result = reader.stream(callback);
+    std::cout << "  Processed " << result << " reads from BAM" << std::endl;
+    std::cout << "  Gate1 passed: " << passed << " reads" << std::endl;
+    std::cout << "  Pass rate: " << (100.0 * passed / count) << "%" << std::endl;
+
+    std::cout << "  Gate1 BAM tests passed!" << std::endl;
+}
+
 int main() {
     std::cout << "=== PLACER Phase 1 Tests ===" << std::endl;
 
@@ -425,6 +709,16 @@ int main() {
         test_task_queue_close_empty();
         test_task_serialization();
         test_integration();
+
+        std::cout << "\n=== PLACER Phase 2 Tests ===" << std::endl;
+
+        test_hash_te_index();
+        test_hash_te_index_fasta();
+        test_hash_te_index_n_handling();
+        test_gate1_extract_probes();
+        test_gate1_evaluate();
+        test_gate1_passes();
+        test_gate1_real_bam();
 
         std::cout << "\n=== All tests passed! ===" << std::endl;
         return 0;
