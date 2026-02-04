@@ -6,5 +6,5 @@ CXX_DEFINES =
 
 CXX_INCLUDES = -I/mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib -I/mnt/home1/miska/hl725/projects/PLACER/include
 
-CXX_FLAGS = -std=gnu++17
+CXX_FLAGS = -O3 -DNDEBUG -std=gnu++17
 

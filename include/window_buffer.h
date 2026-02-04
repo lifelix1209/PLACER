@@ -49,7 +49,7 @@ struct Window {
 };
 
 /**
- * WindowBuffer: 滑动窗口 + 分层采样 + 真正内存回收
+ * WindowBuffer: 滑动窗口 + 分层采样 + 内存回收
  */
 class WindowBuffer {
 public:
@@ -72,6 +72,9 @@ public:
 
     // 真正的内存回收：返回被触发且完成封存的窗口，清理落后于 safe_pos 的所有窗口
     std::vector<std::unique_ptr<Window>> seal_and_flush(int32_t chrom_tid, int32_t safe_pos);
+
+    // 染色体切换时的清理：清理所有旧染色体的窗口
+    std::vector<std::unique_ptr<Window>> flush_all_previous_chromosomes(int32_t new_chrom_tid);
 
     // 获取窗口统计
     const Window* get_window(WindowID id) const;

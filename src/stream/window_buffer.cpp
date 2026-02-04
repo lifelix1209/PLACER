@@ -91,6 +91,31 @@ std::vector<std::unique_ptr<Window>> WindowBuffer::seal_and_flush(int32_t chrom_
     return sealed;
 }
 
+std::vector<std::unique_ptr<Window>> WindowBuffer::flush_all_previous_chromosomes(int32_t new_chrom_tid) {
+    std::vector<std::unique_ptr<Window>> flushed;
+
+    // 清理所有 tid < new_chrom_tid 的染色体窗口
+    while (!window_order_.empty()) {
+        WindowID old_id = window_order_.front();
+        int32_t old_tid = get_chrom_tid(old_id);
+
+        // 如果是当前或后续染色体，停止清理
+        if (old_tid >= new_chrom_tid) break;
+
+        auto it = active_windows_.find(old_id);
+        if (it != active_windows_.end()) {
+            // 只保留触发的窗口
+            if (it->second->triggered) {
+                flushed.push_back(std::move(it->second));
+            }
+            active_windows_.erase(it);
+        }
+        window_order_.pop_front();
+    }
+
+    return flushed;
+}
+
 const Window* WindowBuffer::get_window(WindowID id) const {
     auto it = active_windows_.find(id);
     if (it != active_windows_.end()) {

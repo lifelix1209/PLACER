@@ -593,14 +593,7 @@ Phase 4: 局部再比对 (Restricted Local Re-alignment)
 
 受限对齐：
 
-使用 edlib 或 ksw2。
-
-Target 仅为 Locus-set 里的候选位置 
-±
-10
-𝑘
-𝑏
-±10kb 窗口。
+使用 edlib 或 ksw2。Target 仅为 Locus-set 里的候选位置 ±10kb 窗口。
 
 模式：Extension Alignment (半全局)。
 
@@ -644,17 +637,9 @@ Side Consistency：检查左侧翼和右侧翼的最佳落点是否指向同一�
 
 Tier 规则：
 
-Tier 1: Unique placement (
-Δ
->
-30
-Δ>30), Consistent sides.
+Tier 1: Unique placement (Δ>30), Consistent sides.
 
-Tier 2: Multiple placements (
-Δ
-<
-10
-Δ<10), Consistent structure.
+Tier 2: Multiple placements (Δ<10), Consistent structure.
 
 Tier 3: Inconsistent or Unmappable.
 
@@ -671,67 +656,8 @@ Phase 7: Genotyping (EM with Spatial Priors)
 模型组件：构建 Mixture Model P(Data) = w_alt * P(D|ALT) + w_ref * P(D|REF) + w_null * P(D|NULL)。
 
 空间先验 (Spatial Prior)：
-
-𝜋
-𝐴
-𝐿
-𝑇
-/
-𝑅
-𝐸
-𝐹
-∝
-exp
-⁡
-(
-−
-𝑑
-𝑖
-𝑠
-𝑡
-𝑎
-𝑛
-𝑐
-𝑒
-/
-𝜆
-)
-π
-ALT/REF
-	​
-
-∝exp(−distance/λ)
-
-𝜋
-𝑁
-𝑈
-𝐿
-𝐿
-∝
-1
-−
-exp
-⁡
-(
-−
-𝑑
-𝑖
-𝑠
-𝑡
-𝑎
-𝑛
-𝑐
-𝑒
-/
-𝜆
-)
-+
-base_noise
-π
-NULL
-	​
-
-∝1−exp(−distance/λ)+base_noise
+π<sub>ALT/REF</sub> ∝ exp(−distance/λ)
+π<sub>NULL</sub> ∝ 1 − exp(−distance/λ) + base_noise
 
 结构先验：若 Read 的 TE 家族与 Representative 不一致，强制压低其在 ALT 中的似然。
 
@@ -762,7 +688,7 @@ MD 加速：如果 BAM 头声明了 MD tag，则在 Gate 1 启用 Mismatch 密�
 - 确定关键技术路线: 单遍流式、Gate1 TE-proxy、受限候选集合、EM genotyping
 
 ## 2026-02-04
-### Phase 1: 基础设施 (Stream + WindowBuffer + Trigger) - 开发中
+### Phase 1: 基础设施 (Stream + WindowBuffer + Trigger) - 已完成
 
 #### 已完成:
 - [x] 项目结构搭建 (CMakeLists.txt, include/, src/stream/)
@@ -786,9 +712,62 @@ MD 加速：如果 BAM 头声明了 MD tag，则在 Gate 1 启用 Mismatch 密�
 - REF: `/mnt/home1/miska/hl725/projects/tldr_optimized/test/ref.fa`
 - 目标区域: `chrTEST:90777-90789`
 
-## 2026-02-03 (代码修复)
+#### Phase 1 总结
 
-### 已修复问题
+**核心技术指标:**
+- 单遍遍历 BAM (无随机 seek)
+- P^2 算法在线分位数估算 (clip/SA/ins)
+- Safe Frontier 内存管理
+- O(1) 窗口查找 (整数 Key)
+- 任务序列化支持
+
+**测试结果:**
+```
+=== PLACER Phase 1 Tests ===
+Testing WindowStats... PASS
+Testing BamReader... 79 records processed
+Testing WindowBuffer... 3 windows created
+Testing Trigger... Score=1, triggered
+Testing TaskQueue... All tasks processed
+Testing integration... PASS
+=== All tests passed! ===
+```
+
+#### 已知问题与后续优化:
+- [x] WindowBuffer Safe Frontier 在染色体切换时需要清理 - 已实现 `flush_all_previous_chromosomes()`
+- [x] TaskQueue 序列化到磁盘功能待实现 - 已实现 `TaskSerializer` 类和 `submit_serialized()` 方法
+- [后续] Phase 2: Gate 1 TE-proxy 初筛
+
+### 2026-02-04 (Phase 1 问题修复)
+
+#### 已修复问题
+
+1. **WindowBuffer Safe Frontier 染色体切换清理**
+   - 新增 `flush_all_previous_chromosomes(int32_t new_chrom_tid)` 方法
+   - 当切换到新染色体时，自动清理所有旧染色体的窗口
+   - 确保内存不会随染色体数量线性增长
+
+2. **TaskQueue 序列化功能**
+   - 新增 `TaskData` 结构：包含任务类型、窗口ID、ReadSketch 向量、统计信息
+   - 新增 `TaskSerializer` 类：支持将任务二进制序列化到磁盘
+   - 新增 `TaskQueue::submit_serialized()`：提交带读数据的序列化任务
+   - 支持 ReadSketch 完整字段的二进制序列化
+
+#### 测试结果
+```
+=== PLACER Phase 1 Tests ===
+Testing WindowStats... PASS
+Testing BamReader... 79 records processed
+Testing WindowBuffer... 3 windows created
+Testing Trigger... PASS
+Testing TaskQueue... All tasks processed
+Testing integration... PASS
+=== All tests passed! ===
+```
+
+### 2026-02-03 (代码修复)
+
+#### 已修复问题
 
 1. **BamReader SA 解析**
    - 修复指针算术崩溃：`comma1 - strlen(comma1)` → `rname_buffer.assign()`
@@ -806,7 +785,7 @@ MD 加速：如果 BAM 头声明了 MD tag，则在 Gate 1 启用 Mismatch 密�
    - 添加 q99 字段到 WindowStats
    - 修复 WindowBuffer 构造函数与 get_stats 方法
 
-### 测试结果
+#### 测试结果
 ```
 === PLACER Phase 1 Tests ===
 Testing WindowStats... PASS
