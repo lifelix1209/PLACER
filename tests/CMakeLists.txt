@@ -52,3 +52,23 @@ target_include_directories(test_local_realign PRIVATE
 )
 
 add_test(NAME LocalRealignTest COMMAND test_local_realign)
+
+# Phase 5 Assembly + Collapsing Tests
+add_executable(test_assembly
+    test_assembly.cpp
+)
+
+target_link_libraries(test_assembly PRIVATE
+    stream
+    gate1
+    component
+    local_realign
+    assembly
+    hts::htslib
+)
+
+target_include_directories(test_assembly PRIVATE
+    ${HTSLIB_INCLUDE_DIR}
+)
+
+add_test(NAME AssemblyTest COMMAND test_assembly)

@@ -288,4 +288,5 @@ tests/CMakeFiles/test_local_realign.dir/test_local_realign.cpp.o
  /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/component_builder.h
  /usr/include/c++/11/optional
  /usr/include/c++/11/concepts
+ /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/faidx.h
 

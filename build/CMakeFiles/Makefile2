@@ -68,6 +68,7 @@ all: src/stream/all
 all: src/gate1/all
 all: src/component/all
 all: src/local_realign/all
+all: src/assembly/all
 all: tests/all
 .PHONY : all
 
@@ -76,6 +77,7 @@ preinstall: src/stream/preinstall
 preinstall: src/gate1/preinstall
 preinstall: src/component/preinstall
 preinstall: src/local_realign/preinstall
+preinstall: src/assembly/preinstall
 preinstall: tests/preinstall
 .PHONY : preinstall
 
@@ -85,8 +87,24 @@ clean: src/stream/clean
 clean: src/gate1/clean
 clean: src/component/clean
 clean: src/local_realign/clean
+clean: src/assembly/clean
 clean: tests/clean
 .PHONY : clean
+
+#=============================================================================
+# Directory level rules for directory src/assembly
+
+# Recursive "all" directory target.
+src/assembly/all: src/assembly/CMakeFiles/assembly.dir/all
+.PHONY : src/assembly/all
+
+# Recursive "preinstall" directory target.
+src/assembly/preinstall:
+.PHONY : src/assembly/preinstall
+
+# Recursive "clean" directory target.
+src/assembly/clean: src/assembly/CMakeFiles/assembly.dir/clean
+.PHONY : src/assembly/clean
 
 #=============================================================================
 # Directory level rules for directory src/component
@@ -155,6 +173,7 @@ src/stream/clean: src/stream/CMakeFiles/stream.dir/clean
 tests/all: tests/CMakeFiles/test_stream.dir/all
 tests/all: tests/CMakeFiles/test_component.dir/all
 tests/all: tests/CMakeFiles/test_local_realign.dir/all
+tests/all: tests/CMakeFiles/test_assembly.dir/all
 .PHONY : tests/all
 
 # Recursive "preinstall" directory target.
@@ -165,6 +184,7 @@ tests/preinstall:
 tests/clean: tests/CMakeFiles/test_stream.dir/clean
 tests/clean: tests/CMakeFiles/test_component.dir/clean
 tests/clean: tests/CMakeFiles/test_local_realign.dir/clean
+tests/clean: tests/CMakeFiles/test_assembly.dir/clean
 .PHONY : tests/clean
 
 #=============================================================================
@@ -175,14 +195,15 @@ CMakeFiles/placer.dir/all: src/stream/CMakeFiles/stream.dir/all
 CMakeFiles/placer.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 CMakeFiles/placer.dir/all: src/component/CMakeFiles/component.dir/all
 CMakeFiles/placer.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+CMakeFiles/placer.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer.dir/build.make CMakeFiles/placer.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer.dir/build.make CMakeFiles/placer.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=8,9 "Built target placer"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=10,11 "Built target placer"
 .PHONY : CMakeFiles/placer.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/placer.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 14
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 16
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/placer.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : CMakeFiles/placer.dir/rule
@@ -203,7 +224,7 @@ CMakeFiles/placer.dir/clean:
 src/stream/CMakeFiles/stream.dir/all:
 	$(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=10,11,12,13,14 "Built target stream"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=12,13,14,15,16 "Built target stream"
 .PHONY : src/stream/CMakeFiles/stream.dir/all
 
 # Build rule for subdir invocation for target.
@@ -229,7 +250,7 @@ src/stream/CMakeFiles/stream.dir/clean:
 src/gate1/CMakeFiles/gate1.dir/all: src/stream/CMakeFiles/stream.dir/all
 	$(MAKE) $(MAKESILENT) -f src/gate1/CMakeFiles/gate1.dir/build.make src/gate1/CMakeFiles/gate1.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/gate1/CMakeFiles/gate1.dir/build.make src/gate1/CMakeFiles/gate1.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=3,4,5 "Built target gate1"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=5,6,7 "Built target gate1"
 .PHONY : src/gate1/CMakeFiles/gate1.dir/all
 
 # Build rule for subdir invocation for target.
@@ -255,7 +276,7 @@ src/gate1/CMakeFiles/gate1.dir/clean:
 src/component/CMakeFiles/component.dir/all: src/stream/CMakeFiles/stream.dir/all
 	$(MAKE) $(MAKESILENT) -f src/component/CMakeFiles/component.dir/build.make src/component/CMakeFiles/component.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/component/CMakeFiles/component.dir/build.make src/component/CMakeFiles/component.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=1,2 "Built target component"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=3,4 "Built target component"
 .PHONY : src/component/CMakeFiles/component.dir/all
 
 # Build rule for subdir invocation for target.
@@ -281,7 +302,7 @@ src/component/CMakeFiles/component.dir/clean:
 src/local_realign/CMakeFiles/local_realign.dir/all: src/stream/CMakeFiles/stream.dir/all
 	$(MAKE) $(MAKESILENT) -f src/local_realign/CMakeFiles/local_realign.dir/build.make src/local_realign/CMakeFiles/local_realign.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/local_realign/CMakeFiles/local_realign.dir/build.make src/local_realign/CMakeFiles/local_realign.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=6,7 "Built target local_realign"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=8,9 "Built target local_realign"
 .PHONY : src/local_realign/CMakeFiles/local_realign.dir/all
 
 # Build rule for subdir invocation for target.
@@ -301,6 +322,34 @@ src/local_realign/CMakeFiles/local_realign.dir/clean:
 .PHONY : src/local_realign/CMakeFiles/local_realign.dir/clean
 
 #=============================================================================
+# Target rules for target src/assembly/CMakeFiles/assembly.dir
+
+# All Build rule for target.
+src/assembly/CMakeFiles/assembly.dir/all: src/stream/CMakeFiles/stream.dir/all
+src/assembly/CMakeFiles/assembly.dir/all: src/component/CMakeFiles/component.dir/all
+src/assembly/CMakeFiles/assembly.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+	$(MAKE) $(MAKESILENT) -f src/assembly/CMakeFiles/assembly.dir/build.make src/assembly/CMakeFiles/assembly.dir/depend
+	$(MAKE) $(MAKESILENT) -f src/assembly/CMakeFiles/assembly.dir/build.make src/assembly/CMakeFiles/assembly.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=1,2 "Built target assembly"
+.PHONY : src/assembly/CMakeFiles/assembly.dir/all
+
+# Build rule for subdir invocation for target.
+src/assembly/CMakeFiles/assembly.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 11
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/assembly/CMakeFiles/assembly.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+.PHONY : src/assembly/CMakeFiles/assembly.dir/rule
+
+# Convenience name for target.
+assembly: src/assembly/CMakeFiles/assembly.dir/rule
+.PHONY : assembly
+
+# clean rule for target.
+src/assembly/CMakeFiles/assembly.dir/clean:
+	$(MAKE) $(MAKESILENT) -f src/assembly/CMakeFiles/assembly.dir/build.make src/assembly/CMakeFiles/assembly.dir/clean
+.PHONY : src/assembly/CMakeFiles/assembly.dir/clean
+
+#=============================================================================
 # Target rules for target tests/CMakeFiles/test_stream.dir
 
 # All Build rule for target.
@@ -308,7 +357,7 @@ tests/CMakeFiles/test_stream.dir/all: src/stream/CMakeFiles/stream.dir/all
 tests/CMakeFiles/test_stream.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=19,20 "Built target test_stream"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=23,24 "Built target test_stream"
 .PHONY : tests/CMakeFiles/test_stream.dir/all
 
 # Build rule for subdir invocation for target.
@@ -336,7 +385,7 @@ tests/CMakeFiles/test_component.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 tests/CMakeFiles/test_component.dir/all: src/component/CMakeFiles/component.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=15,16 "Built target test_component"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=19,20 "Built target test_component"
 .PHONY : tests/CMakeFiles/test_component.dir/all
 
 # Build rule for subdir invocation for target.
@@ -365,7 +414,7 @@ tests/CMakeFiles/test_local_realign.dir/all: src/component/CMakeFiles/component.
 tests/CMakeFiles/test_local_realign.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=17,18 "Built target test_local_realign"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=21,22 "Built target test_local_realign"
 .PHONY : tests/CMakeFiles/test_local_realign.dir/all
 
 # Build rule for subdir invocation for target.
@@ -383,6 +432,36 @@ test_local_realign: tests/CMakeFiles/test_local_realign.dir/rule
 tests/CMakeFiles/test_local_realign.dir/clean:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/clean
 .PHONY : tests/CMakeFiles/test_local_realign.dir/clean
+
+#=============================================================================
+# Target rules for target tests/CMakeFiles/test_assembly.dir
+
+# All Build rule for target.
+tests/CMakeFiles/test_assembly.dir/all: src/stream/CMakeFiles/stream.dir/all
+tests/CMakeFiles/test_assembly.dir/all: src/gate1/CMakeFiles/gate1.dir/all
+tests/CMakeFiles/test_assembly.dir/all: src/component/CMakeFiles/component.dir/all
+tests/CMakeFiles/test_assembly.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+tests/CMakeFiles/test_assembly.dir/all: src/assembly/CMakeFiles/assembly.dir/all
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_assembly.dir/build.make tests/CMakeFiles/test_assembly.dir/depend
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_assembly.dir/build.make tests/CMakeFiles/test_assembly.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=17,18 "Built target test_assembly"
+.PHONY : tests/CMakeFiles/test_assembly.dir/all
+
+# Build rule for subdir invocation for target.
+tests/CMakeFiles/test_assembly.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 16
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_assembly.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+.PHONY : tests/CMakeFiles/test_assembly.dir/rule
+
+# Convenience name for target.
+test_assembly: tests/CMakeFiles/test_assembly.dir/rule
+.PHONY : test_assembly
+
+# clean rule for target.
+tests/CMakeFiles/test_assembly.dir/clean:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_assembly.dir/build.make tests/CMakeFiles/test_assembly.dir/clean
+.PHONY : tests/CMakeFiles/test_assembly.dir/clean
 
 #=============================================================================
 # Special targets to cleanup operation of make.

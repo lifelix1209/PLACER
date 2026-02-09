@@ -286,8 +286,11 @@ tests/CMakeFiles/test_local_realign.dir/test_local_realign.cpp.o: ../tests/test_
   ../include/local_realign.h \
   ../include/component_builder.h \
   /usr/include/c++/11/optional \
-  /usr/include/c++/11/concepts
+  /usr/include/c++/11/concepts \
+  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/faidx.h
 
+
+/mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/faidx.h:
 
 /usr/include/c++/11/optional:
 

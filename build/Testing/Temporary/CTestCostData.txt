@@ -1,4 +1,5 @@
-StreamTest 6 0.0518251
-ComponentTest 2 0.129004
-LocalRealignTest 2 0.0105812
+StreamTest 16 0.00808478
+ComponentTest 12 0.00901031
+LocalRealignTest 12 0.00644653
+AssemblyTest 10 0.00243019
 ---

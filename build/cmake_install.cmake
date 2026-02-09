@@ -64,6 +64,11 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
+  include("/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/assembly/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
   include("/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/cmake_install.cmake")
 endif()
 

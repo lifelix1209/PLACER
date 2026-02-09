@@ -97,6 +97,9 @@ placer: src/stream/libstream.a
 placer: src/gate1/libgate1.a
 placer: src/component/libcomponent.a
 placer: src/local_realign/liblocal_realign.a
+placer: src/assembly/libassembly.a
+placer: src/component/libcomponent.a
+placer: src/local_realign/liblocal_realign.a
 placer: src/stream/libstream.a
 placer: /usr/lib/x86_64-linux-gnu/libhts.so.3
 placer: CMakeFiles/placer.dir/link.txt

@@ -10,3 +10,5 @@ add_test(ComponentTest "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tes
 set_tests_properties(ComponentTest PROPERTIES  _BACKTRACE_TRIPLES "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;35;add_test;/mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;0;")
 add_test(LocalRealignTest "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/test_local_realign")
 set_tests_properties(LocalRealignTest PROPERTIES  _BACKTRACE_TRIPLES "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;54;add_test;/mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;0;")
+add_test(AssemblyTest "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/test_assembly")
+set_tests_properties(AssemblyTest PROPERTIES  _BACKTRACE_TRIPLES "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;74;add_test;/mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;0;")
