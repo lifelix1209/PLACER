@@ -54,6 +54,7 @@ src/gate1/CMakeFiles/gate1.dir/gate1.cpp.o: ../src/gate1/gate1.cpp \
   /usr/include/x86_64-linux-gnu/bits/types/FILE.h \
   /usr/include/x86_64-linux-gnu/bits/types/locale_t.h \
   /usr/include/x86_64-linux-gnu/bits/types/__locale_t.h \
+  /usr/include/x86_64-linux-gnu/bits/wchar2.h \
   /usr/include/c++/11/cstdint \
   /usr/lib/gcc/x86_64-linux-gnu/11/include/stdint.h \
   /usr/include/stdint.h \
@@ -134,8 +135,11 @@ src/gate1/CMakeFiles/gate1.dir/gate1.cpp.o: ../src/gate1/gate1.cpp \
   /usr/include/x86_64-linux-gnu/sys/select.h \
   /usr/include/x86_64-linux-gnu/bits/select.h \
   /usr/include/x86_64-linux-gnu/bits/types/sigset_t.h \
+  /usr/include/x86_64-linux-gnu/bits/select2.h \
   /usr/include/alloca.h \
+  /usr/include/x86_64-linux-gnu/bits/stdlib-bsearch.h \
   /usr/include/x86_64-linux-gnu/bits/stdlib-float.h \
+  /usr/include/x86_64-linux-gnu/bits/stdlib.h \
   /usr/include/c++/11/bits/std_abs.h \
   /usr/include/c++/11/cstdio \
   /usr/include/stdio.h \
@@ -144,6 +148,8 @@ src/gate1/CMakeFiles/gate1.dir/gate1.cpp.o: ../src/gate1/gate1.cpp \
   /usr/include/x86_64-linux-gnu/bits/types/struct_FILE.h \
   /usr/include/x86_64-linux-gnu/bits/types/cookie_io_functions_t.h \
   /usr/include/x86_64-linux-gnu/bits/stdio_lim.h \
+  /usr/include/x86_64-linux-gnu/bits/stdio.h \
+  /usr/include/x86_64-linux-gnu/bits/stdio2.h \
   /usr/include/c++/11/cerrno \
   /usr/include/errno.h \
   /usr/include/x86_64-linux-gnu/bits/errno.h \
@@ -191,6 +197,8 @@ src/gate1/CMakeFiles/gate1.dir/gate1.cpp.o: ../src/gate1/gate1.cpp \
   /usr/include/c++/11/stdlib.h \
   /usr/include/string.h \
   /usr/include/strings.h \
+  /usr/include/x86_64-linux-gnu/bits/strings_fortified.h \
+  /usr/include/x86_64-linux-gnu/bits/string_fortified.h \
   /usr/lib/gcc/x86_64-linux-gnu/11/include/limits.h \
   /usr/lib/gcc/x86_64-linux-gnu/11/include/syslimits.h \
   /usr/include/limits.h \
@@ -311,6 +319,7 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
   /usr/include/x86_64-linux-gnu/bits/types/FILE.h \
   /usr/include/x86_64-linux-gnu/bits/types/locale_t.h \
   /usr/include/x86_64-linux-gnu/bits/types/__locale_t.h \
+  /usr/include/x86_64-linux-gnu/bits/wchar2.h \
   /usr/include/c++/11/cstdint \
   /usr/lib/gcc/x86_64-linux-gnu/11/include/stdint.h \
   /usr/include/stdint.h \
@@ -391,8 +400,11 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
   /usr/include/x86_64-linux-gnu/sys/select.h \
   /usr/include/x86_64-linux-gnu/bits/select.h \
   /usr/include/x86_64-linux-gnu/bits/types/sigset_t.h \
+  /usr/include/x86_64-linux-gnu/bits/select2.h \
   /usr/include/alloca.h \
+  /usr/include/x86_64-linux-gnu/bits/stdlib-bsearch.h \
   /usr/include/x86_64-linux-gnu/bits/stdlib-float.h \
+  /usr/include/x86_64-linux-gnu/bits/stdlib.h \
   /usr/include/c++/11/bits/std_abs.h \
   /usr/include/c++/11/cstdio \
   /usr/include/stdio.h \
@@ -401,6 +413,8 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
   /usr/include/x86_64-linux-gnu/bits/types/struct_FILE.h \
   /usr/include/x86_64-linux-gnu/bits/types/cookie_io_functions_t.h \
   /usr/include/x86_64-linux-gnu/bits/stdio_lim.h \
+  /usr/include/x86_64-linux-gnu/bits/stdio.h \
+  /usr/include/x86_64-linux-gnu/bits/stdio2.h \
   /usr/include/c++/11/cerrno \
   /usr/include/errno.h \
   /usr/include/x86_64-linux-gnu/bits/errno.h \
@@ -448,6 +462,8 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
   /usr/include/c++/11/stdlib.h \
   /usr/include/string.h \
   /usr/include/strings.h \
+  /usr/include/x86_64-linux-gnu/bits/strings_fortified.h \
+  /usr/include/x86_64-linux-gnu/bits/string_fortified.h \
   /usr/lib/gcc/x86_64-linux-gnu/11/include/limits.h \
   /usr/lib/gcc/x86_64-linux-gnu/11/include/syslimits.h \
   /usr/include/limits.h \
@@ -556,13 +572,23 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 
 /usr/include/c++/11/deque:
 
+../include/gate1_filter.h:
+
+../src/gate1/gate1_filter.cpp:
+
+/usr/include/c++/11/sstream:
+
+/usr/include/c++/11/bits/fstream.tcc:
+
+/usr/include/x86_64-linux-gnu/c++/11/bits/c++io.h:
+
+/usr/include/x86_64-linux-gnu/c++/11/bits/basic_file.h:
+
 /usr/include/stdlib.h:
 
 /usr/include/c++/11/bits/string_view.tcc:
 
 /usr/include/c++/11/bits/functional_hash.h:
-
-../include/gate1_filter.h:
 
 /usr/include/c++/11/bits/cxxabi_forced.h:
 
@@ -598,8 +624,6 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 
 /usr/include/time.h:
 
-../src/gate1/gate1_filter.cpp:
-
 /usr/include/x86_64-linux-gnu/bits/cpu-set.h:
 
 /usr/include/pthread.h:
@@ -615,14 +639,6 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 /usr/include/c++/11/bits/stl_deque.h:
 
 /usr/include/x86_64-linux-gnu/gnu/stubs.h:
-
-/usr/include/c++/11/backward/binders.h:
-
-/usr/include/x86_64-linux-gnu/bits/time.h:
-
-/usr/include/x86_64-linux-gnu/bits/select.h:
-
-/usr/include/c++/11/algorithm:
 
 /usr/include/x86_64-linux-gnu/bits/endianness.h:
 
@@ -650,6 +666,8 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 
 /usr/include/x86_64-linux-gnu/bits/types.h:
 
+/usr/include/x86_64-linux-gnu/bits/time64.h:
+
 /usr/include/x86_64-linux-gnu/c++/11/bits/atomic_word.h:
 
 /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts_defs.h:
@@ -670,21 +688,17 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 
 /usr/include/c++/11/streambuf:
 
+/usr/include/c++/11/iosfwd:
+
+/usr/include/c++/11/initializer_list:
+
 /usr/include/x86_64-linux-gnu/c++/11/bits/c++locale.h:
 
 /usr/include/x86_64-linux-gnu/bits/xopen_lim.h:
 
 /usr/include/c++/11/bits/stl_algobase.h:
 
-/usr/include/c++/11/cwchar:
-
 /usr/lib/gcc/x86_64-linux-gnu/11/include/stdint.h:
-
-/usr/include/c++/11/initializer_list:
-
-/usr/include/c++/11/iosfwd:
-
-/usr/include/x86_64-linux-gnu/bits/time64.h:
 
 /usr/include/c++/11/ext/type_traits.h:
 
@@ -737,6 +751,8 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 /usr/include/x86_64-linux-gnu/bits/types/struct_timespec.h:
 
 /usr/include/x86_64-linux-gnu/bits/types/struct_timeval.h:
+
+/usr/include/x86_64-linux-gnu/bits/stdlib.h:
 
 /usr/include/x86_64-linux-gnu/asm/errno.h:
 
@@ -870,7 +886,23 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 
 /usr/include/x86_64-linux-gnu/bits/types/mbstate_t.h:
 
+/usr/include/x86_64-linux-gnu/bits/strings_fortified.h:
+
+/usr/include/c++/11/backward/binders.h:
+
+/usr/include/x86_64-linux-gnu/bits/time.h:
+
+/usr/include/x86_64-linux-gnu/bits/select.h:
+
+/usr/include/c++/11/algorithm:
+
+/usr/include/x86_64-linux-gnu/bits/wchar2.h:
+
 /usr/include/x86_64-linux-gnu/bits/types/clock_t.h:
+
+/usr/include/c++/11/cstring:
+
+/usr/include/x86_64-linux-gnu/bits/types/__FILE.h:
 
 /usr/include/c++/11/bits/std_function.h:
 
@@ -880,9 +912,9 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 
 /usr/include/x86_64-linux-gnu/bits/typesizes.h:
 
-/usr/include/x86_64-linux-gnu/sys/types.h:
-
 /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts.h:
+
+/usr/include/x86_64-linux-gnu/sys/types.h:
 
 /usr/include/c++/11/ext/aligned_buffer.h:
 
@@ -896,7 +928,13 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 
 /usr/include/x86_64-linux-gnu/bits/stdlib-float.h:
 
+/usr/include/c++/11/cwchar:
+
+/usr/include/x86_64-linux-gnu/bits/select2.h:
+
 /usr/include/alloca.h:
+
+/usr/include/c++/11/cwctype:
 
 /usr/include/c++/11/cstdio:
 
@@ -905,6 +943,18 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 /usr/include/stdio.h:
 
 /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts_log.h:
+
+/usr/include/x86_64-linux-gnu/bits/stdio.h:
+
+/mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/kstring.h:
+
+/usr/include/x86_64-linux-gnu/bits/stdio2.h:
+
+/usr/include/c++/11/bits/this_thread_sleep.h:
+
+/usr/include/x86_64-linux-gnu/bits/types/struct_tm.h:
+
+/usr/include/c++/11/bits/locale_facets.tcc:
 
 /usr/include/x86_64-linux-gnu/bits/types/cookie_io_functions_t.h:
 
@@ -945,6 +995,8 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 /usr/include/x86_64-linux-gnu/bits/types/struct___jmp_buf_tag.h:
 
 /usr/include/x86_64-linux-gnu/bits/types/clockid_t.h:
+
+/usr/include/x86_64-linux-gnu/bits/stdlib-bsearch.h:
 
 /usr/include/c++/11/bits/stl_bvector.h:
 
@@ -992,8 +1044,6 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 
 /usr/include/inttypes.h:
 
-/mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/kstring.h:
-
 /usr/include/c++/11/stdlib.h:
 
 /usr/lib/gcc/x86_64-linux-gnu/11/include/limits.h:
@@ -1009,6 +1059,8 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 /usr/include/c++/11/string:
 
 /usr/include/x86_64-linux-gnu/bits/uio_lim.h:
+
+/usr/include/x86_64-linux-gnu/bits/string_fortified.h:
 
 /usr/include/c++/11/memory:
 
@@ -1056,32 +1108,12 @@ src/gate1/CMakeFiles/gate1.dir/gate1_filter.cpp.o: ../src/gate1/gate1_filter.cpp
 
 /usr/include/c++/11/bits/locale_facets.h:
 
-/usr/include/c++/11/cwctype:
-
 /usr/include/c++/11/bits/streambuf_iterator.h:
 
 /usr/include/x86_64-linux-gnu/c++/11/bits/ctype_inline.h:
-
-/usr/include/c++/11/bits/this_thread_sleep.h:
-
-/usr/include/x86_64-linux-gnu/bits/types/struct_tm.h:
-
-/usr/include/c++/11/bits/locale_facets.tcc:
 
 /usr/include/c++/11/bits/codecvt.h:
 
 /usr/include/c++/11/bits/enable_special_members.h:
 
 /usr/include/c++/11/bits/basic_ios.tcc:
-
-/usr/include/x86_64-linux-gnu/c++/11/bits/basic_file.h:
-
-/usr/include/x86_64-linux-gnu/c++/11/bits/c++io.h:
-
-/usr/include/c++/11/bits/fstream.tcc:
-
-/usr/include/c++/11/sstream:
-
-/usr/include/x86_64-linux-gnu/bits/types/__FILE.h:
-
-/usr/include/c++/11/cstring:

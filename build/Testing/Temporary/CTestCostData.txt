@@ -1,3 +1,4 @@
-StreamTest 4 0
+StreamTest 6 0.0518251
+ComponentTest 2 0.129004
+LocalRealignTest 2 0.0105812
 ---
-StreamTest

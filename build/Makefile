@@ -166,6 +166,32 @@ gate1/fast:
 .PHONY : gate1/fast
 
 #=============================================================================
+# Target rules for targets named component
+
+# Build rule for target.
+component: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 component
+.PHONY : component
+
+# fast build rule for target.
+component/fast:
+	$(MAKE) $(MAKESILENT) -f src/component/CMakeFiles/component.dir/build.make src/component/CMakeFiles/component.dir/build
+.PHONY : component/fast
+
+#=============================================================================
+# Target rules for targets named local_realign
+
+# Build rule for target.
+local_realign: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 local_realign
+.PHONY : local_realign
+
+# fast build rule for target.
+local_realign/fast:
+	$(MAKE) $(MAKESILENT) -f src/local_realign/CMakeFiles/local_realign.dir/build.make src/local_realign/CMakeFiles/local_realign.dir/build
+.PHONY : local_realign/fast
+
+#=============================================================================
 # Target rules for targets named test_stream
 
 # Build rule for target.
@@ -177,6 +203,32 @@ test_stream: cmake_check_build_system
 test_stream/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/build
 .PHONY : test_stream/fast
+
+#=============================================================================
+# Target rules for targets named test_component
+
+# Build rule for target.
+test_component: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_component
+.PHONY : test_component
+
+# fast build rule for target.
+test_component/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/build
+.PHONY : test_component/fast
+
+#=============================================================================
+# Target rules for targets named test_local_realign
+
+# Build rule for target.
+test_local_realign: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_local_realign
+.PHONY : test_local_realign
+
+# fast build rule for target.
+test_local_realign/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/build
+.PHONY : test_local_realign/fast
 
 src/main.o: src/main.cpp.o
 .PHONY : src/main.o
@@ -211,9 +263,13 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... test"
+	@echo "... component"
 	@echo "... gate1"
+	@echo "... local_realign"
 	@echo "... placer"
 	@echo "... stream"
+	@echo "... test_component"
+	@echo "... test_local_realign"
 	@echo "... test_stream"
 	@echo "... src/main.o"
 	@echo "... src/main.i"

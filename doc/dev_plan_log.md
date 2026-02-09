@@ -1081,3 +1081,478 @@ Testing integration... PASS
 
 === All tests passed! ===
 ```
+
+## 2026-02-06
+
+### Phase 3: Component 构建 (锚点提取 + 密度聚类)
+
+#### 核心设计决策
+
+**v5.2 重大修正**（Peer Review 后）：
+
+1. **废弃 Grid Binning**：采用 "锚点提取 + 密度聚类" 替代 200bp 网格
+2. **多条 Read 多 Anchor**：一条 Read 可能产生多个 Anchors（倒置/易位场景）
+3. **Read 内去重**：CLIP 和 SA 位置接近时合并，优先保留 SA（精度最高）
+4. **Read-Component 多对多关系**：一条 Read 可能属于多个 Component（桥梁 Read）
+
+#### 数据结构
+
+```cpp
+struct Anchor {
+    int32_t chrom_tid;
+    int32_t pos;            // 基因组坐标
+    int source_type;        // 0=SA, 1=CLIP, 2=INS, 3=TE_HIT
+    int orientation;        // 0=LeftBreak, 1=RightBreak, 2=Mixed, 3=Unknown
+    size_t read_idx;        // 指向原始 ReadSketch 的索引
+};
+
+struct Component {
+    int32_t id;
+    int32_t chrom_tid;
+    int32_t start;          // 聚类范围 start
+    int32_t end;            // 聚类范围 end
+    int32_t centroid;       // 重心坐标
+    std::vector<size_t> read_indices;  // 属于该断点的 reads
+    uint32_t anchor_count;
+    uint32_t read_count;
+};
+```
+
+#### 算法流程
+
+**Step 1: 多重锚点提取**
+- Primary Clips：左右 SoftClip 端点
+- Large Insertions：CIGAR 'I' >= min_ins_len
+- SA Splits：遍历所有 split（每个都生成 Anchor）
+
+**Step 2: Read 内去重**
+- 距离 < 20bp 的 Anchors 合并
+- 优先保留 SA（source_type=0）
+
+**Step 3: 密度聚类**
+- Gap < 50bp 归为同一 cluster
+- 按染色体分隔
+
+**Step 4: Cluster Breaker**
+- span > 200bp 时触发
+- 寻找低谷切开，防止错误合并
+
+#### 真实数据测试结果
+
+```
+Real BAM data (79 reads):
+  Total anchors: 131
+  Components: 75
+  Breakers triggered: 0
+
+高密度区域示例:
+  Component 46: [90777-90815], reads=21, anchors=21
+  Component 10: [80279-80311], reads=6, anchors=6
+```
+
+#### 新增文件
+
+```
+include/
+  component_builder.h     # Anchor/Component 结构 + 构建器接口
+
+src/component/
+  component_builder.cpp  # 实现
+  CMakeLists.txt        # 编译配置
+
+tests/
+  test_component.cpp    # Phase 3 单元测试
+```
+
+#### 测试覆盖
+
+- 空输入处理
+- 无信号 Read（纯匹配）
+- 多染色体支持
+- 跨度阈值 Breaker
+- Large Insertion 事件
+- SA Splits 多 Anchor
+- 真实 BAM 数据集成
+
+#### 与 Stream Layer 集成
+
+```cpp
+// 在 Task Worker 中使用
+ComponentBuilder builder;
+auto components = builder.build(task_data.reads);
+
+// 每个 Component 进入 Phase 4 (局部再比对)
+for (auto& comp : components) {
+    task_queue->submit(create_local_align(comp));
+}
+```
+
+#### Phase 3 总结
+
+| 指标 | 值 |
+|------|-----|
+| 代码行数 | ~300 |
+| 测试用例 | 8 |
+| 锚点提取 | CLIP/INS/SA 多源 |
+| 聚类算法 | Gap-based density |
+| Breaker | 200bp span 阈值 |
+
+**下一步**: Phase 4 - 局部再比对 (Restricted Local Re-alignment)
+
+## 2026-02-09
+
+### Phase 3 工业级优化 (Component Builder Enhancement)
+
+#### 今日完成
+
+- [x] 添加 Hard Clip ('H') 信号处理
+- [x] 添加 MapQ 过滤与 Strand 信息记录
+- [x] 优化内存管理：使用 AnchorSpan + ClusterRange 避免 vector 拷贝
+- [x] 实现递归式 Cluster Breaker（支持多级切分）
+- [x] 添加密度统计过滤 (min_density 阈值)
+- [x] 完善 CIGAR 解析（添加 '=' 和 'X' 操作符）
+- [x] 并行排序优化 (std::execution::par)
+
+#### 工业级优化详情
+
+**1. 信号处理增强**
+```cpp
+struct Anchor {
+    int32_t chrom_tid;
+    int32_t pos;
+    int source_type;        // 0=SA, 1=CLIP, 2=INS, 3=TE_HIT
+    int orientation;
+    size_t read_idx;
+    uint8_t mapq;          // 比对质量
+    bool strand;           // true=forward, false=reverse
+};
+```
+
+**2. 内存管理优化**
+```cpp
+// C++17 compatible span 实现
+class AnchorSpan {
+public:
+    AnchorSpan(Anchor* data, size_t size) : data_(data), size_(size) {}
+    Anchor* data() const { return data_; }
+    size_t size() const { return size_; }
+private:
+    Anchor* data_;
+    size_t size_;
+};
+
+struct ClusterRange {
+    size_t start_idx;
+    size_t end_idx;
+    bool empty() const { return start_idx >= end_idx; }
+    size_t size() const { return end_idx - start_idx; }
+};
+```
+
+**3. 递归式 Breaker**
+```cpp
+void recursive_cluster_breaker(
+    AnchorSpan anchors,
+    const ClusterRange& range,
+    std::vector<Component>& components,
+    int32_t chrom_tid,
+    int32_t& component_id,
+    int depth) const;  // 最大递归深度: config_.max_recursive_depth
+```
+
+**4. 新增配置参数**
+```cpp
+struct ComponentBuilderConfig {
+    uint8_t min_mapq = 20;          // 最小 MapQ
+    double min_density = 0.01;      // 最小密度阈值
+    int max_recursive_depth = 4;    // 最大递归深度
+    double min_split_ratio = 0.3;   // 最小切分比例
+    // ... 原有参数
+};
+```
+
+#### 真实数据测试结果
+
+```
+Real BAM data (79 reads):
+  Total anchors: 162
+  Components: 83
+  Breakers triggered: 0
+
+组件示例:
+  Component 53: [90777-90815], reads=22, anchors=22, density=0.49
+  Component 54: [91444-91444], reads=1, anchors=1
+```
+
+#### 构建验证
+
+```
+make -j4  # [100%] Built target component
+./tests/test_component  # All Phase 3 tests passed
+```
+
+---
+
+## Phase 4: 局部再比对 (Restricted Local Re-alignment) - ✅ 已完成
+
+### 今日完成
+
+- [x] 扩展 Component 结构，添加 `locus_set` 字段
+- [x] 实现 LocalRealigner 类（种子扩展对齐器）
+- [x] 实现侧翼序列提取 (`extract_flanks`)
+- [x] 实现 Locus Set 填充 (`populate_locus_set`)
+- [x] 实现 Placeability Score 计算 (`calculate_placeability`)
+- [x] Phase 4 单元测试
+
+### 核心设计
+
+**1. 数据结构**
+
+```cpp
+struct LocusCandidate {
+    int32_t chrom_tid;
+    int32_t pos;
+    double score;           // Placeability score
+    uint32_t support_reads;
+    uint32_t evidence_mask;  // bit0=SA, bit1=CLIP, bit2=INS
+};
+
+struct AlignmentResult {
+    double score;
+    int matches, mismatches, gaps;
+    float identity;
+};
+
+struct LocusEvidence {
+    size_t read_idx;
+    int32_t locus_pos;
+    double score;
+    double normalized_score;
+    float identity;
+    bool is_reverse;
+    int flank_match_left;
+    int flank_match_right;
+};
+```
+
+**2. LocalRealigner 核心方法**
+
+```cpp
+class LocalRealigner {
+public:
+    // 侧翼提取
+    static std::pair<std::string, std::string> extract_flanks(
+        const ReadSketch& read, int flank_length, const std::string& ref_seq);
+
+    // 种子扩展对齐 (seed-and-extend)
+    static AlignmentResult seed_extend_align(
+        const std::string& query, const std::string& target, int seed_len = 10);
+
+    // 填充 Locus Set
+    void populate_locus_set(Component& component, const std::vector<ReadSketch>& reads);
+
+    // 受限局部再比对
+    std::vector<std::vector<LocusEvidence>> realign_component(
+        const Component& component,
+        const std::vector<ReadSketch>& reads,
+        const std::string& ref_seq);
+
+    // Placeability Score
+    static double calculate_placeability(const std::vector<LocusEvidence>& evidence);
+};
+```
+
+**3. 配置参数**
+
+```cpp
+struct RealignConfig {
+    int flank_length = 1000;           // 侧翼长度
+    int32_t search_window = 10000;      // 搜索窗口 ±N bp
+    int match_score = 2;
+    int mismatch_penalty = -3;
+    int gap_open = -5;
+    double min_score_threshold = 0.3;
+    float min_identity = 0.85f;
+    uint32_t max_locus_per_component = 20;
+};
+```
+
+### 真实数据测试结果
+
+```
+Loaded 79 reads from BAM
+Components: 83
+
+Locus 分布:
+  Component 53: 13 loci (高密度区域)
+  Component 35: 11 loci
+  Component 28: 5 loci
+  Component 10: 3 loci
+  ... 多数组件: 1-2 loci
+```
+
+### 构建验证
+
+```
+make -j4  # [100%] Built target local_realign
+ctest      # 100% tests passed (3/3)
+```
+
+### 新增文件
+
+```
+include/
+  local_realign.h       # LocalRealigner 接口
+
+src/local_realign/
+  local_realign.cpp     # 实现
+  CMakeLists.txt        # 编译配置
+
+tests/
+  test_local_realign.cpp  # Phase 4 测试
+```
+
+### 测试覆盖
+
+- [x] 侧翼序列提取
+- [x] 种子扩展对齐
+- [x] Locus Set 填充
+- [x] Placeability Score 计算
+- [x] 配置参数
+- [x] Component + Locus 集成
+
+---
+
+## 2026-02-09 (Phase 4.1: 工业级重构)
+
+### 今日完成
+
+- [x] AVX2 SIMD Hamming 距离计算（32字节并行）
+- [x] 仿射间隙对齐 (Affine Gap Penalty) - 支持 proper indel 处理
+- [x] N-base 智能处理（惩罚避免未知碱基）
+- [x] htslib GenomeAccessor 集成（FAI 索引 + 内存映射）
+- [x] 线程池批量处理 (`realign_batch`)
+- [x] `BitpackedSeq` 2-bit 紧凑编码 (4bp/byte)
+- [x] `SeqView` 零拷贝序列视图
+
+#### 工业级优化详情
+
+**1. AVX2 SIMD Hamming 距离**
+```cpp
+#if defined(__AVX2__)
+int simd_hamming_avx2(const char* a, const char* b, size_t len) {
+    // 使用 __m256i 一次处理32个碱基
+    const __m256i* av = reinterpret_cast<const __m256i*>(a);
+    const __m256i* bv = reinterpret_cast<const __m256i*>(b);
+    for (size_t i = 0; i < simd_len; ++i) {
+        __m256i xm = _mm256_xor_si256(av[i], bv[i]);
+        mismatches += __builtin_popcount(_mm256_movemask_epi8(xm));
+    }
+}
+#endif
+```
+
+**2. 仿射间隙对齐 (Affine Gap Penalty)**
+```cpp
+// Needleman-Wunsch with affine gaps (M/X/E matrices)
+AlignmentResult affine_gap_align(
+    std::string_view query,
+    std::string_view target,
+    const RealignConfig& config) {
+    // M = match/mismatch, X = gap in target, Y = gap in query
+    // score = match/mismatch + gap_open + gap_extend * length
+}
+```
+
+**3. GenomeAccessor + htslib FAI**
+```cpp
+class GenomeAccessor {
+    std::unique_ptr<faidx_t, void(*)(faidx_t*)> faidx_;
+    std::optional<SeqView> fetch(int chrom_tid, int32_t start, int32_t end) const;
+    // 优先使用 htslib 内存映射，无效时回退到手动文件读取
+};
+```
+
+**4. 线程池批量处理**
+```cpp
+class ThreadPool {
+    std::vector<std::thread> workers_;
+    std::queue<std::function<void()>> tasks_;
+    template<typename F> auto enqueue(F&& f) -> std::future<decltype(f())>;
+};
+
+std::vector<PlaceabilityReport> LocalRealigner::realign_batch(
+    std::vector<Component>& components, ...) {
+    ThreadPool pool(config_.num_threads);
+    // 并行处理多个组件
+}
+```
+
+**5. 内存优化**
+```cpp
+// 2-bit 编码: A=0, C=1, G=2, T=3, N=4
+class BitpackedSeq {
+    std::vector<uint64_t> data_;  // 32bp per uint64_t
+};
+
+// 零拷贝视图
+struct SeqView {
+    const char* data;
+    size_t length;
+};
+```
+
+#### 性能对比
+
+| 维度 | 原实现 | 工业级重构 |
+|------|--------|----------|
+| Hamming 距离 | 标量 (1bp/cycle) | SIMD AVX2 (32bp/cycle) |
+| 序列编码 | 8-bit ASCII | 2-bit 紧凑 (4x 压缩) |
+| 间隙对齐 | 无 | Affine Gap Penalty |
+| 参考访问 | 全量加载 | htslib FAI + mmap |
+| 并行处理 | 无 | 线程池 (4-8 线程) |
+| N-base 处理 | 无 | 惩罚避免 |
+
+#### 构建验证
+
+```bash
+cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
+cmake --build . --target local_realign  # [100%] Built target local_realign
+cmake --build .                         # [100%] Built target placer
+ctest --verbose                         # All tests passed
+```
+
+---
+
+## Phase 5 规划: Assembly + Collapsing (Graph-POA)
+
+### 目标
+
+生成代表性序列，并在进入分型前消除微小变异的干扰。
+
+### 实现步骤
+
+**Step 1: 分段组装**
+- 将 Reads 切分为 Up-Flank, Insert, Down-Flink 三部分
+- 分别进行 POA 组装
+
+**Step 2: Graph-POA**
+- 使用 abPOA 或 spoa
+- 保留分叉结构，提取 Top-2 最优路径
+
+**Step 3: 结构级合并**
+- 定义结构指纹：{Breakpoint_L, Breakpoint_R, TE_Family, Orientation, 5'_Trunc_Level}
+- 忽略 polyA 长度差异和 SNP 差异
+
+### 依赖项
+
+- [ ] abPOA/spoa 库集成
+- [ ] StructuralRepresentative 结构定义
+- [ ] 测试框架
+
+### 预估工时
+
+- 分段组装: 0.5 天
+- POA 集成: 1 天
+- 结构合并: 1 天
+- 测试: 0.5 天

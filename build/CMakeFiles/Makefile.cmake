@@ -10,7 +10,9 @@ set(CMAKE_MAKEFILE_DEPENDS
   "../CMakeLists.txt"
   "CMakeFiles/3.22.1/CMakeCXXCompiler.cmake"
   "CMakeFiles/3.22.1/CMakeSystem.cmake"
+  "../src/component/CMakeLists.txt"
   "../src/gate1/CMakeLists.txt"
+  "../src/local_realign/CMakeLists.txt"
   "../src/stream/CMakeLists.txt"
   "../tests/CMakeLists.txt"
   "/usr/share/cmake-3.22/Modules/CMakeCXXInformation.cmake"
@@ -40,6 +42,8 @@ set(CMAKE_MAKEFILE_PRODUCTS
   "CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/stream/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/gate1/CMakeFiles/CMakeDirectoryInformation.cmake"
+  "src/component/CMakeFiles/CMakeDirectoryInformation.cmake"
+  "src/local_realign/CMakeFiles/CMakeDirectoryInformation.cmake"
   "tests/CMakeFiles/CMakeDirectoryInformation.cmake"
   )
 
@@ -48,5 +52,9 @@ set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/placer.dir/DependInfo.cmake"
   "src/stream/CMakeFiles/stream.dir/DependInfo.cmake"
   "src/gate1/CMakeFiles/gate1.dir/DependInfo.cmake"
+  "src/component/CMakeFiles/component.dir/DependInfo.cmake"
+  "src/local_realign/CMakeFiles/local_realign.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_stream.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_component.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_local_realign.dir/DependInfo.cmake"
   )

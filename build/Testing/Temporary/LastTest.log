@@ -1,10 +1,10 @@
-Start testing: Feb 04 17:30 UTC
+Start testing: Feb 09 18:06 UTC
 ----------------------------------------------------------
-1/1 Testing: StreamTest
-1/1 Test: StreamTest
+1/3 Testing: StreamTest
+1/3 Test: StreamTest
 Command: "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/test_stream"
 Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
-"StreamTest" start time: Feb 04 17:30 UTC
+"StreamTest" start time: Feb 09 18:06 UTC
 Output:
 ----------------------------------------------------------
 === PLACER Phase 1 Tests ===
@@ -64,15 +64,229 @@ Testing HashTEIndex (bit-packed k-mers)...
   Query 'ACGT' passes strict: no
   HashTEIndex tests passed!
 Testing HashTEIndex build_from_fasta...
-  Index size: 64 k-mers
-  Family names: 116
-test_stream: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_stream.cpp:482: void test_hash_te_index_fasta(): Assertion `family_names.size() == 3' failed.
+  Index size: 59 k-mers
+  Family names: 3
+  Query L1-like seq: hit_count=14
+  HashTEIndex FASTA tests passed!
+Testing HashTEIndex N character handling...
+  Query with N: hit_count=10
+  Query 'NNNNNNNN': hit_count=0
+  N handling tests passed!
+Testing Gate1 probe extraction...
+  Probes extracted: 4
+  END probes: 2, CLIP: 1, INS: 1
+  Probe extraction tests passed!
+Testing Gate1 evaluate...
+  TE-like read: passed=yes, total_hits=96, dominant_family=0
+  Background read: passed=no, total_hits=0
+  Gate1 evaluate tests passed!
+Testing Gate1 passes (fast path)...
+  TE-like read passes: yes
+  Background read passes: no
+  Gate1 passes tests passed!
+Testing Gate1 with real BAM data...
+  Processed 79 reads from BAM
+  Gate1 passed: 0 reads
+  Pass rate: 0%
+  Gate1 BAM tests passed!
+
+=== All tests passed! ===
 <end of output>
-Test time =   0.18 sec
+Test time =   0.31 sec
 ----------------------------------------------------------
-Test Failed.
-"StreamTest" end time: Feb 04 17:30 UTC
+Test Passed.
+"StreamTest" end time: Feb 09 18:06 UTC
 "StreamTest" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Feb 04 17:30 UTC
+2/3 Testing: ComponentTest
+2/3 Test: ComponentTest
+Command: "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/test_component"
+Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
+"ComponentTest" start time: Feb 09 18:06 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Phase 3 Tests ===
+Testing ComponentBuilder (empty input)...
+  Empty input tests passed!
+Testing ComponentBuilder (reads without signals)...
+  Components: 0
+  Anchors: 0
+  No signals tests passed!
+Testing ComponentBuilder (basic)...
+  Total anchors: 3
+  Components: 3
+  Components created:
+    Comp 0: [1005-1005], reads=1, anchors=1
+    Comp 1: [3499-3499], reads=1, anchors=1
+    Comp 2: [8000-8000], reads=1, anchors=1
+  Basic ComponentBuilder tests passed!
+Testing ComponentBuilder (multi-chromosome)...
+  Components: 2
+  Multi-chromosome tests passed!
+Testing ComponentBuilder (span threshold)...
+  Breakers triggered: 0
+  Components: 0
+  Span threshold tests passed!
+Testing ComponentBuilder (insertion events)...
+  Components: 0
+  Anchors: 0
+  Insertion event tests passed!
+Testing ComponentBuilder (SA splits)...
+  Anchors: 0
+  SA split tests passed!
+Testing ComponentBuilder (real BAM data)...
+  Loaded 79 reads from BAM
+  Total anchors: 162
+  Components: 83
+  Breakers triggered: 0
+    Component 0: [70676-70676], reads=1, anchors=1
+    Component 1: [71627-71627], reads=1, anchors=1
+    Component 2: [74564-74564], reads=1, anchors=1
+    Component 3: [74813-74824], reads=3, anchors=3
+    Component 4: [75626-75626], reads=2, anchors=2
+    Component 5: [75803-75803], reads=1, anchors=1
+    Component 6: [75924-75924], reads=2, anchors=2
+    Component 7: [76515-76515], reads=2, anchors=2
+    Component 8: [77328-77328], reads=1, anchors=1
+    Component 9: [79344-79344], reads=1, anchors=1
+    Component 10: [80279-80311], reads=8, anchors=8
+    Component 11: [80569-80569], reads=2, anchors=2
+    Component 12: [80688-80688], reads=2, anchors=2
+    Component 13: [80904-80904], reads=1, anchors=1
+    Component 14: [81203-81203], reads=3, anchors=3
+    Component 15: [81328-81328], reads=1, anchors=1
+    Component 16: [81552-81552], reads=1, anchors=1
+    Component 17: [82119-82119], reads=1, anchors=1
+    Component 18: [82619-82671], reads=5, anchors=5
+    Component 19: [83053-83053], reads=2, anchors=2
+    Component 20: [83186-83186], reads=1, anchors=1
+    Component 21: [83320-83320], reads=2, anchors=2
+    Component 22: [83433-83433], reads=1, anchors=1
+    Component 23: [83577-83577], reads=1, anchors=1
+    Component 24: [83751-83751], reads=2, anchors=2
+    Component 25: [84027-84034], reads=3, anchors=3
+    Component 26: [84203-84230], reads=2, anchors=2
+    Component 27: [84394-84394], reads=4, anchors=4
+    Component 28: [84510-84512], reads=6, anchors=6
+    Component 29: [84636-84636], reads=2, anchors=2
+    Component 30: [85229-85229], reads=1, anchors=1
+    Component 31: [85758-85758], reads=1, anchors=1
+    Component 32: [86009-86009], reads=1, anchors=1
+    Component 33: [86174-86174], reads=1, anchors=1
+    Component 34: [86344-86351], reads=2, anchors=2
+    Component 35: [86455-86467], reads=7, anchors=7
+    Component 36: [86752-86752], reads=1, anchors=1
+    Component 37: [86878-86878], reads=1, anchors=1
+    Component 38: [86982-86982], reads=4, anchors=4
+    Component 39: [87333-87333], reads=1, anchors=1
+    Component 40: [87694-87694], reads=2, anchors=2
+    Component 41: [87977-87977], reads=1, anchors=1
+    Component 42: [88212-88212], reads=4, anchors=4
+    Component 43: [88295-88295], reads=1, anchors=1
+    Component 44: [88455-88455], reads=1, anchors=1
+    Component 45: [88564-88564], reads=1, anchors=1
+    Component 46: [88924-88946], reads=2, anchors=2
+    Component 47: [89020-89020], reads=1, anchors=1
+    Component 48: [89297-89297], reads=1, anchors=1
+    Component 49: [89367-89367], reads=1, anchors=1
+    Component 50: [90156-90156], reads=1, anchors=1
+    Component 51: [90222-90274], reads=3, anchors=3
+    Component 52: [90500-90500], reads=3, anchors=3
+    Component 53: [90777-90815], reads=22, anchors=22
+    Component 54: [91444-91444], reads=1, anchors=1
+    Component 55: [91507-91507], reads=1, anchors=1
+    Component 56: [92167-92167], reads=1, anchors=1
+    Component 57: [93204-93223], reads=2, anchors=2
+    Component 58: [93636-93636], reads=1, anchors=1
+    Component 59: [94843-94843], reads=1, anchors=1
+    Component 60: [95049-95049], reads=1, anchors=1
+    Component 61: [95272-95272], reads=1, anchors=1
+    Component 62: [95741-95741], reads=2, anchors=2
+    Component 63: [96171-96171], reads=1, anchors=1
+    Component 64: [96797-96797], reads=1, anchors=1
+    Component 65: [97474-97474], reads=1, anchors=1
+    Component 66: [97747-97747], reads=1, anchors=1
+    Component 67: [97807-97807], reads=1, anchors=1
+    Component 68: [98082-98083], reads=2, anchors=2
+    Component 69: [99073-99073], reads=1, anchors=1
+    Component 70: [99879-99879], reads=1, anchors=1
+    Component 71: [100000-100000], reads=1, anchors=1
+    Component 72: [100286-100286], reads=1, anchors=1
+    Component 73: [100826-100826], reads=1, anchors=1
+    Component 74: [102199-102199], reads=1, anchors=1
+    Component 75: [102959-102959], reads=1, anchors=1
+    Component 76: [104229-104229], reads=1, anchors=1
+    Component 77: [104672-104672], reads=2, anchors=2
+    Component 78: [104826-104826], reads=1, anchors=1
+    Component 79: [106230-106230], reads=1, anchors=1
+    Component 80: [107598-107598], reads=1, anchors=1
+    Component 81: [109307-109307], reads=1, anchors=1
+    Component 82: [110961-110961], reads=1, anchors=1
+  Real BAM tests passed!
+
+=== All Phase 3 tests passed! ===
+<end of output>
+Test time =   0.26 sec
+----------------------------------------------------------
+Test Passed.
+"ComponentTest" end time: Feb 09 18:06 UTC
+"ComponentTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/3 Testing: LocalRealignTest
+3/3 Test: LocalRealignTest
+Command: "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/test_local_realign"
+Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
+"LocalRealignTest" start time: Feb 09 18:06 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Phase 4 Industrial-Grade Tests ===
+Testing BitpackedSeq (2-bit encoding)...
+  Original size: 12 bytes
+  Packed size: 12 bases
+  Memory reduction: 33.3333%
+  BitpackedSeq tests passed!
+Testing SeqView (zero-copy)...
+  SeqView tests passed!
+Testing RealignConfig...
+  RealignConfig tests passed!
+Testing align_sequences...
+  Perfect match score: 15
+  Matches: 12
+  Identity: 1
+  Normalized: 1.25
+  Mismatch score: -1e+09
+  align_sequences tests passed!
+Testing find_seeds...
+  Found 5 seeds (k=4, stride=2)
+  First seed (ACGT): 27
+  find_seeds tests passed!
+Testing populate_locus_set...
+  Locus count: 2
+    Locus: pos=1500, score=60, evidence=1
+    Locus: pos=1600, score=50, evidence=1
+  populate_locus_set tests passed!
+Testing rank_loci...
+  rank_loci tests passed!
+Testing placeability calculation...
+  Best score: 0.8
+  Second score: 0.3
+  Delta: 0.5
+  Confidence: 0.0166667
+  placeability tests passed!
+Testing tier determination...
+  Tier determination tests passed!
+Testing batch processing interface...
+  Batch interface test passed!
+
+=== All Industrial-Grade tests passed! ===
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"LocalRealignTest" end time: Feb 09 18:06 UTC
+"LocalRealignTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Feb 09 18:06 UTC

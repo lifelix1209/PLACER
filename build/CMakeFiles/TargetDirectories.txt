@@ -10,7 +10,17 @@
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/gate1/CMakeFiles/test.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/gate1/CMakeFiles/edit_cache.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/gate1/CMakeFiles/rebuild_cache.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/component/CMakeFiles/component.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/component/CMakeFiles/test.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/component/CMakeFiles/edit_cache.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/component/CMakeFiles/rebuild_cache.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/local_realign/CMakeFiles/local_realign.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/local_realign/CMakeFiles/test.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/local_realign/CMakeFiles/edit_cache.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/local_realign/CMakeFiles/rebuild_cache.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_stream.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_component.dir
+/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_local_realign.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/edit_cache.dir
 /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/rebuild_cache.dir

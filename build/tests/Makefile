@@ -140,6 +140,82 @@ test_stream/fast:
 	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/build
 .PHONY : test_stream/fast
 
+# Convenience name for target.
+tests/CMakeFiles/test_component.dir/rule:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_component.dir/rule
+.PHONY : tests/CMakeFiles/test_component.dir/rule
+
+# Convenience name for target.
+test_component: tests/CMakeFiles/test_component.dir/rule
+.PHONY : test_component
+
+# fast build rule for target.
+test_component/fast:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/build
+.PHONY : test_component/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_local_realign.dir/rule:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_local_realign.dir/rule
+.PHONY : tests/CMakeFiles/test_local_realign.dir/rule
+
+# Convenience name for target.
+test_local_realign: tests/CMakeFiles/test_local_realign.dir/rule
+.PHONY : test_local_realign
+
+# fast build rule for target.
+test_local_realign/fast:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/build
+.PHONY : test_local_realign/fast
+
+test_component.o: test_component.cpp.o
+.PHONY : test_component.o
+
+# target to build an object file
+test_component.cpp.o:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/test_component.cpp.o
+.PHONY : test_component.cpp.o
+
+test_component.i: test_component.cpp.i
+.PHONY : test_component.i
+
+# target to preprocess a source file
+test_component.cpp.i:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/test_component.cpp.i
+.PHONY : test_component.cpp.i
+
+test_component.s: test_component.cpp.s
+.PHONY : test_component.s
+
+# target to generate assembly for a file
+test_component.cpp.s:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/test_component.cpp.s
+.PHONY : test_component.cpp.s
+
+test_local_realign.o: test_local_realign.cpp.o
+.PHONY : test_local_realign.o
+
+# target to build an object file
+test_local_realign.cpp.o:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/test_local_realign.cpp.o
+.PHONY : test_local_realign.cpp.o
+
+test_local_realign.i: test_local_realign.cpp.i
+.PHONY : test_local_realign.i
+
+# target to preprocess a source file
+test_local_realign.cpp.i:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/test_local_realign.cpp.i
+.PHONY : test_local_realign.cpp.i
+
+test_local_realign.s: test_local_realign.cpp.s
+.PHONY : test_local_realign.s
+
+# target to generate assembly for a file
+test_local_realign.cpp.s:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/test_local_realign.cpp.s
+.PHONY : test_local_realign.cpp.s
+
 test_stream.o: test_stream.cpp.o
 .PHONY : test_stream.o
 
@@ -173,7 +249,15 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... test"
+	@echo "... test_component"
+	@echo "... test_local_realign"
 	@echo "... test_stream"
+	@echo "... test_component.o"
+	@echo "... test_component.i"
+	@echo "... test_component.s"
+	@echo "... test_local_realign.o"
+	@echo "... test_local_realign.i"
+	@echo "... test_local_realign.s"
 	@echo "... test_stream.o"
 	@echo "... test_stream.i"
 	@echo "... test_stream.s"

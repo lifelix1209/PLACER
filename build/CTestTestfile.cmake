@@ -6,4 +6,6 @@
 # testing this directory and lists subdirectories to be tested as well.
 subdirs("src/stream")
 subdirs("src/gate1")
+subdirs("src/component")
+subdirs("src/local_realign")
 subdirs("tests")
