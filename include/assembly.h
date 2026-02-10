@@ -205,8 +205,14 @@ public:
     // 添加边
     bool add_edge(uint32_t from, uint32_t to);
 
+    // 获取所有边
+    const std::set<Edge>& get_edges() const { return edges_; }
+
     // 获取前 k 个拓扑节点
     std::vector<uint32_t> get_topo_order() const;
+
+    // 获取节点的所有后继
+    std::vector<uint32_t> get_successors(uint32_t node_idx) const;
 
     // 拓扑排序（ Kahn 算法）
     void topological_sort();
@@ -367,6 +373,7 @@ struct RTreeNode {
     float min_x, min_y;  // 左下角
     float max_x, max_y;  // 右上角
     int data;            // 关联的 contig 索引，-1 表示内部节点
+    RTreeNode* parent = nullptr;  // 父节点指针
     std::vector<RTreeNode*> children;
 
     RTreeNode(float min_x, float min_y, float max_x, float max_y, int data = -1)
@@ -374,6 +381,10 @@ struct RTreeNode {
 
     float area() const {
         return (max_x - min_x) * (max_y - min_y);
+    }
+
+    bool is_leaf() const {
+        return data >= 0;
     }
 };
 
@@ -418,6 +429,7 @@ private:
     static void get_mbr(RTreeNode* node, float& x1, float& y1, float& x2, float& y2);
     static float enlarged_area(RTreeNode* node, float x1, float y1, float x2, float y2);
     static int overlap_enlarged(RTreeNode* node, RTreeNode* child, float x1, float y1, float x2, float y2);
+    static void recalc_mbr(RTreeNode* node);
 };
 
 // ============================================================================
@@ -675,6 +687,7 @@ struct QualityWeightedConsensus {
 
 struct CircularDNAConfig {
     static constexpr int32_t MIN_CIRCULAR_LENGTH = 1000;   // 最小环长
+    static constexpr int32_t MAX_CIRCULAR_LENGTH = 100000;  // 最大环长
     static constexpr int32_t BREAKPOINT_TOLERANCE = 50;   // 断点容忍度
     static constexpr double MIN_COVERAGE_RATIO = 0.3;     // 最小覆盖比例
 };
@@ -694,18 +707,19 @@ class POAEngine {
 public:
     explicit POAEngine(const AssemblyConfig& config = AssemblyConfig());
 
-    // 构建图
-    uint32_t build_graph(const std::vector<SeqSpan>& sequences);
+    // 构建图（接收外部 arena）
+    uint32_t build_graph(POAArena& arena, const std::vector<SeqSpan>& sequences);
 
     // 真图对齐（Smith-Waterman on DAG）
     int align_to_graph(POAArena& arena, uint32_t graph_start, SeqSpan sequence);
 
     // 添加对齐后的序列到图（修改拓扑）
     void add_aligned_sequence(POAArena& arena,
-                              uint32_t graph_start,
+                              const std::vector<uint32_t>& topo_order,
                               SeqSpan sequence,
                               const std::vector<uint8_t>& traceback,
-                              int qlen);
+                              int best_i,
+                              int best_j);
 
     // 提取共识（最重路径）
     std::string extract_consensus(POAArena& arena, uint32_t graph_start);
@@ -735,7 +749,8 @@ private:
         POAArena& arena,
         const std::vector<uint32_t>& topo_order,
         SeqSpan sequence,
-        std::vector<uint8_t>& traceback);
+        std::vector<uint8_t>& traceback,
+        int& best_j);
 
     /**
      * 根据 traceback 更新图拓扑
@@ -744,11 +759,11 @@ private:
      * - Deletion: 添加跳过边
      */
     void update_graph_topology(POAArena& arena,
-                              uint32_t graph_start,
+                              const std::vector<uint32_t>& topo_order,
                               SeqSpan sequence,
                               const std::vector<uint8_t>& traceback,
-                              int qlen,
-                              int glen);
+                              int best_i,
+                              int best_j);
 
     /**
      * 找到或创建匹配节点
@@ -828,6 +843,8 @@ private:
         const std::vector<int>& indices,
         std::vector<Contig>& contigs);
     int extract_polya_length(std::string_view seq);
+    std::string simple_majority_consensus(
+        const std::vector<std::string>& sequences);
 
     // 线程安全的组件组装辅助函数
     std::vector<Contig> assemble_component_thread_safe(

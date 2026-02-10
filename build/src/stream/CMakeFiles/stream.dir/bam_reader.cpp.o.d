@@ -1,7 +1,7 @@
 src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o: \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/stream/bam_reader.cpp \
+ /mnt/home1/miska/hl725/projects/PLACER/src/stream/bam_reader.cpp \
  /usr/include/stdc-predef.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
  /usr/include/c++/11/string \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/os_defines.h \

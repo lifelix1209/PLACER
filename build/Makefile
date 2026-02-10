@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -142,9 +142,9 @@ install/strip/fast: preinstall/fast
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/home1/miska/hl725/projects/PLACER/build//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -250,6 +250,32 @@ assembly/fast:
 .PHONY : assembly/fast
 
 #=============================================================================
+# Target rules for targets named placeability
+
+# Build rule for target.
+placeability: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 placeability
+.PHONY : placeability
+
+# fast build rule for target.
+placeability/fast:
+	$(MAKE) $(MAKESILENT) -f src/placeability/CMakeFiles/placeability.dir/build.make src/placeability/CMakeFiles/placeability.dir/build
+.PHONY : placeability/fast
+
+#=============================================================================
+# Target rules for targets named genotyping
+
+# Build rule for target.
+genotyping: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 genotyping
+.PHONY : genotyping
+
+# fast build rule for target.
+genotyping/fast:
+	$(MAKE) $(MAKESILENT) -f src/genotyping/CMakeFiles/genotyping.dir/build.make src/genotyping/CMakeFiles/genotyping.dir/build
+.PHONY : genotyping/fast
+
+#=============================================================================
 # Target rules for targets named test_stream
 
 # Build rule for target.
@@ -301,6 +327,45 @@ test_assembly/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_assembly.dir/build.make tests/CMakeFiles/test_assembly.dir/build
 .PHONY : test_assembly/fast
 
+#=============================================================================
+# Target rules for targets named test_placeability
+
+# Build rule for target.
+test_placeability: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_placeability
+.PHONY : test_placeability
+
+# fast build rule for target.
+test_placeability/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability.dir/build.make tests/CMakeFiles/test_placeability.dir/build
+.PHONY : test_placeability/fast
+
+#=============================================================================
+# Target rules for targets named test_placeability_integration
+
+# Build rule for target.
+test_placeability_integration: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_placeability_integration
+.PHONY : test_placeability_integration
+
+# fast build rule for target.
+test_placeability_integration/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability_integration.dir/build.make tests/CMakeFiles/test_placeability_integration.dir/build
+.PHONY : test_placeability_integration/fast
+
+#=============================================================================
+# Target rules for targets named test_genotyping
+
+# Build rule for target.
+test_genotyping: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_genotyping
+.PHONY : test_genotyping
+
+# fast build rule for target.
+test_genotyping/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_genotyping.dir/build.make tests/CMakeFiles/test_genotyping.dir/build
+.PHONY : test_genotyping/fast
+
 src/main.o: src/main.cpp.o
 .PHONY : src/main.o
 
@@ -341,12 +406,17 @@ help:
 	@echo "... assembly"
 	@echo "... component"
 	@echo "... gate1"
+	@echo "... genotyping"
 	@echo "... local_realign"
+	@echo "... placeability"
 	@echo "... placer"
 	@echo "... stream"
 	@echo "... test_assembly"
 	@echo "... test_component"
+	@echo "... test_genotyping"
 	@echo "... test_local_realign"
+	@echo "... test_placeability"
+	@echo "... test_placeability_integration"
 	@echo "... test_stream"
 	@echo "... src/main.o"
 	@echo "... src/main.i"

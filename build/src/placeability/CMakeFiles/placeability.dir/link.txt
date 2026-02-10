@@ -1,0 +1,2 @@
+/usr/bin/ar qc libplaceability.a CMakeFiles/placeability.dir/placeability.cpp.o
+/usr/bin/ranlib libplaceability.a

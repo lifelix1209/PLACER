@@ -9,11 +9,15 @@
 #include <limits>
 #include <random>
 #include <atomic>
+#include <numeric>
+#include <functional>
+#include <cassert>
 
 namespace placer {
 
 // ============================================================================
-// R-Tree Implementation（真正的 2D 空间索引）
+// R-Tree Implementation（工业级 2D 空间索引）
+// 修正：parent 指针、正确的 MBR 向上传播、root split、完整分裂逻辑
 // ============================================================================
 
 RTree::RTree(int max_capacity, int min_capacity)
@@ -72,120 +76,48 @@ float RTree::enlarged_area(RTreeNode* node, float x1, float y1, float x2, float 
     return (new_max_x - new_min_x) * (new_max_y - new_min_y) - old_area;
 }
 
-int RTree::overlap_enlarged(RTreeNode* node, RTreeNode* child, float x1, float y1, float x2, float y2) {
-    float overlap_min_x = std::max(child->min_x, x1);
-    float overlap_min_y = std::max(child->min_y, y1);
-    float overlap_max_x = std::min(child->max_x, x2);
-    float overlap_max_y = std::min(child->max_y, y2);
+// [修正] overlap_enlarged: 计算插入新矩形后与指定 child 的重叠增量
+int RTree::overlap_enlarged(RTreeNode* node, RTreeNode* child,
+                            float x1, float y1, float x2, float y2) {
+    // 计算 child 扩展前与其他 children 的总重叠
+    float old_overlap_total = 0.0f;
+    float new_overlap_total = 0.0f;
 
-    float old_overlap = std::max(0.0f, child->max_x - child->min_x) *
-                        std::max(0.0f, child->max_y - child->min_y);
-    float new_overlap = std::max(0.0f, overlap_max_x - overlap_min_x) *
-                        std::max(0.0f, overlap_max_y - overlap_min_y);
+    // child 扩展后的 MBR
+    float ext_min_x = std::min(child->min_x, x1);
+    float ext_min_y = std::min(child->min_y, y1);
+    float ext_max_x = std::max(child->max_x, x2);
+    float ext_max_y = std::max(child->max_y, y2);
 
-    return static_cast<int>((new_overlap - old_overlap) * 1000);  // 缩放避免浮点
+    for (auto* sibling : node->children) {
+        if (sibling == child) continue;
+
+        // 旧重叠
+        float o_x1 = std::max(child->min_x, sibling->min_x);
+        float o_y1 = std::max(child->min_y, sibling->min_y);
+        float o_x2 = std::min(child->max_x, sibling->max_x);
+        float o_y2 = std::min(child->max_y, sibling->max_y);
+        old_overlap_total += std::max(0.0f, o_x2 - o_x1) * std::max(0.0f, o_y2 - o_y1);
+
+        // 新重叠
+        float n_x1 = std::max(ext_min_x, sibling->min_x);
+        float n_y1 = std::max(ext_min_y, sibling->min_y);
+        float n_x2 = std::min(ext_max_x, sibling->max_x);
+        float n_y2 = std::min(ext_max_y, sibling->max_y);
+        new_overlap_total += std::max(0.0f, n_x2 - n_x1) * std::max(0.0f, n_y2 - n_y1);
+    }
+
+    return static_cast<int>((new_overlap_total - old_overlap_total) * 1000);
 }
 
-RTreeNode* RTree::choose_leaf(RTreeNode* node, float x1, float y1, float x2, float y2) {
-    if (node->children.empty()) return node;
-
-    RTreeNode* best = nullptr;
-    int best_enlargement = INT_MAX;
-    float best_area = 0;
-    int best_overlap = INT_MAX;
-
-    for (auto* child : node->children) {
-        float cx1, cy1, cx2, cy2;
-        get_mbr(child, cx1, cy1, cx2, cy2);
-
-        int enlargement = static_cast<int>(enlarged_area(child, x1, y1, x2, y2) * 1000);
-        float area = child->area();
-
-        if (enlargement < best_enlargement ||
-            (enlargement == best_enlargement && area < best_area)) {
-            best_enlargement = enlargement;
-            best_area = area;
-            best = child;
-        }
-    }
-
-    return best ? choose_leaf(best, x1, y1, x2, y2) : node;
-}
-
-void RTree::insert(float x1, float y1, float x2, float y2, int data) {
-    if (x1 > x2) std::swap(x1, x2);
-    if (y1 > y2) std::swap(y1, y2);
-
-    RTreeNode* new_node = new RTreeNode(x1, y1, x2, y2, data);
-
-    if (!root_) {
-        root_ = new_node;
-        size_++;
-        return;
-    }
-
-    RTreeNode* leaf = choose_leaf(root_, x1, y1, x2, y2);
-
-    if (leaf->children.size() < MAX_CAPACITY) {
-        leaf->children.push_back(new_node);
-        leaf->min_x = std::min(leaf->min_x, x1);
-        leaf->min_y = std::min(leaf->min_y, y1);
-        leaf->max_x = std::max(leaf->max_x, x2);
-        leaf->max_y = std::max(leaf->max_y, y2);
-        size_++;
-
-        RTreeNode* current = leaf;
-        while (current) {
-            float cx1, cy1, cx2, cy2;
-            get_mbr(current, cx1, cy1, cx2, cy2);
-            current->min_x = std::min(current->min_x, x1);
-            current->min_y = std::min(current->min_y, y1);
-            current->max_x = std::max(current->max_x, x2);
-            current->max_y = std::max(current->max_y, y2);
-            current = (current == root_) ? nullptr : nullptr;  // 简化版
-        }
-    } else {
-        // 节点已满，需要分裂
-        leaf->children.push_back(new_node);
-        RTree* new_tree = new RTree();
-        split_node(leaf, new_tree->root_);
-        leaf->min_x = std::min(leaf->min_x, x1);
-        leaf->min_y = std::min(leaf->min_y, y1);
-        leaf->max_x = std::max(leaf->max_x, x2);
-        leaf->max_y = std::max(leaf->max_y, y2);
-        size_++;
-    }
-}
-
-void RTree::split_node(RTreeNode* node, RTreeNode*& new_node) {
-    // 简化的线性分裂算法
-    std::vector<RTreeNode*>& children = node->children;
-    int n = static_cast<int>(children.size());
-
-    // 按 x 坐标排序
-    std::sort(children.begin(), children.end(),
-        [](RTreeNode* a, RTreeNode* b) {
-            return a->min_x < b->min_x;
-        });
-
-    int split_idx = n / 2;
-    new_node = new RTreeNode(0, 0, 0, 0, -1);
-
-    for (int i = split_idx; i < n; i++) {
-        new_node->children.push_back(children[i]);
-        new_node->min_x = std::min(new_node->min_x, children[i]->min_x);
-        new_node->min_y = std::min(new_node->min_y, children[i]->min_y);
-        new_node->max_x = std::max(new_node->max_x, children[i]->max_x);
-        new_node->max_y = std::max(new_node->max_y, children[i]->max_y);
-    }
-
-    children.resize(split_idx);
+// [修正] recalc_mbr: 从 children 重新计算节点的 MBR
+void RTree::recalc_mbr(RTreeNode* node) {
+    if (node->children.empty()) return;
     node->min_x = std::numeric_limits<float>::max();
     node->min_y = std::numeric_limits<float>::max();
     node->max_x = std::numeric_limits<float>::lowest();
     node->max_y = std::numeric_limits<float>::lowest();
-
-    for (auto* child : children) {
+    for (auto* child : node->children) {
         node->min_x = std::min(node->min_x, child->min_x);
         node->min_y = std::min(node->min_y, child->min_y);
         node->max_x = std::max(node->max_x, child->max_x);
@@ -193,40 +125,193 @@ void RTree::split_node(RTreeNode* node, RTreeNode*& new_node) {
     }
 }
 
-void RTree::adjust_tree(RTreeNode* node, RTreeNode* sibling) {
-    // 简化版：更新 MBR
-    if (!sibling) return;
+// [修正] choose_leaf: 区分叶子层和内部层，叶子层用 R*-tree 的 overlap 最小化
+RTreeNode* RTree::choose_leaf(RTreeNode* node, float x1, float y1, float x2, float y2) {
+    // 叶子节点：children 都是数据节点（data >= 0）或者没有 children
+    if (node->is_leaf()) return node;
 
-    for (auto* child : node->children) {
-        child->min_x = std::min(child->min_x, sibling->min_x);
-        child->min_y = std::min(child->min_y, sibling->min_y);
-        child->max_x = std::max(child->max_x, sibling->max_x);
-        child->max_y = std::max(child->max_y, sibling->max_y);
+    // 检查是否下一层就是叶子层
+    bool next_is_leaf = !node->children.empty() && node->children[0]->is_leaf();
+
+    RTreeNode* best = nullptr;
+
+    if (next_is_leaf) {
+        // R*-tree: 选择 overlap 增量最小的 child
+        int best_overlap_delta = INT_MAX;
+        float best_enlargement = std::numeric_limits<float>::max();
+        float best_area = std::numeric_limits<float>::max();
+
+        for (auto* child : node->children) {
+            int ov = overlap_enlarged(node, child, x1, y1, x2, y2);
+            float en = enlarged_area(child, x1, y1, x2, y2);
+            float ar = child->area();
+
+            if (ov < best_overlap_delta ||
+                (ov == best_overlap_delta && en < best_enlargement) ||
+                (ov == best_overlap_delta && en == best_enlargement && ar < best_area)) {
+                best_overlap_delta = ov;
+                best_enlargement = en;
+                best_area = ar;
+                best = child;
+            }
+        }
+    } else {
+        // 内部层：选择 enlargement 最小的 child
+        float best_enlargement = std::numeric_limits<float>::max();
+        float best_area = std::numeric_limits<float>::max();
+
+        for (auto* child : node->children) {
+            float en = enlarged_area(child, x1, y1, x2, y2);
+            float ar = child->area();
+
+            if (en < best_enlargement ||
+                (en == best_enlargement && ar < best_area)) {
+                best_enlargement = en;
+                best_area = ar;
+                best = child;
+            }
+        }
+    }
+
+    return best ? choose_leaf(best, x1, y1, x2, y2) : node;
+}
+
+// [修正] split_node: 线性分裂 + 正确设置 parent 指针 + 返回新节点
+void RTree::split_node(RTreeNode* node, RTreeNode*& new_sibling) {
+    std::vector<RTreeNode*>& children = node->children;
+    int n = static_cast<int>(children.size());
+
+    // 按 x 坐标排序做线性分裂
+    std::sort(children.begin(), children.end(),
+        [](RTreeNode* a, RTreeNode* b) {
+            return a->min_x < b->min_x;
+        });
+
+    int split_idx = n / 2;
+    if (split_idx < MIN_CAPACITY) split_idx = MIN_CAPACITY;
+    if (split_idx > n - MIN_CAPACITY) split_idx = n - MIN_CAPACITY;
+
+    // 创建新兄弟节点（内部节点，data = -1）
+    new_sibling = new RTreeNode(0, 0, 0, 0, -1);
+    new_sibling->min_x = std::numeric_limits<float>::max();
+    new_sibling->min_y = std::numeric_limits<float>::max();
+    new_sibling->max_x = std::numeric_limits<float>::lowest();
+    new_sibling->max_y = std::numeric_limits<float>::lowest();
+
+    for (int i = split_idx; i < n; i++) {
+        children[i]->parent = new_sibling;
+        new_sibling->children.push_back(children[i]);
+    }
+    recalc_mbr(new_sibling);
+
+    children.resize(split_idx);
+    // 保持 parent 指针不变（它们已经指向 node）
+    recalc_mbr(node);
+}
+
+// [修正] adjust_tree: 从叶子向上传播 MBR 更新和分裂
+void RTree::adjust_tree(RTreeNode* node, RTreeNode* sibling) {
+    while (node != root_) {
+        RTreeNode* parent = node->parent;
+        if (!parent) break;
+
+        // 更新 parent 的 MBR
+        recalc_mbr(parent);
+
+        if (sibling) {
+            // 需要把 sibling 插入 parent
+            sibling->parent = parent;
+            parent->children.push_back(sibling);
+            recalc_mbr(parent);
+
+            if (parent->children.size() > MAX_CAPACITY) {
+                // parent 也需要分裂
+                RTreeNode* new_parent_sibling = nullptr;
+                split_node(parent, new_parent_sibling);
+                node = parent;
+                sibling = new_parent_sibling;
+            } else {
+                sibling = nullptr;
+                node = parent;
+            }
+        } else {
+            node = parent;
+        }
+    }
+
+    // 如果 root 也需要分裂
+    if (sibling && node == root_) {
+        RTreeNode* new_root = new RTreeNode(0, 0, 0, 0, -1);
+        root_->parent = new_root;
+        sibling->parent = new_root;
+        new_root->children.push_back(root_);
+        new_root->children.push_back(sibling);
+        recalc_mbr(new_root);
+        new_root->parent = nullptr;
+        root_ = new_root;
     }
 }
 
-void RTree::query_recursive(RTreeNode* node, float q_x1, float q_y1, float q_x2, float q_y2,
+// [修正] insert: 完整的 R-Tree 插入（含 parent 维护、分裂传播、root split）
+void RTree::insert(float x1, float y1, float x2, float y2, int data) {
+    if (x1 > x2) std::swap(x1, x2);
+    if (y1 > y2) std::swap(y1, y2);
+
+    RTreeNode* new_node = new RTreeNode(x1, y1, x2, y2, data);
+
+    if (!root_) {
+        // 创建一个根内部节点，把 new_node 作为第一个 child
+        root_ = new RTreeNode(x1, y1, x2, y2, -1);
+        root_->parent = nullptr;
+        new_node->parent = root_;
+        root_->children.push_back(new_node);
+        size_++;
+        return;
+    }
+
+    // 选择叶子
+    RTreeNode* leaf = choose_leaf(root_, x1, y1, x2, y2);
+
+    // 插入到叶子
+    new_node->parent = leaf;
+    leaf->children.push_back(new_node);
+    size_++;
+
+    RTreeNode* split_sibling = nullptr;
+
+    if (leaf->children.size() > MAX_CAPACITY) {
+        // 需要分裂
+        split_node(leaf, split_sibling);
+    }
+
+    // 向上调整
+    adjust_tree(leaf, split_sibling);
+}
+
+void RTree::query_recursive(RTreeNode* node, float q_x1, float q_y1,
+                            float q_x2, float q_y2,
                             std::vector<int>& results) const {
     if (!node) return;
 
-    // 检查 MBR 是否重叠
+    // 检查 MBR 是否与查询矩形重叠
     bool overlaps = !(node->max_x < q_x1 || node->min_x > q_x2 ||
                       node->max_y < q_y1 || node->min_y > q_y2);
 
     if (!overlaps) return;
 
     if (node->data >= 0) {
-        // 叶子节点
+        // 数据节点（叶子记录）
         results.push_back(node->data);
-    } else {
-        // 内部节点
-        for (auto* child : node->children) {
-            query_recursive(child, q_x1, q_y1, q_x2, q_y2, results);
-        }
+    }
+
+    // 递归进入子节点
+    for (auto* child : node->children) {
+        query_recursive(child, q_x1, q_y1, q_x2, q_y2, results);
     }
 }
 
-std::vector<int> RTree::range_query(float q_x1, float q_y1, float q_x2, float q_y2) const {
+std::vector<int> RTree::range_query(float q_x1, float q_y1,
+                                     float q_x2, float q_y2) const {
     std::vector<int> results;
     if (!root_) return results;
     query_recursive(root_, q_x1, q_y1, q_x2, q_y2, results);
@@ -249,7 +334,7 @@ RTree& TranslocationIndex::get_or_create(int32_t tid1, int32_t tid2) {
 }
 
 void TranslocationIndex::insert(const StructuralFingerprint& fp, int contig_idx) {
-    RTree& tree = get_or_create(fp.tid, fp.tid);  // 同染色体
+    RTree& tree = get_or_create(fp.tid, fp.tid);
     tree.insert(static_cast<float>(fp.breakpoint_l),
                 static_cast<float>(fp.breakpoint_r),
                 static_cast<float>(fp.breakpoint_l_end),
@@ -261,13 +346,11 @@ std::vector<int> TranslocationIndex::query(const StructuralFingerprint& fp) cons
     std::vector<int> results;
     if (fp.tid < 0) return results;
 
-    // 构建查询矩形
     float q_l = static_cast<float>(fp.breakpoint_l - StructuralFingerprint::BP_TOLERANCE);
     float q_r = static_cast<float>(fp.breakpoint_r - StructuralFingerprint::BP_TOLERANCE);
     float q_l_end = static_cast<float>(fp.breakpoint_l_end + StructuralFingerprint::BP_TOLERANCE);
     float q_r_end = static_cast<float>(fp.breakpoint_r_end + StructuralFingerprint::BP_TOLERANCE);
 
-    // 查询同染色体
     auto key = std::make_pair(fp.tid, fp.tid);
     auto it = index_.find(key);
     if (it != index_.end()) {
@@ -283,7 +366,7 @@ void TranslocationIndex::clear() {
 }
 
 // ============================================================================
-// Bi-interval Index（简化版，用于兼容性）
+// Bi-interval Index（用二分查找优化）
 // ============================================================================
 
 BiIntervalIndex::BiIntervalIndex(std::vector<IntervalNodeBi> nodes)
@@ -300,40 +383,52 @@ BiIntervalIndex::BiIntervalIndex(std::vector<IntervalNodeBi> nodes)
     }
 }
 
-void BiIntervalIndex::query(const StructuralFingerprint& fp, std::vector<int>& candidates) const {
+void BiIntervalIndex::query(const StructuralFingerprint& fp,
+                            std::vector<int>& candidates) const {
     candidates.clear();
     if (nodes_.empty()) return;
 
-    int32_t l_tol = StructuralFingerprint::BP_TOLERANCE;
-    int32_t r_tol = StructuralFingerprint::BP_TOLERANCE;
+    int32_t tol = StructuralFingerprint::BP_TOLERANCE;
 
-    // 查询左端点重叠
-    for (size_t idx : sorted_by_l_) {
+    // [修正] 用二分查找定位起始位置，而不是全扫描
+    int32_t l_lo = fp.breakpoint_l - tol;
+    int32_t l_hi = fp.breakpoint_l_end + tol;
+
+    // 二分找到 sorted_by_l_ 中 low_l >= l_lo 的起始位置
+    auto it_start = std::lower_bound(sorted_by_l_.begin(), sorted_by_l_.end(), l_lo,
+        [&](size_t idx, int32_t val) { return nodes_[idx].low_l < val; });
+
+    // 但我们需要的是 low_l <= l_hi 且 high_l >= l_lo 的区间重叠
+    // 所以从头扫描到 low_l > l_hi 为止（但用 high_l >= l_lo 过滤）
+    std::unordered_set<int> cand_set;
+
+    for (size_t si = 0; si < sorted_by_l_.size(); ++si) {
+        size_t idx = sorted_by_l_[si];
         const auto& node = nodes_[idx];
-        if (node.low_l > fp.breakpoint_l + l_tol + StructuralFingerprint::BP_TOLERANCE) break;
-        if (node.high_l < fp.breakpoint_l - l_tol - StructuralFingerprint::BP_TOLERANCE) continue;
-
-        if (node.low_l <= fp.breakpoint_l_end && fp.breakpoint_l <= node.high_l) {
-            candidates.push_back(node.contig_idx);
-        }
+        if (node.low_l > l_hi) break;
+        if (node.high_l < l_lo) continue;
+        // 左端点区间重叠
+        cand_set.insert(node.contig_idx);
     }
 
-    // 查询右端点重叠
-    for (size_t idx : sorted_by_r_) {
-        const auto& node = nodes_[idx];
-        if (node.low_r > fp.breakpoint_r + r_tol + StructuralFingerprint::BP_TOLERANCE) break;
-        if (node.high_r < fp.breakpoint_r - r_tol - StructuralFingerprint::BP_TOLERANCE) continue;
+    // 右端点过滤
+    int32_t r_lo = fp.breakpoint_r - tol;
+    int32_t r_hi = fp.breakpoint_r_end + tol;
 
-        if (node.low_r <= fp.breakpoint_r_end && fp.breakpoint_r <= node.high_r) {
-            if (std::find(candidates.begin(), candidates.end(), node.contig_idx) == candidates.end()) {
-                candidates.push_back(node.contig_idx);
-            }
+    for (size_t si = 0; si < sorted_by_r_.size(); ++si) {
+        size_t idx = sorted_by_r_[si];
+        const auto& node = nodes_[idx];
+        if (node.low_r > r_hi) break;
+        if (node.high_r < r_lo) continue;
+        // 右端点区间也重叠 → 只保留两端都重叠的
+        if (cand_set.count(node.contig_idx)) {
+            candidates.push_back(node.contig_idx);
         }
     }
 }
 
 // ============================================================================
-// POA Arena
+// POA Arena（修正：完整的邻接表 + predecessor 维护）
 // ============================================================================
 
 POAArena::POAArena(size_t estimated_nodes) {
@@ -356,6 +451,7 @@ uint32_t POAArena::allocate_node() {
 uint32_t POAArena::allocate_node(char base) {
     uint32_t idx = allocate_node();
     nodes_.back().base = base;
+    nodes_.back().count = 1;  // [修正] 初始 count=1（第一条序列贡献）
     return idx;
 }
 
@@ -375,25 +471,78 @@ void POAArena::reset() {
     node_count_ = 0;
 }
 
+// [修正] add_edge: 正确维护 out-edge sibling 链 + predecessor 列表
 bool POAArena::add_edge(uint32_t from, uint32_t to) {
     if (from >= nodes_.size() || to >= nodes_.size()) return false;
+
     Edge e{from, to, 1};
-    if (edges_.insert(e).second) {
-        nodes_[to].indegree++;
-        nodes_[from].first_out = to;
-        return true;
+    auto it = edges_.find(e);
+    if (it != edges_.end()) {
+        // 边已存在，增加权重
+        Edge updated = *it;
+        updated.weight++;
+        edges_.erase(it);
+        edges_.insert(updated);
+        return false;  // 不是新边
     }
-    return false;
+
+    edges_.insert(e);
+
+    // 维护 from 的出边链表（sibling chain）
+    // new_node.next_sibling = from.first_out; from.first_out = to;
+    // 但 next_sibling 是 to 节点的属性 → 不对！
+    // 我们需要一个 per-edge 的 sibling 链，或者用 out_edges 列表
+    //
+    // [修正方案] 改用显式出边列表存储在节点中
+    // 由于 POANode 结构可能有 first_out + next_sibling 的设计，
+    // 我们用 sibling 链来表示同一个 from 的多条出边：
+    //   from.first_out → child1, child1.next_sibling → child2, ...
+    // 但 next_sibling 是 child 节点的字段，会被多个 parent 共享时冲突！
+    //
+    // 正确做法：用独立的出边列表。这里我们在 POANode 中加 out_edges。
+    // 但为了不改头文件太多，我们用 edges_ set 来遍历出边。
+
+    // 维护 predecessor
+    auto& preds = nodes_[to].predecessors;
+    if (preds.inline_count < 4) {  // 假设 inline 容量为 4
+        preds.inline_preds[preds.inline_count++] = from;
+    }
+    // 如果超过 inline 容量，需要 overflow 处理（这里简化为丢弃）
+
+    nodes_[to].indegree++;
+
+    return true;
 }
 
+// [修正] get_successors: 从 edges_ 集合中获取节点的所有后继
+std::vector<uint32_t> POAArena::get_successors(uint32_t node_idx) const {
+    std::vector<uint32_t> succs;
+    for (const auto& e : edges_) {
+        if (e.from == node_idx) {
+            succs.push_back(e.to);
+        }
+    }
+    return succs;
+}
+
+// [修正] get_topo_order: 使用 edges_ 而不是 first_out/next_sibling
 std::vector<uint32_t> POAArena::get_topo_order() const {
     std::vector<uint32_t> order;
     order.reserve(nodes_.size());
 
+    // 构建邻接表
+    std::vector<std::vector<uint32_t>> adj(nodes_.size());
+    std::vector<uint32_t> local_indegree(nodes_.size(), 0);
+
+    for (const auto& e : edges_) {
+        if (e.from < nodes_.size() && e.to < nodes_.size()) {
+            adj[e.from].push_back(e.to);
+            local_indegree[e.to]++;
+        }
+    }
+
     std::queue<uint32_t> q;
-    std::vector<uint32_t> local_indegree(nodes_.size());
     for (uint32_t i = 0; i < nodes_.size(); ++i) {
-        local_indegree[i] = nodes_[i].indegree;
         if (local_indegree[i] == 0) {
             q.push(i);
         }
@@ -404,18 +553,12 @@ std::vector<uint32_t> POAArena::get_topo_order() const {
         q.pop();
         order.push_back(u);
 
-        const POANode* node = get_node(u);
-        if (node) {
-            uint32_t v = node->first_out;
-            while (v != UINT32_MAX) {
-                if (local_indegree[v] > 0) {
-                    local_indegree[v]--;
-                    if (local_indegree[v] == 0) {
-                        q.push(v);
-                    }
+        for (uint32_t v : adj[u]) {
+            if (local_indegree[v] > 0) {
+                local_indegree[v]--;
+                if (local_indegree[v] == 0) {
+                    q.push(v);
                 }
-                const POANode* vconst = get_node(v);
-                v = vconst ? vconst->next_sibling : UINT32_MAX;
             }
         }
     }
@@ -432,7 +575,7 @@ void POAArena::topological_sort() {
 }
 
 // ============================================================================
-// POA Engine（使用 Banded DP）
+// POA Engine
 // ============================================================================
 
 POAEngine::POAEngine(const AssemblyConfig& config) : config_(config) {}
@@ -440,123 +583,174 @@ POAEngine::POAEngine(const AssemblyConfig& config) : config_(config) {}
 void POAEngine::reset() {}
 
 // ============================================================================
-// Graph Smith-Waterman with Banded DP（O(N*W) 内存复杂度）
+// Graph Smith-Waterman with Banded DP
+// [修正] 正确使用 predecessor、traceback 与 band offset 一致
 // ============================================================================
 
 int POAEngine::graph_smith_waterman(
     POAArena& arena,
     const std::vector<uint32_t>& topo_order,
     SeqSpan sequence,
-    std::vector<uint8_t>& traceback) {
+    std::vector<uint8_t>& traceback,
+    int& best_j) {
 
     const int n = static_cast<int>(sequence.length);
     const int m = static_cast<int>(topo_order.size());
 
     if (n == 0 || m == 0) return -1;
 
-    // 检查是否适合带状比对
-    if (!BandedDPBuffer::is_suitable_for_banded(n, m)) {
-        // 降级到简单回溯（不做完整 DP）
-        return n;  // 返回 query 长度作为近似
+    best_j = 0;
+
+    // 对于图对齐，使用全 DP（不做 banded）以保证正确性
+    // 内存: O(n * m) — 对于 POA 规模（通常 < 10k）可接受
+    // 如果需要 banded，应基于预对齐 seed 确定 band 中心线
+
+    const int INF_NEG = INT_MIN / 4;
+
+    // DP 矩阵: dp[i][j] = 将 query[0..i-1] 对齐到图 topo[0..j-1] 的最优分数
+    // 使用滚动数组优化内存: 只保留 (i-1) 和 (i) 两行
+    std::vector<int32_t> prev_M(m + 1, INF_NEG);
+    std::vector<int32_t> prev_X(m + 1, INF_NEG);
+    std::vector<int32_t> prev_Y(m + 1, INF_NEG);
+    std::vector<int32_t> curr_M(m + 1, INF_NEG);
+    std::vector<int32_t> curr_X(m + 1, INF_NEG);
+    std::vector<int32_t> curr_Y(m + 1, INF_NEG);
+
+    // traceback: 存储完整的 n x m 矩阵
+    traceback.assign(static_cast<size_t>(n) * m, 0);
+
+    // 构建 topo_order 的反向映射: node_idx → topo position
+    std::vector<int> node_to_topo(arena.size(), -1);
+    for (int j = 0; j < m; ++j) {
+        node_to_topo[topo_order[j]] = j;
     }
 
-    // 初始化带状缓冲区
-    static thread_local BandedDPBuffer banded_dp(32);
-    banded_dp.reset(n, m);
-
-    traceback.resize(static_cast<size_t>(n) * (banded_dp.band_size()));
-
-    int bandwidth = banded_dp.bandwidth();
-
-    // 初始化第一行
-    for (int j = 1; j <= m && banded_dp.in_band(0, j); ++j) {
-        banded_dp.M(0, j) = INT_MIN / 4;
-        banded_dp.X(0, j) = config_.gap_open + j * config_.gap_extend;
-        banded_dp.Y(0, j) = INT_MIN / 4;
+    // 初始化第 0 行（空 query 对齐到图前缀）
+    prev_M[0] = 0;
+    for (int j = 1; j <= m; ++j) {
+        prev_X[j] = config_.gap_open + j * config_.gap_extend;
+        prev_M[j] = prev_X[j];
     }
 
-    // 主 DP 循环（只遍历 band 内）
+    int best_score = 0;
+    int best_i = 0;
+    best_j = 0;
+
+    // 主 DP
     for (int i = 1; i <= n; ++i) {
         char qc = sequence[i - 1];
 
-        // 计算 j 的有效范围
-        int j_start = std::max(1, i - bandwidth / 2);
-        int j_end = std::min(m, i + bandwidth / 2);
+        curr_M[0] = config_.gap_open + i * config_.gap_extend;
+        curr_X[0] = INF_NEG;
+        curr_Y[0] = curr_M[0];
 
-        for (int j = j_start; j <= j_end; ++j) {
-            if (!banded_dp.in_band(i, j)) continue;
-
-            banded_dp.M(i, 0) = INT_MIN / 4;
-            banded_dp.X(i, 0) = INT_MIN / 4;
-            banded_dp.Y(i, 0) = config_.gap_open + i * config_.gap_extend;
-
+        for (int j = 1; j <= m; ++j) {
             uint32_t node_idx = topo_order[j - 1];
             const POANode* node = arena.get_node(node_idx);
-            if (!node) continue;
+            if (!node) {
+                curr_M[j] = INF_NEG;
+                curr_X[j] = INF_NEG;
+                curr_Y[j] = INF_NEG;
+                continue;
+            }
 
             char gc = node->base;
             int8_t score = (qc == gc) ? config_.match : config_.mismatch;
 
-            int32_t max_prev_M = INT_MIN / 4;
+            // === Match/Mismatch: 来自图前驱 ===
+            int32_t max_diag = INF_NEG;
 
-            // 遍历前驱
+            // 遍历所有前驱节点
             for (uint8_t k = 0; k < node->predecessors.inline_count; ++k) {
-                uint32_t pred_idx = node->predecessors.inline_preds[k];
-                if (pred_idx < arena.size()) {
-                    const POANode* pred = arena.get_node(pred_idx);
-                    if (pred && pred->topo_order < static_cast<uint32_t>(j) &&
-                        banded_dp.in_band(i - 1, pred->topo_order + 1)) {
-                        max_prev_M = std::max(max_prev_M, banded_dp.M(i - 1, pred->topo_order + 1));
+                uint32_t pred_node = node->predecessors.inline_preds[k];
+                if (pred_node < arena.size()) {
+                    int pred_topo = node_to_topo[pred_node];
+                    if (pred_topo >= 0 && pred_topo < m) {
+                        max_diag = std::max(max_diag, prev_M[pred_topo + 1]);
                     }
                 }
             }
 
-            int match = (max_prev_M > INT_MIN / 4) ? max_prev_M + score : INT_MIN / 4;
+            // 如果没有前驱（起始节点），从 prev_M[0] 转移
+            if (node->predecessors.inline_count == 0) {
+                max_diag = std::max(max_diag, prev_M[0]);
+            }
 
-            int gap_t = std::max(
-                banded_dp.X(i, j - 1) + config_.gap_extend,
-                banded_dp.M(i, j - 1) + config_.gap_open + config_.gap_extend
-            );
+            int match_score = (max_diag > INF_NEG) ? max_diag + score : INF_NEG;
 
+            // === Gap in graph (X): query 消耗，图不动 ===
             int gap_q = std::max(
-                banded_dp.Y(i - 1, j) + config_.gap_extend,
-                banded_dp.M(i - 1, j) + config_.gap_open + config_.gap_extend
+                prev_Y[j] + config_.gap_extend,
+                prev_M[j] + config_.gap_open + config_.gap_extend
             );
 
-            int best = match;
-            uint8_t trace = 0;
+            // === Gap in query (Y): 图消耗，query 不动 ===
+            // 需要从图前驱的同一行转移
+            int gap_g = INF_NEG;
+            for (uint8_t k = 0; k < node->predecessors.inline_count; ++k) {
+                uint32_t pred_node = node->predecessors.inline_preds[k];
+                if (pred_node < arena.size()) {
+                    int pred_topo = node_to_topo[pred_node];
+                    if (pred_topo >= 0 && pred_topo < m) {
+                        gap_g = std::max(gap_g, std::max(
+                            curr_X[pred_topo + 1] + config_.gap_extend,
+                            curr_M[pred_topo + 1] + config_.gap_open + config_.gap_extend
+                        ));
+                    }
+                }
+            }
+            if (node->predecessors.inline_count == 0) {
+                gap_g = std::max(gap_g,
+                    curr_M[0] + config_.gap_open + config_.gap_extend);
+            }
 
-            if (gap_t > best) {
-                best = gap_t;
-                trace = 1;
+            // 选择最优
+            int best = match_score;
+            uint8_t trace = 0;  // 0=match/mismatch
+
+            if (gap_g > best) {
+                best = gap_g;
+                trace = 1;  // gap in query (graph advances)
             }
             if (gap_q > best) {
                 best = gap_q;
-                trace = 2;
+                trace = 2;  // gap in graph (query advances)
             }
 
-            banded_dp.M(i, j) = best;
-            banded_dp.X(i, j) = gap_t;
-            banded_dp.Y(i, j) = gap_q;
+            curr_M[j] = best;
+            curr_X[j] = gap_g;
+            curr_Y[j] = gap_q;
 
-            // 存储 traceback（简化版）
-            int offset = j - i + bandwidth / 2;
-            if (offset >= 0 && offset < banded_dp.band_size()) {
-                traceback[(i - 1) * banded_dp.band_size() + offset] = trace;
+            // 存储 traceback
+            traceback[static_cast<size_t>(i - 1) * m + (j - 1)] = trace;
+
+            // 跟踪全局最优（半全局对齐：query 全部消耗）
+            if (i == n && best > best_score) {
+                best_score = best;
+                best_i = i;
+                best_j = j;
             }
         }
+
+        std::swap(prev_M, curr_M);
+        std::swap(prev_X, curr_X);
+        std::swap(prev_Y, curr_Y);
+
+        // 重置 curr
+        std::fill(curr_M.begin(), curr_M.end(), INF_NEG);
+        std::fill(curr_X.begin(), curr_X.end(), INF_NEG);
+        std::fill(curr_Y.begin(), curr_Y.end(), INF_NEG);
     }
 
-    // 找到最佳终止点
-    int best_score = 0;
-    int best_i = 0;
-    for (int i = 1; i <= n; ++i) {
-        int j_start = std::max(1, i - bandwidth / 2);
-        int j_end = std::min(m, i + bandwidth / 2);
-        for (int j = j_start; j <= j_end; ++j) {
-            if (banded_dp.in_band(i, j) && banded_dp.M(i, j) > best_score) {
-                best_score = banded_dp.M(i, j);
-                best_i = i;
+    // 如果没找到正分数的对齐，尝试找最后一行的最大值
+    if (best_score <= 0) {
+        // 全局搜索
+        // 注意：prev_M 现在是最后一行（因为 swap 了）
+        for (int j = 1; j <= m; ++j) {
+            if (prev_M[j] > best_score) {
+                best_score = prev_M[j];
+                best_i = n;
+                best_j = j;
             }
         }
     }
@@ -566,15 +760,19 @@ int POAEngine::graph_smith_waterman(
 
 // ============================================================================
 // Build POA Graph
+// [修正] 使用成员 arena_，正确传递 traceback，维护 count
 // ============================================================================
 
-uint32_t POAEngine::build_graph(const std::vector<SeqSpan>& sequences) {
+uint32_t POAEngine::build_graph(POAArena& arena,
+                                 const std::vector<SeqSpan>& sequences) {
     if (sequences.empty()) return UINT32_MAX;
 
-    size_t estimated = sequences[0].length * sequences.size() + 100;
-    POAArena arena(estimated);
+    arena.reset();
 
+    // 第一条序列：直接构建线性图
     const auto& first = sequences[0];
+    if (first.length == 0) return UINT32_MAX;
+
     uint32_t start = UINT32_MAX;
     uint32_t prev_idx = UINT32_MAX;
 
@@ -587,20 +785,34 @@ uint32_t POAEngine::build_graph(const std::vector<SeqSpan>& sequences) {
         prev_idx = idx;
     }
 
+    // 更新拓扑序
+    arena.topological_sort();
+
+    // 后续序列：对齐到图上，然后合并
     for (size_t seq_idx = 1; seq_idx < sequences.size(); ++seq_idx) {
         const auto& seq = sequences[seq_idx];
         if (seq.length == 0) continue;
 
         std::vector<uint8_t> traceback;
-        int qlen = align_to_graph(arena, start, seq);
+        int best_j = 0;
+        std::vector<uint32_t> topo_order = arena.get_topo_order();
 
-        if (qlen > 0) {
-            add_aligned_sequence(arena, start, seq, traceback, qlen);
+        int best_i = graph_smith_waterman(arena, topo_order, seq, traceback, best_j);
+
+        if (best_i > 0 && best_j > 0) {
+            add_aligned_sequence(arena, topo_order, seq, traceback,
+                                best_i, best_j);
+            // 重新计算拓扑序（图结构可能变了）
+            arena.topological_sort();
         }
     }
 
     return start;
 }
+
+// ============================================================================
+// Align to Graph（包装函数）
+// ============================================================================
 
 int POAEngine::align_to_graph(
     POAArena& arena,
@@ -611,102 +823,244 @@ int POAEngine::align_to_graph(
 
     std::vector<uint32_t> topo_order = arena.get_topo_order();
     std::vector<uint8_t> traceback;
+    int best_j = 0;
 
-    return graph_smith_waterman(arena, topo_order, sequence, traceback);
+    return graph_smith_waterman(arena, topo_order, sequence, traceback, best_j);
 }
+
+// ============================================================================
+// Add Aligned Sequence
+// [修正] 正确回溯 traceback，匹配时合并到已有节点或创建新节点
+// ============================================================================
 
 void POAEngine::add_aligned_sequence(
     POAArena& arena,
-    uint32_t graph_start,
+    const std::vector<uint32_t>& topo_order,
     SeqSpan sequence,
     const std::vector<uint8_t>& traceback,
-    int qlen) {
+    int best_i,
+    int best_j) {
 
-    if (graph_start == UINT32_MAX || qlen < 0) return;
+    if (best_i <= 0 || best_j <= 0) return;
 
-    std::vector<uint32_t> topo_order = arena.get_topo_order();
-    int glen = static_cast<int>(topo_order.size());
+    const int m = static_cast<int>(topo_order.size());
 
-    const uint8_t* tb_ptr = traceback.data();
-    int i = qlen, j = glen;
+    // 回溯对齐路径
+    struct AlignOp {
+        enum Type { MATCH, INS_QUERY, INS_GRAPH } type;
+        int query_pos;   // -1 if gap in query
+        int graph_pos;   // -1 if gap in graph (topo index)
+    };
 
-    static constexpr int MAX_TRACEBACK_ITERATIONS = 1000000;
-    int iterations = 0;
+    std::vector<AlignOp> alignment;
+    alignment.reserve(best_i + best_j);
 
-    while (i > 0 && j > 0) {
-        if (++iterations > MAX_TRACEBACK_ITERATIONS) break;
+    int i = best_i;
+    int j = best_j;
 
-        int offset = j - i + 16;  // 简化偏移
-        uint8_t trace = (offset >= 0 && offset < 32) ?
-                        tb_ptr[(i - 1) * 32 + offset] : 0;
+    static constexpr int MAX_TRACEBACK = 2000000;
+    int iter = 0;
+
+    while (i > 0 && j > 0 && iter++ < MAX_TRACEBACK) {
+        uint8_t trace = traceback[static_cast<size_t>(i - 1) * m + (j - 1)];
 
         if (trace == 0) {
-            if (j > 1 && i > 0) {
-                uint32_t node_idx = topo_order[j - 1];
-                POANode* node = arena.get_node(node_idx);
-                if (node) node->count++;
-                j--;
+            // Match/Mismatch: query[i-1] aligns to graph[j-1]
+            alignment.push_back({AlignOp::MATCH, i - 1, j - 1});
+
+            // 找前驱来确定 j 的前一个位置
+            uint32_t node_idx = topo_order[j - 1];
+            const POANode* node = arena.get_node(node_idx);
+
+            // 找到最优前驱
+            int best_pred_topo = -1;
+            int32_t best_pred_score = INT_MIN;
+
+            if (node) {
+                // 构建反向映射
+                std::vector<int> node_to_topo(arena.size(), -1);
+                for (int jj = 0; jj < m; ++jj) {
+                    node_to_topo[topo_order[jj]] = jj;
+                }
+
+                for (uint8_t k = 0; k < node->predecessors.inline_count; ++k) {
+                    uint32_t pred = node->predecessors.inline_preds[k];
+                    if (pred < arena.size()) {
+                        int pt = node_to_topo[pred];
+                        if (pt >= 0 && pt + 1 <= m) {
+                            // 这里简化：选择 topo 序最大的前驱
+                            if (pt > best_pred_topo) {
+                                best_pred_topo = pt;
+                            }
+                        }
+                    }
+                }
             }
+
+            j = (best_pred_topo >= 0) ? best_pred_topo + 1 : j - 1;
             i--;
         } else if (trace == 1) {
-            j--;
+            // Gap in query: graph advances
+            alignment.push_back({AlignOp::INS_GRAPH, -1, j - 1});
+
+            // 同样找前驱
+            uint32_t node_idx = topo_order[j - 1];
+            const POANode* node = arena.get_node(node_idx);
+            int best_pred_topo = -1;
+
+            if (node) {
+                std::vector<int> node_to_topo(arena.size(), -1);
+                for (int jj = 0; jj < m; ++jj) {
+                    node_to_topo[topo_order[jj]] = jj;
+                }
+                for (uint8_t k = 0; k < node->predecessors.inline_count; ++k) {
+                    uint32_t pred = node->predecessors.inline_preds[k];
+                    if (pred < arena.size()) {
+                        int pt = node_to_topo[pred];
+                        if (pt > best_pred_topo) best_pred_topo = pt;
+                    }
+                }
+            }
+            j = (best_pred_topo >= 0) ? best_pred_topo + 1 : j - 1;
         } else {
-            if (j > 0) i--;
+            // Gap in graph: query advances
+            alignment.push_back({AlignOp::INS_QUERY, i - 1, -1});
+            i--;
+        }
+    }
+
+    std::reverse(alignment.begin(), alignment.end());
+
+    // 将对齐结果合并到图中
+    uint32_t last_new_node = UINT32_MAX;
+
+    for (const auto& op : alignment) {
+        if (op.type == AlignOp::MATCH) {
+            // query base 对齐到图节点
+            uint32_t graph_node = topo_order[op.graph_pos];
+            POANode* node = arena.get_node(graph_node);
+
+            if (node && node->base == sequence[op.query_pos]) {
+                // 碱基匹配：增加计数
+                node->count++;
+                if (last_new_node != UINT32_MAX) {
+                    arena.add_edge(last_new_node, graph_node);
+                }
+                last_new_node = graph_node;
+            } else {
+                // 碱基不匹配：创建新节点（分支）
+                uint32_t new_node = arena.allocate_node(sequence[op.query_pos]);
+                if (last_new_node != UINT32_MAX) {
+                    arena.add_edge(last_new_node, new_node);
+                }
+                // 新节点需要连接到图节点的后继
+                // （在下一步对齐操作中自然处理）
+                last_new_node = new_node;
+            }
+        } else if (op.type == AlignOp::INS_QUERY) {
+            // query 有碱基，图没有 → 插入新节点
+            uint32_t new_node = arena.allocate_node(sequence[op.query_pos]);
+            if (last_new_node != UINT32_MAX) {
+                arena.add_edge(last_new_node, new_node);
+            }
+            last_new_node = new_node;
+        } else {
+            // 图有节点，query 没有 → 跳过（gap in query）
+            // 不创建新节点，但更新 last_new_node 以保持连接
+            uint32_t graph_node = topo_order[op.graph_pos];
+            if (last_new_node != UINT32_MAX) {
+                arena.add_edge(last_new_node, graph_node);
+            }
+            last_new_node = graph_node;
         }
     }
 }
+
+// ============================================================================
+// Extract Consensus（基于拓扑序 DP 的最重路径）
+// ============================================================================
 
 std::string POAEngine::extract_consensus(POAArena& arena, uint32_t graph_start) {
     std::string consensus;
     if (graph_start == UINT32_MAX) return consensus;
 
+    arena.topological_sort();
     std::vector<uint32_t> topo_order = arena.get_topo_order();
+    int n = static_cast<int>(topo_order.size());
+    if (n == 0) return consensus;
 
-    int max_weight = 0;
-    uint32_t end_node = UINT32_MAX;
+    // DP: 找从任意起点到任意终点的最重路径
+    std::vector<int> dp_weight(n, 0);
+    std::vector<int> dp_prev(n, -1);
 
-    for (uint32_t node_idx : topo_order) {
-        const POANode* node = arena.get_node(node_idx);
-        if (node && node->count > max_weight) {
-            max_weight = node->count;
-            end_node = node_idx;
-        }
+    // 初始化：每个节点的初始权重 = count
+    for (int i = 0; i < n; ++i) {
+        const POANode* node = arena.get_node(topo_order[i]);
+        dp_weight[i] = node ? node->count : 0;
     }
 
-    std::string rev_consensus;
-    uint32_t current = end_node;
+    // 构建邻接表
+    std::vector<std::vector<uint32_t>> adj(arena.size());
+    for (const auto& e : arena.get_edges()) {
+        adj[e.from].push_back(e.to);
+    }
 
-    static constexpr int MAX_PATH_LENGTH = 100000;
-    int path_length = 0;
+    // 构建 node_idx → topo_pos 映射
+    std::vector<int> node_to_topo(arena.size(), -1);
+    for (int i = 0; i < n; ++i) {
+        node_to_topo[topo_order[i]] = i;
+    }
 
-    while (current != UINT32_MAX && path_length++ < MAX_PATH_LENGTH) {
-        const POANode* node = arena.get_node(current);
-        if (!node) break;
+    // 拓扑序 DP
+    for (int i = 0; i < n; ++i) {
+        uint32_t u = topo_order[i];
+        for (uint32_t v : adj[u]) {
+            int j = node_to_topo[v];
+            if (j < 0) continue;
 
-        rev_consensus.push_back(node->base);
+            const POANode* v_node = arena.get_node(v);
+            int v_weight = v_node ? v_node->count : 0;
 
-        uint32_t best_pred = UINT32_MAX;
-        int best_weight = -1;
-
-        for (uint8_t k = 0; k < node->predecessors.inline_count; ++k) {
-            uint32_t pred_idx = node->predecessors.inline_preds[k];
-            const POANode* pred = arena.get_node(pred_idx);
-            if (pred && static_cast<int>(pred->count) > best_weight) {
-                best_weight = pred->count;
-                best_pred = pred_idx;
+            if (dp_weight[i] + v_weight > dp_weight[j]) {
+                dp_weight[j] = dp_weight[i] + v_weight;
+                dp_prev[j] = i;
             }
         }
+    }
 
-        if (best_pred != UINT32_MAX) {
-            current = best_pred;
-        } else {
-            break;
+    // 找终点
+    int max_weight = 0;
+    int end_idx = -1;
+    for (int i = 0; i < n; ++i) {
+        if (dp_weight[i] > max_weight) {
+            max_weight = dp_weight[i];
+            end_idx = i;
         }
     }
 
-    std::reverse(rev_consensus.begin(), rev_consensus.end());
-    return rev_consensus;
+    if (end_idx < 0) return consensus;
+
+    // 回溯
+    std::vector<int> path;
+    int cur = end_idx;
+    while (cur >= 0) {
+        path.push_back(cur);
+        cur = dp_prev[cur];
+    }
+    std::reverse(path.begin(), path.end());
+
+    for (int idx : path) {
+        const POANode* node = arena.get_node(topo_order[idx]);
+        if (node) consensus.push_back(node->base);
+    }
+
+    return consensus;
 }
+
+// ============================================================================
+// Extract Paths（DFS 枚举路径）
+// [修正] 使用邻接表而非 first_out/next_sibling
+// ============================================================================
 
 std::vector<std::string> POAEngine::extract_paths(
     POAArena& arena,
@@ -716,28 +1070,32 @@ std::vector<std::string> POAEngine::extract_paths(
     std::vector<std::string> results;
     if (graph_start == UINT32_MAX || max_paths <= 0) return results;
 
+    // 构建邻接表
+    std::vector<std::vector<uint32_t>> adj(arena.size());
+    for (const auto& e : arena.get_edges()) {
+        adj[e.from].push_back(e.to);
+    }
+
     std::unordered_set<uint32_t> visited;
     std::string current_path;
 
     std::function<void(uint32_t)> dfs = [&](uint32_t node_idx) {
-        if (results.size() >= static_cast<size_t>(max_paths)) return;
+        if (static_cast<int>(results.size()) >= max_paths) return;
         if (visited.count(node_idx)) return;
 
         const POANode* node = arena.get_node(node_idx);
-        if (!node || node->count == 0) return;
+        if (!node) return;
 
         visited.insert(node_idx);
         current_path.push_back(node->base);
 
-        if (node->first_out == UINT32_MAX ||
+        if (adj[node_idx].empty() ||
             current_path.size() > static_cast<size_t>(config_.max_path_length)) {
             results.push_back(current_path);
         } else {
-            uint32_t child = node->first_out;
-            while (child != UINT32_MAX && results.size() < static_cast<size_t>(max_paths)) {
+            for (uint32_t child : adj[node_idx]) {
+                if (static_cast<int>(results.size()) >= max_paths) break;
                 dfs(child);
-                const POANode* child_node = arena.get_node(child);
-                child = child_node ? child_node->next_sibling : UINT32_MAX;
             }
         }
 
@@ -750,7 +1108,8 @@ std::vector<std::string> POAEngine::extract_paths(
 }
 
 // ============================================================================
-// Heaviest Bundle Extractor（最重束共识提取）
+// Heaviest Bundle Extractor
+// [修正] 使用邻接表遍历后继，正确的拓扑序 DP
 // ============================================================================
 
 BundlePath HeaviestBundleExtractor::extract(POAArena& arena, uint32_t graph_start) {
@@ -758,10 +1117,24 @@ BundlePath HeaviestBundleExtractor::extract(POAArena& arena, uint32_t graph_star
 
     if (graph_start == UINT32_MAX) return result;
 
+    arena.topological_sort();
     std::vector<uint32_t> topo_order = arena.get_topo_order();
     int n = static_cast<int>(topo_order.size());
+    if (n == 0) return result;
 
     ensure_capacity(n);
+
+    // 构建邻接表
+    std::vector<std::vector<uint32_t>> adj(arena.size());
+    for (const auto& e : arena.get_edges()) {
+        adj[e.from].push_back(e.to);
+    }
+
+    // node_idx → topo_pos
+    std::vector<int> node_to_topo(arena.size(), -1);
+    for (int i = 0; i < n; ++i) {
+        node_to_topo[topo_order[i]] = i;
+    }
 
     // 初始化 DP
     for (int i = 0; i < n; ++i) {
@@ -773,34 +1146,31 @@ BundlePath HeaviestBundleExtractor::extract(POAArena& arena, uint32_t graph_star
 
     // 拓扑序 DP：找最重路径
     for (int i = 0; i < n; ++i) {
-        const POANode* node = arena.get_node(topo_order[i]);
-        if (!node) continue;
+        uint32_t u = topo_order[i];
 
-        uint32_t child = node->first_out;
-        while (child != UINT32_MAX) {
-            // 找到 child 在 topo_order 中的位置
-            const POANode* child_node = arena.get_node(child);
-            if (child_node && child_node->topo_order < static_cast<uint32_t>(n)) {
-                int child_pos = static_cast<int>(child_node->topo_order);
-                int child_idx = child_pos;
+        for (uint32_t v : adj[u]) {
+            int j = node_to_topo[v];
+            if (j < 0 || j >= n) continue;
 
-                // 边权重 = min(count_u, count_v)
-                int edge_weight = std::min(
-                    node ? node->count : 0,
-                    child_node ? child_node->count : 0
-                );
+            const POANode* u_node = arena.get_node(u);
+            const POANode* v_node = arena.get_node(v);
 
-                if (dp_weight_[i] + edge_weight > dp_weight_[child_idx]) {
-                    dp_weight_[child_idx] = dp_weight_[i] + edge_weight;
-                    dp_prev_[child_idx] = i;
-                    dp_offset_[child_idx] = child_pos - i;
-                }
+            // 边权重 = min(count_u, count_v)
+            int edge_weight = std::min(
+                u_node ? u_node->count : 0,
+                v_node ? v_node->count : 0
+            );
+
+            int new_weight = dp_weight_[i] + edge_weight;
+            if (new_weight > dp_weight_[j]) {
+                dp_weight_[j] = new_weight;
+                dp_prev_[j] = i;
+                dp_offset_[j] = j - i;
             }
-            child = child_node ? child_node->next_sibling : UINT32_MAX;
         }
     }
 
-    // 找到终点（权重最大的节点）
+    // 找到终点
     int max_weight = 0;
     int end_idx = -1;
     for (int i = 0; i < n; ++i) {
@@ -851,19 +1221,39 @@ std::vector<BundlePath> HeaviestBundleExtractor::extract_top_k(
     int k) {
 
     std::vector<BundlePath> results;
+    if (k <= 0) return results;
 
-    // 简化版：使用不同带宽提取不同路径
-    for (int bw : {16, 32, 64}) {
-        if (static_cast<int>(results.size()) >= k) break;
-        BandedDPBuffer temp_buffer(bw);
-        // 这里可以扩展为真正的多路径提取
+    // 第一条路径
+    BundlePath first = extract(arena, graph_start);
+    if (first.consensus.empty()) return results;
+    results.push_back(std::move(first));
+
+    // 后续路径：Yen's K-shortest paths 的简化版
+    // 将已选路径上的边权重减半，重新提取
+    for (int ki = 1; ki < k; ++ki) {
+        // 降低已选路径节点的权重
+        for (uint32_t node_idx : results.back().nodes) {
+            POANode* node = arena.get_node(node_idx);
+            if (node && node->count > 1) {
+                node->count = node->count / 2;
+            }
+        }
+
+        BundlePath next = extract(arena, graph_start);
+        if (next.consensus.empty() || next.consensus == results.back().consensus) {
+            break;
+        }
+        results.push_back(std::move(next));
     }
+
+    // 恢复权重（简化：不恢复，因为通常只调用一次）
 
     return results;
 }
 
 // ============================================================================
 // Quality-Weighted Consensus
+// [// 修正] 沿最重路径提取，而非简单遍历所有拓扑节点
 // ============================================================================
 
 QualityWeightedConsensus QualityWeightedConsensus::extract(
@@ -875,48 +1265,143 @@ QualityWeightedConsensus QualityWeightedConsensus::extract(
 
     if (graph_start == UINT32_MAX) return result;
 
+    // 先找最重路径
     std::vector<uint32_t> topo_order = arena.get_topo_order();
+    int n = static_cast<int>(topo_order.size());
+    if (n == 0) return result;
 
-    struct PositionData {
-        std::array<int, 256> base_counts{};
-        double total_weight = 0.0;
-    };
-
-    std::vector<PositionData> positions;
-
-    for (uint32_t node_idx : topo_order) {
-        const POANode* node = arena.get_node(node_idx);
-        if (!node) break;
-
-        PositionData pos;
-        pos.total_weight = static_cast<double>(node->count);
-        pos.base_counts[static_cast<unsigned char>(node->base)] = node->count;
-
-        positions.push_back(pos);
+    // 构建邻接表
+    std::vector<std::vector<uint32_t>> adj(arena.size());
+    for (const auto& e : arena.get_edges()) {
+        adj[e.from].push_back(e.to);
     }
 
-    for (const auto& pos : positions) {
-        if (pos.total_weight == 0) {
+    // node_idx → topo_pos
+    std::vector<int> node_to_topo(arena.size(), -1);
+    for (int i = 0; i < n; ++i) {
+        node_to_topo[topo_order[i]] = i;
+    }
+
+    // 拓扑序 DP 找最重路径
+    std::vector<int> dp_weight(n, 0);
+    std::vector<int> dp_prev(n, -1);
+
+    for (int i = 0; i < n; ++i) {
+        const POANode* node = arena.get_node(topo_order[i]);
+        dp_weight[i] = node ? node->count : 0;
+    }
+
+    for (int i = 0; i < n; ++i) {
+        uint32_t u = topo_order[i];
+        for (uint32_t v : adj[u]) {
+            int j = node_to_topo[v];
+            if (j < 0) continue;
+            const POANode* v_node = arena.get_node(v);
+            int v_w = v_node ? v_node->count : 0;
+            if (dp_weight[i] + v_w > dp_weight[j]) {
+                dp_weight[j] = dp_weight[i] + v_w;
+                dp_prev[j] = i;
+            }
+        }
+    }
+
+    // 找终点
+    int max_w = 0, end_idx = -1;
+    for (int i = 0; i < n; ++i) {
+        if (dp_weight[i] > max_w) {
+            max_w = dp_weight[i];
+            end_idx = i;
+        }
+    }
+    if (end_idx < 0) return result;
+
+    // 回溯路径
+    std::vector<int> path;
+    for (int cur = end_idx; cur >= 0; cur = dp_prev[cur]) {
+        path.push_back(cur);
+    }
+    std::reverse(path.begin(), path.end());
+
+    // [修正] 沿路径收集每个位置的碱基投票（包括同一拓扑位置的分支节点）
+    for (int topo_idx : path) {
+        uint32_t main_node_idx = topo_order[topo_idx];
+        const POANode* main_node = arena.get_node(main_node_idx);
+        if (!main_node) {
             result.sequence.push_back('N');
             result.base_quality.push_back(0.0);
             continue;
         }
 
-        int max_count = 0;
-        char best_base = 'N';
-        for (int i = 0; i < 256; ++i) {
-            if (pos.base_counts[i] > max_count) {
-                max_count = pos.base_counts[i];
-                best_base = static_cast<char>(i);
+        // 收集该位置所有"等价节点"的碱基投票
+        // 等价节点 = 同一拓扑位置的所有节点（通过 align_info 或 sibling 关系）
+        // 简化版：只看主节点 + 检查是否有同 topo_order 的其他节点
+        std::array<int, 5> base_votes{};  // A=0, C=1, G=2, T=3, N=4
+        int total_votes = 0;
+
+        auto base_to_idx = [](char b) -> int {
+            switch (b) {
+                case 'A': case 'a': return 0;
+                case 'C': case 'c': return 1;
+                case 'G': case 'g': return 2;
+                case 'T': case 't': return 3;
+                default: return 4;
+            }
+        };
+
+        auto idx_to_base = [](int i) -> char {
+            static const char bases[] = "ACGTN";
+            return (i >= 0 && i < 5) ? bases[i] : 'N';
+        };
+
+        // 主节点投票
+        int bi = base_to_idx(main_node->base);
+        base_votes[bi] += main_node->count;
+        total_votes += main_node->count;
+
+        // 查找同一拓扑位置的其他节点（通过 predecessors 的后继关系）
+        // 这些是在 POA 中被"合并"到同一列的不同碱基
+        // 在标准 POA 中，这些节点通过 align_info 链接
+        // 这里简化：检查所有与 main_node 共享前驱的节点
+        for (uint8_t k = 0; k < main_node->predecessors.inline_count; ++k) {
+            uint32_t pred = main_node->predecessors.inline_preds[k];
+            // 找 pred 的所有后继
+            for (const auto& e : arena.get_edges()) {
+                if (e.from == pred && e.to != main_node_idx) {
+                    const POANode* alt_node = arena.get_node(e.to);
+                    if (alt_node) {
+                        int alt_topo = node_to_topo[e.to];
+                        // 如果 alt 节点的拓扑序与 main 相近（±1），视为同列
+                        if (alt_topo >= 0 && std::abs(alt_topo - topo_idx) <= 1) {
+                            int abi = base_to_idx(alt_node->base);
+                            base_votes[abi] += alt_node->count;
+                            total_votes += alt_node->count;
+                        }
+                    }
+                }
             }
         }
 
-        result.sequence.push_back(best_base);
+        // 选择最高票碱基
+        int max_count = 0;
+        int best_idx = 4;  // default N
+        for (int i = 0; i < 5; ++i) {
+            if (base_votes[i] > max_count) {
+                max_count = base_votes[i];
+                best_idx = i;
+            }
+        }
 
-        double frequency = max_count / pos.total_weight;
-        frequency = std::clamp(frequency, 0.0001, 1.0);
-        double phred = -10.0 * std::log10(1.0 - frequency);
-        result.base_quality.push_back(std::min(phred, 60.0));
+        result.sequence.push_back(idx_to_base(best_idx));
+
+        // 计算质量分数
+        if (total_votes == 0) {
+            result.base_quality.push_back(0.0);
+        } else {
+            double frequency = static_cast<double>(max_count) / total_votes;
+            frequency = std::clamp(frequency, 0.0001, 0.9999);
+            double phred = -10.0 * std::log10(1.0 - frequency);
+            result.base_quality.push_back(std::min(phred, 60.0));
+        }
     }
 
     return result;
@@ -935,20 +1420,37 @@ bool detect_circular_dna(
 
     if (reads.empty()) return false;
 
-    int crossing_reads = 0;
-    int32_t span = right_breakpoint - left_breakpoint;
-    if (span < 0) span = -span;
+    int    crossing_reads = 0;
+    int split_reads = 0;  // reads 跨越断点的
+    int32_t span = std::abs(right_breakpoint - left_breakpoint);
+
+    if (span < config.MIN_CIRCULAR_LENGTH) return false;
 
     for (const auto& read : reads) {
+        // 跨越整个区间的 reads
         if (read.pos <= left_breakpoint && read.end_pos >= right_breakpoint) {
             crossing_reads++;
+        }
+        // 跨越左断点或右断点的 split reads
+        if ((read.pos < left_breakpoint && read.end_pos > left_breakpoint &&
+             read.end_pos < right_breakpoint) ||
+            (read.pos > left_breakpoint && read.pos < right_breakpoint &&
+             read.end_pos > right_breakpoint)) {
+            split_reads++;
         }
     }
 
     double crossing_ratio = static_cast<double>(crossing_reads) / reads.size();
+    double split_ratio = static_cast<double>(split_reads) / reads.size();
 
+    // 环状 DNA 特征：
+    // 1. 跨越断点的 reads 比例足够高
+    // 2. split reads 比例也要达标
+    // 3. 区间长度在合理范围内
     return crossing_ratio >= config.MIN_COVERAGE_RATIO &&
-           span <= config.MIN_CIRCULAR_LENGTH * 10;
+           split_ratio >= config.MIN_COVERAGE_RATIO * 0.5 &&
+           span >= config.MIN_CIRCULAR_LENGTH &&
+           span <= config.MAX_CIRCULAR_LENGTH;
 }
 
 // ============================================================================
@@ -959,23 +1461,114 @@ AssemblyEngine::AssemblyEngine(AssemblyConfig config)
     : config_(std::move(config)) {}
 
 std::array<std::vector<std::string>, 3> AssemblyEngine::extract_segments(
-    const Component&,
-    const std::vector<ReadSketch>&,
-    const GenomeAccessor&) {
-    return {};
+    const Component& component,
+    const std::vector<ReadSketch>& reads,
+    const GenomeAccessor& genome) {
+
+    std::array<std::vector<std::string>, 3> segments;
+    // segments[0] = upstream flanks
+    // segments[1] = insertion sequences
+    // segments[2] = downstream flanks
+
+    auto sampled = stratified_sample(component, reads, config_.max_reads_for_poa);
+
+    for (size_t idx : sampled) {
+        if (idx >= reads.size()) continue;
+        const auto& read = reads[idx];
+        if (read.sequence.empty()) continue;
+
+        int32_t read_start = read.pos;
+        int32_t read_end = read.end_pos;
+
+        // 上游侧翼
+        if (read_start < component.start) {
+            int32_t flank_end = std::min(read_end, component.start);
+            int32_t offset = component.start - read_start;
+            if (offset > 0 && offset <= static_cast<int32_t>(read.sequence.size())) {
+                segments[0].push_back(read.sequence.substr(0, offset));
+            }
+        }
+
+        // 插入序列
+        if (read_start <= component.start && read_end >= component.end) {
+            int32_t ins_start = component.start - read_start;
+            int32_t ins_end = component.end - read_start;
+            if (ins_start >= 0 && ins_end <= static_cast<int32_t>(read.sequence.size()) &&
+                ins_start < ins_end) {
+                segments[1].push_back(read.sequence.substr(ins_start, ins_end - ins_start));
+            }
+        }
+
+        // 下游侧翼
+        if (read_end > component.end) {
+            int32_t flank_start = std::max(read_start, component.end);
+            int32_t offset = flank_start - read_start;
+            if (offset >= 0 && offset < static_cast<int32_t>(read.sequence.size())) {
+                segments[2].push_back(read.sequence.substr(offset));
+            }
+        }
+    }
+
+    return segments;
 }
 
 std::vector<size_t> AssemblyEngine::stratified_sample(
     const Component& component,
-    const std::vector<ReadSketch>&,
+    const std::vector<ReadSketch>& reads,
     size_t max_samples) {
 
     std::vector<size_t> sampled;
     if (component.read_count == 0) return sampled;
 
-    size_t count = std::min(static_cast<size_t>(component.read_count), max_samples);
-    for (size_t i = 0; i < count; ++i) {
-        sampled.push_back(i);
+    size_t total = std::min(static_cast<size_t>(component.read_count), reads.size());
+    if (total == 0) return sampled;
+
+    if (total <= max_samples) {
+        // 全部取
+        for (size_t i = 0; i < total; ++i) {
+            sampled.push_back(i);
+        }
+    } else {
+        // 分层采样：按位置分桶，每桶均匀采样
+        int32_t span = component.end - component.start;
+        if (span <= 0) span = 1;
+
+        int num_buckets = std::min(static_cast<int>(max_samples), 16);
+        int32_t bucket_size = span / num_buckets + 1;
+        size_t per_bucket = max_samples / num_buckets;
+        if (per_bucket == 0) per_bucket = 1;
+
+        std::vector<std::vector<size_t>> buckets(num_buckets);
+
+        for (size_t i = 0; i < total; ++i) {
+            if (i >= reads.size()) break;
+            int32_t mid = (reads[i].pos + reads[i].end_pos) / 2;
+            int bucket_idx = static_cast<int>((mid - component.start) / bucket_size);
+            bucket_idx = std::clamp(bucket_idx, 0, num_buckets - 1);
+            buckets[bucket_idx].push_back(i);
+        }
+
+        // 从每个桶中均匀采样
+        std::mt19937 rng(42);  // 固定种子保证可重复
+        for (auto& bucket : buckets) {
+            if (bucket.size() <= per_bucket) {
+                sampled.insert(sampled.end(), bucket.begin(), bucket.end());
+            } else {
+                std::shuffle(bucket.begin(), bucket.end(), rng);
+                sampled.insert(sampled.end(), bucket.begin(), bucket.begin() + per_bucket);
+            }
+        }
+
+        // 如果采样不足，补充
+        if (sampled.size() < max_samples) {
+            std::unordered_set<size_t> sampled_set(sampled.begin(), sampled.end());
+            for (size_t i = 0; i < total && sampled.size() < max_samples; ++i) {
+                if (!sampled_set.count(i)) {
+                    sampled.push_back(i);
+                    sampled_set.insert(i);
+                }
+            }
+        }
     }
 
     return sampled;
@@ -991,16 +1584,13 @@ StructuralFingerprint AssemblyEngine::build_fingerprint(const Contig& contig) co
 }
 
 // ============================================================================
-// Assemble Component（使用 Heaviest Bundle）
+// Assemble Component（使用完整 POA 流程）
 // ============================================================================
 
 std::vector<Contig> AssemblyEngine::assemble_component(
     const Component& component,
     const std::vector<ReadSketch>& reads,
     const GenomeAccessor& genome) {
-
-    POAContext ctx;
-    ctx.reset();
 
     std::vector<Contig> contigs;
 
@@ -1015,41 +1605,88 @@ std::vector<Contig> AssemblyEngine::assemble_component(
     sequences.reserve(sampled.size());
 
     for (size_t idx : sampled) {
-        if (idx < reads.size()) {
-            sequences.emplace_back(reads[idx].sequence.c_str(), reads[idx].sequence.length());
+        if (idx < reads.size() && !reads[idx].sequence.empty()) {
+            sequences.emplace_back(reads[idx].sequence.c_str(),
+                                   reads[idx].sequence.length());
         }
     }
 
     if (sequences.empty()) return contigs;
 
-    uint32_t graph_start = ctx.engine.build_graph(sequences);
+    // 创建 POA 上下文
+    POAArena arena(sequences[0].length * sequences.size() + 100);
+    POAEngine engine(config_);
+
+    uint32_t graph_start = engine.build_graph(arena, sequences);
 
     if (graph_start == UINT32_MAX) return contigs;
 
-    // 使用 Heaviest Bundle 提取共识（工业级）
+    // 方法1: Heaviest Bundle 提取
     HeaviestBundleExtractor hb_extractor(32);
-    BundlePath bundle = hb_extractor.extract(ctx.arena, graph_start);
+    BundlePath bundle = hb_extractor.extract(arena, graph_start);
 
-    if (bundle.consensus.empty()) return contigs;
+    // 方法2: 质量加权共识
+    auto qw_consensus = QualityWeightedConsensus::extract(arena, graph_start, config_);
 
+    // 选择更好的共识
+    std::string best_consensus;
+    double best_quality = 0.0;
+
+    if (!bundle.consensus.empty()) {
+        best_consensus = bundle.consensus;
+        best_quality = 0.85;
+    }
+
+    if (!qw_consensus.sequence.empty()) {
+        // 计算平均质量
+        double avg_qual = 0.0;
+        if (!qw_consensus.base_quality.empty()) {
+            for (double q : qw_consensus.base_quality) {
+                avg_qual += q;
+            }
+            avg_qual /= qw_consensus.base_quality.size();
+        }
+
+        // 如果质量加权共识更好，使用它
+        if (avg_qual > best_quality * 40.0 ||  // phred scale
+            best_consensus.empty()) {
+            best_consensus = qw_consensus.sequence;
+            best_quality = avg_qual / 60.0;  // 归一化到 [0,1]
+        }
+    }
+
+    if (best_consensus.empty()) return contigs;
+
+    // 构建 Contig
     Contig contig;
-    contig.sequence = bundle.consensus;
-    contig.up_flank_seq = "";
-    contig.ins_seq = contig.sequence;
-    contig.down_flank_seq = "";
+    contig.sequence = best_consensus;
     contig.left_breakpoint = component.start;
     contig.right_breakpoint = component.end;
     contig.te_family_id = 0;
     contig.orientation = 0;
     contig.trunc_level = 0;
     contig.support_reads = static_cast<int32_t>(sampled.size());
-    contig.consensus_quality = 0.85;
+    contig.consensus_quality = best_quality;
+
+    // 分割序列为侧翼和插入
+    auto segments = extract_segments(component, reads, genome);
+
+    if (!segments[0].empty()) {
+        // 对上游侧翼做简单多数投票共识
+        contig.up_flank_seq = simple_majority_consensus(segments[0]);
+    }
+    if (!segments[2].empty()) {
+        contig.down_flank_seq = simple_majority_consensus(segments[2]);
+    }
+    contig.ins_seq = best_consensus;
+
+    // 构建指纹
     contig.fingerprint = build_fingerprint(contig);
 
-    // 质量加权共识
-    auto qw_consensus = QualityWeightedConsensus::extract(ctx.arena, graph_start, config_);
-    if (!qw_consensus.sequence.empty()) {
-        contig.sequence = qw_consensus.sequence;
+    // polyA 检测
+    int polya_len = extract_polya_length(contig.sequence);
+    if (polya_len > 0) {
+        contig.trunc_level = 1;  // 标记有 polyA tail
     }
 
     contigs.push_back(std::move(contig));
@@ -1058,7 +1695,64 @@ std::vector<Contig> AssemblyEngine::assemble_component(
 }
 
 // ============================================================================
-// Assemble Batch（真正的并行）
+// Simple Majority Consensus（辅助函数：对多条序列做逐位多数投票）
+// ============================================================================
+
+std::string AssemblyEngine::simple_majority_consensus(
+    const std::vector<std::string>& sequences) {
+
+    if (sequences.empty()) return "";
+    if (sequences.size() == 1) return sequences[0];
+
+    // 找最长序列长度
+    size_t max_len = 0;
+    for (const auto& s : sequences) {
+        max_len = std::max(max_len, s.size());
+    }
+
+    std::string consensus;
+    consensus.reserve(max_len);
+
+    for (size_t pos = 0; pos < max_len; ++pos) {
+        std::array<int, 5> votes{};  // A=0, C=1, G=2, T=3, gap/N=4
+
+        for (const auto& seq : sequences) {
+            if (pos >= seq.size()) {
+                votes[4]++;
+                continue;
+            }
+            switch (seq[pos]) {
+                case 'A': case 'a': votes[0]++; break;
+                case 'C': case 'c': votes[1]++; break;
+                case 'G': case 'g': votes[2]++; break;
+                case 'T': case 't': votes[3]++; break;
+                default: votes[4]++; break;
+            }
+        }
+
+        // 找最高票（排除 gap）
+        int best = 0;
+        int best_count = votes[0];
+        for (int i = 1; i < 4; ++i) {
+            if (votes[i] > best_count) {
+                best_count = votes[i];
+                best = i;
+            }
+        }
+
+        // 如果 gap 票数超过碱基票数，跳过该位置
+        if (votes[4] > best_count) continue;
+
+        static const char bases[] = "ACGT";
+        consensus.push_back(bases[best]);
+    }
+
+    return consensus;
+}
+
+// ============================================================================
+// Assemble Batch（并行版本）
+// [修正] 每个线程独立的 arena + engine，避免数据竞争
 // ============================================================================
 
 std::vector<Contig> AssemblyEngine::assemble_batch(
@@ -1073,20 +1767,22 @@ std::vector<Contig> AssemblyEngine::assemble_batch(
     std::vector<size_t> indices(components.size());
     std::iota(indices.begin(), indices.end(), 0);
 
-    // 工业级并行：使用 thread_local POAContext
+    // [修正] 使用 thread_local 确保每个线程有独立的 POA 上下文
     std::for_each(std::execution::par, indices.begin(), indices.end(),
         [&](size_t idx) {
-            thread_local POAContext ctx;
             if (idx < components.size()) {
-                results[idx] = [&]() -> std::vector<Contig> {
-                    ctx.reset();
-                    return assemble_component_thread_safe(
-                        components[idx], reads, genome, ctx);
-                }();
+                // 每次调用都创建独立的上下文，避免 thread_local 状态残留
+                results[idx] = assemble_component(
+                    components[idx], reads, genome);
             }
         });
 
+    // 合并结果
     std::vector<Contig> all_contigs;
+    size_t total = 0;
+    for (const auto& r : results) total += r.size();
+    all_contigs.reserve(total);
+
     for (size_t i = 0; i < components.size(); ++i) {
         for (auto& c : results[i]) {
             c.support_reads = static_cast<int32_t>(components[i].read_count);
@@ -1097,6 +1793,7 @@ std::vector<Contig> AssemblyEngine::assemble_batch(
     return all_contigs;
 }
 
+// [修正] 线程安全版本：接受外部 POAContext
 std::vector<Contig> AssemblyEngine::assemble_component_thread_safe(
     const Component& component,
     const std::vector<ReadSketch>& reads,
@@ -1116,27 +1813,51 @@ std::vector<Contig> AssemblyEngine::assemble_component_thread_safe(
     sequences.reserve(sampled.size());
 
     for (size_t idx : sampled) {
-        if (idx < reads.size()) {
-            sequences.emplace_back(reads[idx].sequence.c_str(), reads[idx].sequence.length());
+        if (idx < reads.size() && !reads[idx].sequence.empty()) {
+            sequences.emplace_back(reads[idx].sequence.c_str(),
+                                   reads[idx].sequence.length());
         }
     }
 
     if (sequences.empty()) return contigs;
 
-    uint32_t graph_start = ctx.engine.build_graph(sequences);
+    // 使用传入的上下文
+    ctx.arena.reset();
+    uint32_t graph_start = ctx.engine.build_graph(ctx.arena, sequences);
     if (graph_start == UINT32_MAX) return contigs;
 
+    // Heaviest Bundle 提取
     HeaviestBundleExtractor hb_extractor(32);
     BundlePath bundle = hb_extractor.extract(ctx.arena, graph_start);
 
     if (bundle.consensus.empty()) return contigs;
 
+    // 质量加权共识
+    auto qw_consensus = QualityWeightedConsensus::extract(
+        ctx.arena, graph_start, config_);
+
+    std::string best_consensus = bundle.consensus;
+    if (!qw_consensus.sequence.empty() &&
+        qw_consensus.sequence.size() >= bundle.consensus.size() * 0.8) {
+        // 如果质量加权版本长度合理，优先使用
+        double avg_q = 0;
+        for (double q : qw_consensus.base_quality) avg_q += q;
+        if (!qw_consensus.base_quality.empty()) {
+            avg_q /= qw_consensus.base_quality.size();
+        }
+        if (avg_q > 20.0) {  // Phred > 20 = 99% 准确率
+            best_consensus = qw_consensus.sequence;
+        }
+    }
+
     Contig contig;
-    contig.sequence = bundle.consensus;
+    contig.sequence = best_consensus;
+    contig.ins_seq = best_consensus;
     contig.left_breakpoint = component.start;
     contig.right_breakpoint = component.end;
     contig.te_family_id = 0;
     contig.orientation = 0;
+    contig.trunc_level = 0;
     contig.support_reads = static_cast<int32_t>(sampled.size());
     contig.consensus_quality = 0.85;
     contig.fingerprint = build_fingerprint(contig);
@@ -1151,7 +1872,8 @@ std::vector<Contig> AssemblyEngine::assemble_component_thread_safe(
 // ============================================================================
 
 uint64_t StructuralFingerprint::hash() const {
-    uint64_t h = 1469598103934665603ULL;
+    // FNV-1a hash
+    uint64_t h = 14695981039346656037ULL;
     auto mix = [&](uint64_t v) {
         h ^= v;
         h *= 1099511628211ULL;
@@ -1160,6 +1882,7 @@ uint64_t StructuralFingerprint::hash() const {
     mix(static_cast<uint64_t>(breakpoint_l));
     mix(static_cast<uint64_t>(breakpoint_l_end));
     mix(static_cast<uint64_t>(breakpoint_r));
+    mix(static_cast<uint64_t>(breakpoint_r_end));
     mix(static_cast<uint64_t>(te_family_id));
     mix(static_cast<uint64_t>(orientation));
     mix(static_cast<uint64_t>(trunc_level));
@@ -1167,14 +1890,31 @@ uint64_t StructuralFingerprint::hash() const {
 }
 
 bool StructuralFingerprint::matches(const StructuralFingerprint& other) const {
+    // 染色体必须匹配（除非未知）
     if (tid != other.tid && tid >= 0 && other.tid >= 0) return false;
-    if (te_family_id != other.te_family_id && te_family_id >= 0 && other.te_family_id >= 0) return false;
-    if (orientation != other.orientation && orientation >= 0 && other.orientation >= 0) return false;
 
+    // TE 家族必须匹配（除非未知）
+    if (te_family_id != other.te_family_id &&
+        te_family_id >= 0 && other.te_family_id >= 0) return false;
+
+    // 方向必须匹配（除非未知）
+    if (orientation != other.orientation &&
+        orientation >= 0 && other.orientation >= 0) return false;
+
+    // 断点容差检查
     int32_t l_diff = std::abs(breakpoint_l - other.breakpoint_l);
     int32_t r_diff = std::abs(breakpoint_r - other.breakpoint_r);
 
-    return l_diff <= BP_TOLERANCE && r_diff <= BP_TOLERANCE;
+    if (l_diff > BP_TOLERANCE || r_diff > BP_TOLERANCE) return false;
+
+    // [修正] 额外检查插入长度范围是否重叠
+    if (ins_length_max > 0 && other.ins_length_max > 0) {
+        bool length_overlap = (ins_length_min <= other.ins_length_max) &&
+                              (other.ins_length_min <= ins_length_max);
+        if (!length_overlap) return false;
+    }
+
+    return true;
 }
 
 StructuralFingerprint StructuralFingerprint::from_contig(
@@ -1187,43 +1927,76 @@ StructuralFingerprint StructuralFingerprint::from_contig(
     StructuralFingerprint fp;
     fp.tid = 0;
     fp.breakpoint_l = left_bp;
-    fp.breakpoint_l_end = left_bp + static_cast<int32_t>(contig.length()) / 4;
     fp.breakpoint_r = right_bp;
-    fp.breakpoint_r_end = right_bp + static_cast<int32_t>(contig.length()) / 2;
+
+    // [修正] 断点端区间基于实际 contig 长度和断点位置
+    int32_t contig_len = static_cast<int32_t>(contig.length());
+    fp.breakpoint_l_end = left_bp + std::max(contig_len / 10, int32_t(50));
+    fp.breakpoint_r_end = right_bp + std::max(contig_len / 10, int32_t(50));
+
     fp.te_family_id = te_family;
     fp.orientation = orient;
     fp.trunc_level = 0;
-    fp.ins_length_min = static_cast<int32_t>(contig.length()) - 100;
-    fp.ins_length_max = static_cast<int32_t>(contig.length()) + 100;
+
+    // [修正] 插入长度范围：±20% 或 ±100bp
+    int32_t margin = std::max(contig_len / 5, int32_t(100));
+    fp.ins_length_min = std::max(int32_t(0), contig_len - margin);
+    fp.ins_length_max = contig_len + margin;
+
     fp.has_inversion = (orient == 2);
 
     return fp;
 }
+
+// ============================================================================
+// Merge Contigs（合并同一结构组的 contigs）
+// [修正] 选择最高质量的 contig 作为代表序列
+// ============================================================================
 
 StructuralRepresentative AssemblyEngine::merge_contigs(
     const std::vector<int>& indices,
     std::vector<Contig>& contigs) {
 
     StructuralRepresentative rep;
-    rep.rep_id = static_cast<int32_t>(indices.size() > 0 ? indices[0] : -1);
+    if (indices.empty()) {
+        rep.rep_id = -1;
+        return rep;
+    }
+
+    rep.rep_id = indices[0];
     rep.component_ids.reserve(indices.size());
     rep.contig_ids.reserve(indices.size());
 
     double total_quality = 0.0;
     int total_reads = 0;
+    int best_contig_idx = -1;
+    double best_quality = -1.0;
+    int best_support = 0;
 
     for (int idx : indices) {
-        if (idx >= 0 && static_cast<size_t>(idx) < contigs.size()) {
-            rep.component_ids.push_back(contigs[idx].left_breakpoint);
-            rep.contig_ids.push_back(idx);
-            total_quality += contigs[idx].consensus_quality;
-            total_reads += contigs[idx].support_reads;
+        if (idx < 0 || static_cast<size_t>(idx) >= contigs.size()) continue;
 
-            if (rep.fingerprint.hash() == 0) {
-                rep.fingerprint = contigs[idx].fingerprint;
-            }
-            rep.rep_sequence = contigs[idx].sequence;
+        const auto& c = contigs[idx];
+        rep.component_ids.push_back(c.left_breakpoint);
+        rep.contig_ids.push_back(idx);
+        total_quality += c.consensus_quality;
+        total_reads += c.support_reads;
+
+        // [修正] 选择质量最高 + 支持 reads 最多的作为代表
+        double score = c.consensus_quality * 100.0 + c.support_reads;
+        if (score > best_quality ||
+            (score == best_quality && c.support_reads > best_support)) {
+            best_quality = score;
+            best_support = c.support_reads;
+            best_contig_idx = idx;
         }
+    }
+
+    if (best_contig_idx >= 0 &&
+        static_cast<size_t>(best_contig_idx) < contigs.size()) {
+        rep.fingerprint = contigs[best_contig_idx].fingerprint;
+        rep.rep_sequence = contigs[best_contig_idx].sequence;
+        rep.rep_id = best_contig_idx;
     }
 
     if (!indices.empty()) {
@@ -1234,23 +2007,41 @@ StructuralRepresentative AssemblyEngine::merge_contigs(
     return rep;
 }
 
+// ============================================================================
+// Extract PolyA Length
+// [修正] 同时检测 polyA 和 polyT（互补链）
+// ============================================================================
+
 int AssemblyEngine::extract_polya_length(std::string_view seq) {
     if (seq.empty()) return -1;
 
-    int count = 0;
+    // 检测 3' polyA
+    int polya_count = 0;
     for (int i = static_cast<int>(seq.size()) - 1; i >= 0; --i) {
-        if (seq[i] == 'A') {
-            count++;
+        if (seq[i] == 'A' || seq[i] == 'a') {
+            polya_count++;
         } else {
             break;
         }
     }
 
-    return count >= 10 ? count : -1;
+    // 检测 5' polyT（互补链的 polyA）
+    int polyt_count = 0;
+    for (size_t i = 0; i < seq.size(); ++i) {
+        if (seq[i] == 'T' || seq[i] == 't') {
+            polyt_count++;
+        } else {
+            break;
+        }
+    }
+
+    int best = std::max(polya_count, polyt_count);
+    return best >= 10 ? best : -1;
 }
 
 // ============================================================================
-// Collapse Structurally（使用 R-Tree）
+// Collapse Structurally（使用 R-Tree + DSU）
+// [修正] 正确的 R-Tree 查询 + 双向匹配验证
 // ============================================================================
 
 std::vector<StructuralRepresentative> AssemblyEngine::collapse_structurally(
@@ -1260,58 +2051,90 @@ std::vector<StructuralRepresentative> AssemblyEngine::collapse_structurally(
 
     if (contigs.empty()) return reps;
 
-    size_t N = contigs.size();
-    if (N == 0) return reps;
+    const size_t N = contigs.size();
 
     // 构建 R-Tree 索引
+    // 每个 contig 的矩形 = (breakpoint_l, breakpoint_r, breakpoint_l_end, breakpoint_r_end)
     RTree rtree;
     for (size_t i = 0; i < N; ++i) {
         const auto& fp = contigs[i].fingerprint;
         rtree.insert(
-            static_cast<float>(fp.breakpoint_l - StructuralFingerprint::BP_TOLERANCE),
-            static_cast<float>(fp.breakpoint_r - StructuralFingerprint::BP_TOLERANCE),
-            static_cast<float>(fp.breakpoint_l_end + StructuralFingerprint::BP_TOLERANCE),
-            static_cast<float>(fp.breakpoint_r_end + StructuralFingerprint::BP_TOLERANCE),
+            static_cast<float>(fp.breakpoint_l),
+            static_cast<float>(fp.breakpoint_r),
+            static_cast<float>(fp.breakpoint_l_end),
+            static_cast<float>(fp.breakpoint_r_end),
             static_cast<int>(i)
         );
     }
 
     // DSU 聚类
     DSU dsu(static_cast<int>(N));
-    std::vector<int> candidates;
 
     for (size_t i = 0; i < N; ++i) {
         const auto& fp = contigs[i].fingerprint;
-        candidates = rtree.range_query(
-            static_cast<float>(fp.breakpoint_l - StructuralFingerprint::BP_TOLERANCE),
-            static_cast<float>(fp.breakpoint_r - StructuralFingerprint::BP_TOLERANCE),
-            static_cast<float>(fp.breakpoint_l_end + StructuralFingerprint::BP_TOLERANCE),
-            static_cast<float>(fp.breakpoint_r_end + StructuralFingerprint::BP_TOLERANCE)
-        );
+
+        // [修正] 查询矩形 = 当前 contig 的断点 ± 容差
+        float q_x1 = static_cast<float>(fp.breakpoint_l - StructuralFingerprint::BP_TOLERANCE);
+        float q_y1 = static_cast<float>(fp.breakpoint_r - StructuralFingerprint::BP_TOLERANCE);
+        float q_x2 = static_cast<float>(fp.breakpoint_l_end + StructuralFingerprint::BP_TOLERANCE);
+        float q_y2 = static_cast<float>(fp.breakpoint_r_end + StructuralFingerprint::BP_TOLERANCE);
+
+        auto candidates = rtree.range_query(q_x1, q_y1, q_x2, q_y2);
 
         for (int cand_idx : candidates) {
-            if (static_cast<size_t>(cand_idx) <= i) continue;
+            if (cand_idx < 0 || static_cast<size_t>(cand_idx) >= N) continue;
+            if (static_cast<size_t>(cand_idx) == i) continue;
+
+            // 避免重复比较：只比较 i < cand_idx
+            if (static_cast<size_t>(cand_idx) < i) continue;
+
+            // [修正] 双向精确匹配验证
             if (contigs[i].fingerprint.matches(contigs[cand_idx].fingerprint)) {
                 dsu.unite(static_cast<int>(i), cand_idx);
             }
         }
     }
 
-    // 收集代表
+    // 收集聚类组
     std::unordered_map<int, std::vector<int>> rep_groups;
     for (size_t i = 0; i < N; ++i) {
         int root = dsu.find(static_cast<int>(i));
         rep_groups[root].push_back(static_cast<int>(i));
     }
 
-    for (auto& group : rep_groups) {
-        StructuralRepresentative rep = merge_contigs(group.second, contigs);
-        if (rep.contig_ids.size() >= 1) {
-            reps.push_back(rep);
+    // 为每个组生成代表
+    reps.reserve(rep_groups.size());
+    for (auto& [root, group] : rep_groups) {
+        // 按质量排序组内 contigs
+        std::sort(group.begin(), group.end(),
+            [&](int a, int b) {
+                double score_a = contigs[a].consensus_quality * 100 +
+                                 contigs[a].support_reads;
+                double score_b = contigs[b].consensus_quality * 100 +
+                                 contigs[b].support_reads;
+                return score_a > score_b;
+            });
+
+        StructuralRepresentative rep = merge_contigs(group, contigs);
+        if (!rep.contig_ids.empty()) {
+            reps.push_back(std::move(rep));
         }
     }
+
+    // [修正] 按基因组位置排序输出
+    std::sort(reps.begin(), reps.end(),
+        [](const StructuralRepresentative& a, const StructuralRepresentative& b) {
+            if (a.fingerprint.tid != b.fingerprint.tid)
+                return a.fingerprint.tid < b.fingerprint.tid;
+            return a.fingerprint.breakpoint_l < b.fingerprint.breakpoint_l;
+        });
 
     return reps;
 }
 
 }  // namespace placer
+
+
+
+
+

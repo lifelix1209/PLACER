@@ -33,7 +33,7 @@ set_target_properties(hts::htslib PROPERTIES
 add_executable(placer src/main.cpp)
 
 target_include_directories(placer PRIVATE ${HTSLIB_INCLUDE_DIR})
-target_link_libraries(placer PRIVATE hts::htslib stream gate1 component local_realign assembly)
+target_link_libraries(placer PRIVATE hts::htslib stream gate1 component local_realign assembly placeability genotyping)
 
 # Add subdirectories
 add_subdirectory(src/stream)
@@ -41,6 +41,8 @@ add_subdirectory(src/gate1)
 add_subdirectory(src/component)
 add_subdirectory(src/local_realign)
 add_subdirectory(src/assembly)
+add_subdirectory(src/placeability)
+add_subdirectory(src/genotyping)
 
 # Test configuration
 enable_testing()

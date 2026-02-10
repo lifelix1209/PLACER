@@ -57,6 +57,8 @@ public:
         return static_cast<uint8_t>((data_[word_idx] >> bit_idx) & MASK);
     }
 
+    char at(size_t idx) const;
+
     // Compare two sequences (Hamming distance)
     size_t hamming_distance(const BitpackedSeq& other) const {
         size_t count = 0;
@@ -76,6 +78,9 @@ public:
         }
         return result;
     }
+
+    // Decode to string
+    std::string decode() const;
 
 private:
     std::vector<uint64_t> data_;
@@ -171,6 +176,8 @@ struct AlignmentResult {
 struct LocusEvidence {
     size_t read_idx = 0;
     int32_t locus_pos = 0;
+    int32_t read_pos = -1;  // Read position for side determination
+    int32_t read_end_pos = 0;  // Read end position for side determination
 
     // Alignment metrics
     double up_score = 0.0;
@@ -209,10 +216,17 @@ struct PlaceabilityReport {
     double best_score = 0.0;
     double second_score = 0.0;
 
+    int32_t best_locus_pos = -1;    // 最佳位点坐标
+    int best_support_count = 0;      // 最佳位点支持 reads 数
+
     // Strand consistency
     int forward_count = 0;
     int reverse_count = 0;
     bool strand_balanced = false;
+    float strand_ratio = 0.0f;       // 链比例
+
+    // 唯一性
+    bool is_ambiguous = false;      // 是否歧义
 
     // Tier determination
     int tier = 3;  // 1, 2, or 3
@@ -381,22 +395,6 @@ private:
 // =========================================================================
 // Inline implementations for performance
 // =========================================================================
-
-inline int LocalRealigner::determine_tier_(const PlaceabilityReport& report) const {
-    // Tier 1: High confidence unique placement
-    if (report.delta_score > 30.0 && report.confidence > 0.9f &&
-        report.best_normalized > 0.5 && report.strand_balanced) {
-        return 1;
-    }
-
-    // Tier 2: Multiple placements but consistent structure
-    if (report.delta_score > 10.0 && report.confidence > 0.6f) {
-        return 2;
-    }
-
-    // Tier 3: Low confidence or inconsistent
-    return 3;
-}
 
 }  // namespace placer
 

@@ -79,6 +79,14 @@ struct Component {
     // 密度统计 (用于置信度评估)
     double density = 0.0;   // anchors per bp
     uint32_t unique_strand_count = 0;  // 跨链支持
+
+    // 锚点来源统计
+    uint32_t sa_anchor_count = 0;
+    uint32_t clip_anchor_count = 0;
+    uint32_t ins_anchor_count = 0;
+
+    // 证据强度
+    double evidence_score = 0.0;
 };
 
 /**
@@ -121,6 +129,7 @@ struct ComponentBuilderConfig {
     // 锚点提取阈值
     int min_clip_len = 20;           // 最小 Clip 长度 (S/H)
     int min_ins_len = 50;           // 最小 Insertion 长度
+    int min_del_len = 50;           // 最小 Deletion 长度
 
     // 聚类参数
     int cluster_gap = 50;            // 聚类间隔阈值 (bp)
@@ -139,6 +148,10 @@ struct ComponentBuilderConfig {
     // 递归拆分参数
     int max_recursive_depth = 4;    // 最大递归深度
     double min_split_ratio = 0.3;   // 最小切分比例 (子簇 / 原始簇)
+
+    // 过滤参数
+    int min_anchors_per_cluster = 3;  // 每个 cluster 最少锚点数
+    int min_reads_per_component = 2;  // 每个 component 最少 reads 数
 };
 
 /**

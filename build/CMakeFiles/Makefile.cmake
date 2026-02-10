@@ -13,7 +13,9 @@ set(CMAKE_MAKEFILE_DEPENDS
   "../src/assembly/CMakeLists.txt"
   "../src/component/CMakeLists.txt"
   "../src/gate1/CMakeLists.txt"
+  "../src/genotyping/CMakeLists.txt"
   "../src/local_realign/CMakeLists.txt"
+  "../src/placeability/CMakeLists.txt"
   "../src/stream/CMakeLists.txt"
   "../tests/CMakeLists.txt"
   "/usr/share/cmake-3.22/Modules/CMakeCXXInformation.cmake"
@@ -46,6 +48,8 @@ set(CMAKE_MAKEFILE_PRODUCTS
   "src/component/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/local_realign/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/assembly/CMakeFiles/CMakeDirectoryInformation.cmake"
+  "src/placeability/CMakeFiles/CMakeDirectoryInformation.cmake"
+  "src/genotyping/CMakeFiles/CMakeDirectoryInformation.cmake"
   "tests/CMakeFiles/CMakeDirectoryInformation.cmake"
   )
 
@@ -57,8 +61,13 @@ set(CMAKE_DEPEND_INFO_FILES
   "src/component/CMakeFiles/component.dir/DependInfo.cmake"
   "src/local_realign/CMakeFiles/local_realign.dir/DependInfo.cmake"
   "src/assembly/CMakeFiles/assembly.dir/DependInfo.cmake"
+  "src/placeability/CMakeFiles/placeability.dir/DependInfo.cmake"
+  "src/genotyping/CMakeFiles/genotyping.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_stream.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_component.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_local_realign.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_assembly.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_placeability.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_placeability_integration.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_genotyping.dir/DependInfo.cmake"
   )

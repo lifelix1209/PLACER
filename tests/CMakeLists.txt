@@ -72,3 +72,67 @@ target_include_directories(test_assembly PRIVATE
 )
 
 add_test(NAME AssemblyTest COMMAND test_assembly)
+
+# Phase 6 Placeability + Tier Tests
+add_executable(test_placeability
+    test_placeability.cpp
+)
+
+target_link_libraries(test_placeability PRIVATE
+    stream
+    gate1
+    component
+    local_realign
+    assembly
+    placeability
+    hts::htslib
+)
+
+target_include_directories(test_placeability PRIVATE
+    ${HTSLIB_INCLUDE_DIR}
+)
+
+add_test(NAME PlaceabilityTest COMMAND test_placeability)
+
+# Placeability Integration Tests (using tldr_optimized/test data)
+add_executable(test_placeability_integration
+    test_placeability_integration.cpp
+)
+
+target_link_libraries(test_placeability_integration PRIVATE
+    stream
+    gate1
+    component
+    local_realign
+    assembly
+    placeability
+    hts::htslib
+)
+
+target_include_directories(test_placeability_integration PRIVATE
+    ${HTSLIB_INCLUDE_DIR}
+)
+
+add_test(NAME PlaceabilityIntegrationTest COMMAND test_placeability_integration)
+
+# Phase 7 Genotyping Tests
+add_executable(test_genotyping
+    test_genotyping.cpp
+)
+
+target_link_libraries(test_genotyping PRIVATE
+    stream
+    gate1
+    component
+    local_realign
+    assembly
+    placeability
+    genotyping
+    hts::htslib
+)
+
+target_include_directories(test_genotyping PRIVATE
+    ${HTSLIB_INCLUDE_DIR}
+)
+
+add_test(NAME GenotypingTest COMMAND test_genotyping)

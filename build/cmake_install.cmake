@@ -1,4 +1,4 @@
-# Install script for directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER
+# Install script for directory: /mnt/home1/miska/hl725/projects/PLACER
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -44,32 +44,42 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream/cmake_install.cmake")
+  include("/mnt/home1/miska/hl725/projects/PLACER/build/src/stream/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/gate1/cmake_install.cmake")
+  include("/mnt/home1/miska/hl725/projects/PLACER/build/src/gate1/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/component/cmake_install.cmake")
+  include("/mnt/home1/miska/hl725/projects/PLACER/build/src/component/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/local_realign/cmake_install.cmake")
+  include("/mnt/home1/miska/hl725/projects/PLACER/build/src/local_realign/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/assembly/cmake_install.cmake")
+  include("/mnt/home1/miska/hl725/projects/PLACER/build/src/assembly/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/cmake_install.cmake")
+  include("/mnt/home1/miska/hl725/projects/PLACER/build/src/placeability/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("/mnt/home1/miska/hl725/projects/PLACER/build/src/genotyping/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("/mnt/home1/miska/hl725/projects/PLACER/build/tests/cmake_install.cmake")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT)
@@ -80,5 +90,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "/mnt/home1/miska/hl725/projects/PLACER/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")

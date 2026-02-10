@@ -1,9 +1,9 @@
 src/assembly/CMakeFiles/assembly.dir/assembly.cpp.o: \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/assembly/assembly.cpp \
+ /mnt/home1/miska/hl725/projects/PLACER/src/assembly/assembly.cpp \
  /usr/include/stdc-predef.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/assembly/../../include/assembly.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/assembly/../../include/component_builder.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/assembly/../../include/bam_reader.h \
+ /mnt/home1/miska/hl725/projects/PLACER/src/assembly/../../include/assembly.h \
+ /mnt/home1/miska/hl725/projects/PLACER/src/assembly/../../include/component_builder.h \
+ /mnt/home1/miska/hl725/projects/PLACER/src/assembly/../../include/bam_reader.h \
  /usr/include/c++/11/string \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/os_defines.h \
@@ -177,7 +177,7 @@ src/assembly/CMakeFiles/assembly.dir/assembly.cpp.o: \
  /usr/include/x86_64-linux-gnu/bits/uio_lim.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/kroundup.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts_endian.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/assembly/../../include/task_queue.h \
+ /mnt/home1/miska/hl725/projects/PLACER/src/assembly/../../include/task_queue.h \
  /usr/include/c++/11/queue /usr/include/c++/11/deque \
  /usr/include/c++/11/bits/stl_deque.h /usr/include/c++/11/bits/deque.tcc \
  /usr/include/c++/11/bits/stl_queue.h /usr/include/c++/11/memory \
@@ -226,7 +226,7 @@ src/assembly/CMakeFiles/assembly.dir/assembly.cpp.o: \
  /usr/include/c++/11/bits/fstream.tcc /usr/include/c++/11/numeric \
  /usr/include/c++/11/bits/stl_numeric.h \
  /usr/include/c++/11/pstl/glue_numeric_defs.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/assembly/../../include/local_realign.h \
+ /mnt/home1/miska/hl725/projects/PLACER/src/assembly/../../include/local_realign.h \
  /usr/include/c++/11/optional /usr/include/c++/11/concepts \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/faidx.h \
  /usr/include/c++/11/algorithm \
@@ -279,4 +279,5 @@ src/assembly/CMakeFiles/assembly.dir/assembly.cpp.o: \
  /usr/include/c++/11/pstl/glue_memory_impl.h /usr/include/c++/11/iostream \
  /usr/include/c++/11/random /usr/include/c++/11/bits/random.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/opt_random.h \
- /usr/include/c++/11/bits/random.tcc
+ /usr/include/c++/11/bits/random.tcc /usr/include/c++/11/cassert \
+ /usr/include/assert.h
