@@ -69,6 +69,7 @@
 /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_placeability.dir
 /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_placeability_integration.dir
 /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_genotyping.dir
+/mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_te_reverse_index.dir
 /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test.dir
 /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/edit_cache.dir
 /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/rebuild_cache.dir
@@ -76,3 +77,11 @@
 /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/install.dir
 /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/install/local.dir
 /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/install/strip.dir
+/mnt/home1/miska/hl725/projects/PLACER/build/src/te_reverse_index/CMakeFiles/te_reverse_index.dir
+/mnt/home1/miska/hl725/projects/PLACER/build/src/te_reverse_index/CMakeFiles/test.dir
+/mnt/home1/miska/hl725/projects/PLACER/build/src/te_reverse_index/CMakeFiles/edit_cache.dir
+/mnt/home1/miska/hl725/projects/PLACER/build/src/te_reverse_index/CMakeFiles/rebuild_cache.dir
+/mnt/home1/miska/hl725/projects/PLACER/build/src/te_reverse_index/CMakeFiles/list_install_components.dir
+/mnt/home1/miska/hl725/projects/PLACER/build/src/te_reverse_index/CMakeFiles/install.dir
+/mnt/home1/miska/hl725/projects/PLACER/build/src/te_reverse_index/CMakeFiles/install/local.dir
+/mnt/home1/miska/hl725/projects/PLACER/build/src/te_reverse_index/CMakeFiles/install/strip.dir

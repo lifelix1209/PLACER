@@ -72,6 +72,7 @@ all: src/assembly/all
 all: src/placeability/all
 all: src/genotyping/all
 all: tests/all
+all: src/te_reverse_index/all
 .PHONY : all
 
 # The main recursive "preinstall" target.
@@ -83,6 +84,7 @@ preinstall: src/assembly/preinstall
 preinstall: src/placeability/preinstall
 preinstall: src/genotyping/preinstall
 preinstall: tests/preinstall
+preinstall: src/te_reverse_index/preinstall
 .PHONY : preinstall
 
 # The main recursive "clean" target.
@@ -95,6 +97,7 @@ clean: src/assembly/clean
 clean: src/placeability/clean
 clean: src/genotyping/clean
 clean: tests/clean
+clean: src/te_reverse_index/clean
 .PHONY : clean
 
 #=============================================================================
@@ -203,6 +206,21 @@ src/stream/clean: src/stream/CMakeFiles/stream.dir/clean
 .PHONY : src/stream/clean
 
 #=============================================================================
+# Directory level rules for directory src/te_reverse_index
+
+# Recursive "all" directory target.
+src/te_reverse_index/all: src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all
+.PHONY : src/te_reverse_index/all
+
+# Recursive "preinstall" directory target.
+src/te_reverse_index/preinstall:
+.PHONY : src/te_reverse_index/preinstall
+
+# Recursive "clean" directory target.
+src/te_reverse_index/clean: src/te_reverse_index/CMakeFiles/te_reverse_index.dir/clean
+.PHONY : src/te_reverse_index/clean
+
+#=============================================================================
 # Directory level rules for directory tests
 
 # Recursive "all" directory target.
@@ -213,6 +231,7 @@ tests/all: tests/CMakeFiles/test_assembly.dir/all
 tests/all: tests/CMakeFiles/test_placeability.dir/all
 tests/all: tests/CMakeFiles/test_placeability_integration.dir/all
 tests/all: tests/CMakeFiles/test_genotyping.dir/all
+tests/all: tests/CMakeFiles/test_te_reverse_index.dir/all
 .PHONY : tests/all
 
 # Recursive "preinstall" directory target.
@@ -227,6 +246,7 @@ tests/clean: tests/CMakeFiles/test_assembly.dir/clean
 tests/clean: tests/CMakeFiles/test_placeability.dir/clean
 tests/clean: tests/CMakeFiles/test_placeability_integration.dir/clean
 tests/clean: tests/CMakeFiles/test_genotyping.dir/clean
+tests/clean: tests/CMakeFiles/test_te_reverse_index.dir/clean
 .PHONY : tests/clean
 
 #=============================================================================
@@ -240,6 +260,7 @@ CMakeFiles/placer.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
 CMakeFiles/placer.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 CMakeFiles/placer.dir/all: src/placeability/CMakeFiles/placeability.dir/all
 CMakeFiles/placer.dir/all: src/genotyping/CMakeFiles/genotyping.dir/all
+CMakeFiles/placer.dir/all: src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer.dir/build.make CMakeFiles/placer.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer.dir/build.make CMakeFiles/placer.dir/build
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=14,15 "Built target placer"
@@ -247,7 +268,7 @@ CMakeFiles/placer.dir/all: src/genotyping/CMakeFiles/genotyping.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/placer.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 20
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 22
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/placer.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : CMakeFiles/placer.dir/rule
@@ -462,7 +483,7 @@ tests/CMakeFiles/test_stream.dir/all: src/stream/CMakeFiles/stream.dir/all
 tests/CMakeFiles/test_stream.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=33,34 "Built target test_stream"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=35,36 "Built target test_stream"
 .PHONY : tests/CMakeFiles/test_stream.dir/all
 
 # Build rule for subdir invocation for target.
@@ -490,7 +511,7 @@ tests/CMakeFiles/test_component.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 tests/CMakeFiles/test_component.dir/all: src/component/CMakeFiles/component.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=23,24 "Built target test_component"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=25,26 "Built target test_component"
 .PHONY : tests/CMakeFiles/test_component.dir/all
 
 # Build rule for subdir invocation for target.
@@ -519,7 +540,7 @@ tests/CMakeFiles/test_local_realign.dir/all: src/component/CMakeFiles/component.
 tests/CMakeFiles/test_local_realign.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=27,28 "Built target test_local_realign"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=29,30 "Built target test_local_realign"
 .PHONY : tests/CMakeFiles/test_local_realign.dir/all
 
 # Build rule for subdir invocation for target.
@@ -549,7 +570,7 @@ tests/CMakeFiles/test_assembly.dir/all: src/local_realign/CMakeFiles/local_reali
 tests/CMakeFiles/test_assembly.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_assembly.dir/build.make tests/CMakeFiles/test_assembly.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_assembly.dir/build.make tests/CMakeFiles/test_assembly.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=21,22 "Built target test_assembly"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=23,24 "Built target test_assembly"
 .PHONY : tests/CMakeFiles/test_assembly.dir/all
 
 # Build rule for subdir invocation for target.
@@ -580,7 +601,7 @@ tests/CMakeFiles/test_placeability.dir/all: src/assembly/CMakeFiles/assembly.dir
 tests/CMakeFiles/test_placeability.dir/all: src/placeability/CMakeFiles/placeability.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability.dir/build.make tests/CMakeFiles/test_placeability.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability.dir/build.make tests/CMakeFiles/test_placeability.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=29,30 "Built target test_placeability"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=31,32 "Built target test_placeability"
 .PHONY : tests/CMakeFiles/test_placeability.dir/all
 
 # Build rule for subdir invocation for target.
@@ -611,7 +632,7 @@ tests/CMakeFiles/test_placeability_integration.dir/all: src/assembly/CMakeFiles/
 tests/CMakeFiles/test_placeability_integration.dir/all: src/placeability/CMakeFiles/placeability.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability_integration.dir/build.make tests/CMakeFiles/test_placeability_integration.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability_integration.dir/build.make tests/CMakeFiles/test_placeability_integration.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=31,32 "Built target test_placeability_integration"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=33,34 "Built target test_placeability_integration"
 .PHONY : tests/CMakeFiles/test_placeability_integration.dir/all
 
 # Build rule for subdir invocation for target.
@@ -643,7 +664,7 @@ tests/CMakeFiles/test_genotyping.dir/all: src/placeability/CMakeFiles/placeabili
 tests/CMakeFiles/test_genotyping.dir/all: src/genotyping/CMakeFiles/genotyping.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_genotyping.dir/build.make tests/CMakeFiles/test_genotyping.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_genotyping.dir/build.make tests/CMakeFiles/test_genotyping.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=25,26 "Built target test_genotyping"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=27,28 "Built target test_genotyping"
 .PHONY : tests/CMakeFiles/test_genotyping.dir/all
 
 # Build rule for subdir invocation for target.
@@ -661,6 +682,67 @@ test_genotyping: tests/CMakeFiles/test_genotyping.dir/rule
 tests/CMakeFiles/test_genotyping.dir/clean:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_genotyping.dir/build.make tests/CMakeFiles/test_genotyping.dir/clean
 .PHONY : tests/CMakeFiles/test_genotyping.dir/clean
+
+#=============================================================================
+# Target rules for target tests/CMakeFiles/test_te_reverse_index.dir
+
+# All Build rule for target.
+tests/CMakeFiles/test_te_reverse_index.dir/all: src/stream/CMakeFiles/stream.dir/all
+tests/CMakeFiles/test_te_reverse_index.dir/all: src/gate1/CMakeFiles/gate1.dir/all
+tests/CMakeFiles/test_te_reverse_index.dir/all: src/component/CMakeFiles/component.dir/all
+tests/CMakeFiles/test_te_reverse_index.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+tests/CMakeFiles/test_te_reverse_index.dir/all: src/assembly/CMakeFiles/assembly.dir/all
+tests/CMakeFiles/test_te_reverse_index.dir/all: src/placeability/CMakeFiles/placeability.dir/all
+tests/CMakeFiles/test_te_reverse_index.dir/all: src/genotyping/CMakeFiles/genotyping.dir/all
+tests/CMakeFiles/test_te_reverse_index.dir/all: src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/depend
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=37,38 "Built target test_te_reverse_index"
+.PHONY : tests/CMakeFiles/test_te_reverse_index.dir/all
+
+# Build rule for subdir invocation for target.
+tests/CMakeFiles/test_te_reverse_index.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 22
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_te_reverse_index.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+.PHONY : tests/CMakeFiles/test_te_reverse_index.dir/rule
+
+# Convenience name for target.
+test_te_reverse_index: tests/CMakeFiles/test_te_reverse_index.dir/rule
+.PHONY : test_te_reverse_index
+
+# clean rule for target.
+tests/CMakeFiles/test_te_reverse_index.dir/clean:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/clean
+.PHONY : tests/CMakeFiles/test_te_reverse_index.dir/clean
+
+#=============================================================================
+# Target rules for target src/te_reverse_index/CMakeFiles/te_reverse_index.dir
+
+# All Build rule for target.
+src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all: src/stream/CMakeFiles/stream.dir/all
+src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all: src/gate1/CMakeFiles/gate1.dir/all
+src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all: src/component/CMakeFiles/component.dir/all
+	$(MAKE) $(MAKESILENT) -f src/te_reverse_index/CMakeFiles/te_reverse_index.dir/build.make src/te_reverse_index/CMakeFiles/te_reverse_index.dir/depend
+	$(MAKE) $(MAKESILENT) -f src/te_reverse_index/CMakeFiles/te_reverse_index.dir/build.make src/te_reverse_index/CMakeFiles/te_reverse_index.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=21,22 "Built target te_reverse_index"
+.PHONY : src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all
+
+# Build rule for subdir invocation for target.
+src/te_reverse_index/CMakeFiles/te_reverse_index.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 12
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+.PHONY : src/te_reverse_index/CMakeFiles/te_reverse_index.dir/rule
+
+# Convenience name for target.
+te_reverse_index: src/te_reverse_index/CMakeFiles/te_reverse_index.dir/rule
+.PHONY : te_reverse_index
+
+# clean rule for target.
+src/te_reverse_index/CMakeFiles/te_reverse_index.dir/clean:
+	$(MAKE) $(MAKESILENT) -f src/te_reverse_index/CMakeFiles/te_reverse_index.dir/build.make src/te_reverse_index/CMakeFiles/te_reverse_index.dir/clean
+.PHONY : src/te_reverse_index/CMakeFiles/te_reverse_index.dir/clean
 
 #=============================================================================
 # Special targets to cleanup operation of make.

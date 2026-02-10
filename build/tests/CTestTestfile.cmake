@@ -18,3 +18,5 @@ add_test(PlaceabilityIntegrationTest "/mnt/home1/miska/hl725/projects/PLACER/bui
 set_tests_properties(PlaceabilityIntegrationTest PROPERTIES  _BACKTRACE_TRIPLES "/mnt/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;116;add_test;/mnt/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;0;")
 add_test(GenotypingTest "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_genotyping")
 set_tests_properties(GenotypingTest PROPERTIES  _BACKTRACE_TRIPLES "/mnt/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;138;add_test;/mnt/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;0;")
+add_test(TEReverseIndexTest "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_te_reverse_index")
+set_tests_properties(TEReverseIndexTest PROPERTIES  _BACKTRACE_TRIPLES "/mnt/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;161;add_test;/mnt/home1/miska/hl725/projects/PLACER/tests/CMakeLists.txt;0;")

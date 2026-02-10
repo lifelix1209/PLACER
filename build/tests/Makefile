@@ -269,6 +269,20 @@ test_genotyping/fast:
 	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_genotyping.dir/build.make tests/CMakeFiles/test_genotyping.dir/build
 .PHONY : test_genotyping/fast
 
+# Convenience name for target.
+tests/CMakeFiles/test_te_reverse_index.dir/rule:
+	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_te_reverse_index.dir/rule
+.PHONY : tests/CMakeFiles/test_te_reverse_index.dir/rule
+
+# Convenience name for target.
+test_te_reverse_index: tests/CMakeFiles/test_te_reverse_index.dir/rule
+.PHONY : test_te_reverse_index
+
+# fast build rule for target.
+test_te_reverse_index/fast:
+	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/build
+.PHONY : test_te_reverse_index/fast
+
 test_assembly.o: test_assembly.cpp.o
 .PHONY : test_assembly.o
 
@@ -437,6 +451,30 @@ test_stream.cpp.s:
 	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/test_stream.cpp.s
 .PHONY : test_stream.cpp.s
 
+test_te_reverse_index.o: test_te_reverse_index.cpp.o
+.PHONY : test_te_reverse_index.o
+
+# target to build an object file
+test_te_reverse_index.cpp.o:
+	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/test_te_reverse_index.cpp.o
+.PHONY : test_te_reverse_index.cpp.o
+
+test_te_reverse_index.i: test_te_reverse_index.cpp.i
+.PHONY : test_te_reverse_index.i
+
+# target to preprocess a source file
+test_te_reverse_index.cpp.i:
+	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/test_te_reverse_index.cpp.i
+.PHONY : test_te_reverse_index.cpp.i
+
+test_te_reverse_index.s: test_te_reverse_index.cpp.s
+.PHONY : test_te_reverse_index.s
+
+# target to generate assembly for a file
+test_te_reverse_index.cpp.s:
+	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/test_te_reverse_index.cpp.s
+.PHONY : test_te_reverse_index.cpp.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -457,6 +495,7 @@ help:
 	@echo "... test_placeability"
 	@echo "... test_placeability_integration"
 	@echo "... test_stream"
+	@echo "... test_te_reverse_index"
 	@echo "... test_assembly.o"
 	@echo "... test_assembly.i"
 	@echo "... test_assembly.s"
@@ -478,6 +517,9 @@ help:
 	@echo "... test_stream.o"
 	@echo "... test_stream.i"
 	@echo "... test_stream.s"
+	@echo "... test_te_reverse_index.o"
+	@echo "... test_te_reverse_index.i"
+	@echo "... test_te_reverse_index.s"
 .PHONY : help
 
 

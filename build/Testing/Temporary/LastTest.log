@@ -1,10 +1,443 @@
-Start testing: Feb 10 13:04 UTC
+Start testing: Feb 10 17:38 UTC
 ----------------------------------------------------------
-1/7 Testing: StreamTest
-1/7 Test: StreamTest
+8/8 Testing: TEReverseIndexTest
+8/8 Test: TEReverseIndexTest
+Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_te_reverse_index"
+Directory: /mnt/home1/miska/hl725/projects/PLACER/build/tests
+"TEReverseIndexTest" start time: Feb 10 17:38 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Phase 8 TE Reverse Index Tests ===
+
+Testing TEReverseIndexConfig...
+  TEReverseIndexConfig tests passed!
+
+Testing GenomeKmerIndex...
+GenomeKmerIndex built from 2 sequences: 20 bases, 8 unique k-mers
+  GenomeKmerIndex tests passed!
+
+Testing RescuedLocus...
+  RescuedLocus tests passed!
+
+Testing ReadRescueResult...
+  ReadRescueResult tests passed!
+
+Testing TEReverseIndex...
+GenomeKmerIndex built from 1 sequences: 12 bases, 4 unique k-mers
+  TEReverseIndex basic tests passed!
+
+Testing Utility Functions...
+  Utility Functions tests passed!
+
+Testing Rescue Pipeline Integration...
+  Rescue Pipeline integration tests passed!
+
+=== All Phase 8 tests passed! ===
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"TEReverseIndexTest" end time: Feb 10 17:38 UTC
+"TEReverseIndexTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/8 Testing: GenotypingTest
+7/8 Test: GenotypingTest
+Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_genotyping"
+Directory: /mnt/home1/miska/hl725/projects/PLACER/build/tests
+"GenotypingTest" start time: Feb 10 17:38 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Phase 7 Genotyping Tests ===
+
+Testing GenotypeConfig...
+  GenotypeConfig tests passed!
+
+Testing GenotypeResult...
+  GenotypeResult tests passed!
+
+Testing ReadEvidence...
+  ReadEvidence tests passed!
+
+Testing SpatialPriorCalculator...
+  SpatialPriorCalculator tests passed!
+
+Testing StructuralPriorCalculator...
+  StructuralPriorCalculator tests passed!
+
+Testing EMEngine...
+  EM converged: PASS
+  Positive log likelihood: PASS
+  E[ALT] + E[REF] + E[NULL] = 1: PASS
+  High ALT fraction: PASS
+  Empty evidence: mix_null=1: PASS
+  EMEngine tests passed!
+
+Testing Genotyper...
+  Genotype produced: PASS
+  Valid genotype: PASS
+  GQ computed: PASS
+  AF computed: PASS
+  Genotyper tests passed!
+
+Testing Utility Functions...
+  Beta CI low >= 0: PASS
+  Beta CI high <= 1: PASS
+  Beta CI valid range: PASS
+  Phred from prob: PASS
+  Positive likelihood ratio: PASS
+  Utility Functions tests passed!
+
+Testing Genotyping Pipeline Integration...
+  ALT signal: GT=0/1 mix_alt=0.999998 mix_ref=9.99998e-07 mix_null=9.99998e-07
+  Clear ALT: high mix_alt: PASS
+  High NULL: GT=0/0 mix_null=0.999998
+  High NULL: marked: PASS
+  Genotyping Pipeline tests passed!
+
+=== All Phase 7 tests passed! ===
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"GenotypingTest" end time: Feb 10 17:38 UTC
+"GenotypingTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/8 Testing: PlaceabilityIntegrationTest
+6/8 Test: PlaceabilityIntegrationTest
+Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_placeability_integration"
+Directory: /mnt/home1/miska/hl725/projects/PLACER/build/tests
+"PlaceabilityIntegrationTest" start time: Feb 10 17:38 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Placeability Integration Tests ===
+
+=== Integration Test with tldr_optimized/test data ===
+Loaded 1 targets from targets.test.txt
+
+--- Target 1: chrTEST:90777-90789 ---
+  Best locus: 90777
+  Delta score: 1.42084
+  Tier: 3
+  Support reads: 8
+  Side consistent: no
+  TSD found: yes
+  TSD length: 13
+  INFO: PLACEABILITY=1.028;TIER=3;DELTA=1.42;CONSISTENCY=0.969;CANDIDATES=2;SUPPORT=8;SIDES=INCONSISTENT;STR...
+
+=== Integration test passed! ===
+
+=== TSD Detection with Realistic Flanks ===
+  Test 1 - Perfect TSD: found=1 len=18 method=exact_prefix
+  Test 2 - 1-mismatch TSD: found=1 len=17
+  Test 3 - No TSD: found=0
+  Test 4 - PolyA TSD: found=1 sig=0
+  All TSD tests passed!
+
+=== Tier Classification Tests ===
+  Tier 1 test: tier=3 delta=4.2724
+  Tier 5 test (empty): tier=5
+  Ambiguous test: tier=4 candidates=3
+  All tier classification tests passed!
+
+=== Output Format Tests ===
+  INFO field: PLACEABILITY=45.200;TIER=1;DELTA=35.50;CONSISTENCY=0.880;CANDIDATES=2;SUPPORT=8;...
+  JSON length: 451 bytes
+  All output format tests passed!
+
+=== All Integration Tests Passed! ===
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"PlaceabilityIntegrationTest" end time: Feb 10 17:38 UTC
+"PlaceabilityIntegrationTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/8 Testing: PlaceabilityTest
+5/8 Test: PlaceabilityTest
+Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_placeability"
+Directory: /mnt/home1/miska/hl725/projects/PLACER/build/tests
+"PlaceabilityTest" start time: Feb 10 17:38 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Phase 6 Placeability + Tier Tests ===
+
+Testing PlaceabilityConfig...
+  PlaceabilityConfig tests passed!
+
+Testing ExtendedPlaceabilityReport...
+  ExtendedPlaceabilityReport tests passed!
+
+Testing Placeability Score Calculation...
+  high delta calculation: PASS
+  low delta calculation: PASS
+  same scores delta: PASS
+  negative scores delta: PASS
+  Placeability Score tests passed!
+
+Testing Side Consistency...
+  consistent sides (within threshold): PASS
+  inconsistent sides check: PASS
+  exact same positions: PASS
+  one side missing: PASS
+  Side Consistency tests passed!
+
+Testing Support Consistency...
+  high support consistency: PASS
+  low support consistency: FAIL
+  single score consistency: PASS
+  empty scores consistency: PASS
+  Support Consistency tests passed!
+
+Testing Tier Determination...
+  tier 1 determination: FAIL
+  tier 2 or 3 determination: FAIL
+  tier 3 determination: FAIL
+  tier boundary case: FAIL
+  Tier Determination tests passed!
+
+Testing TSD Detection...
+  valid TSD found: PASS
+  TSD length positive: PASS
+  TSD detection runs: PASS
+  TSD with prefix match: PASS
+  TSD prefix length: FAIL
+  TSD Detection tests passed!
+
+Testing TSD Significance...
+  TSD significance check runs: PASS
+  polyA TSD not significant: PASS
+  TSD Significance tests passed!
+
+Testing Locus Evidence...
+  locus evidence batch size: PASS
+  locus evidence average: PASS
+  Locus Evidence tests passed!
+
+Testing Full Placeability Pipeline...
+  pipeline: best locus: PASS
+  pipeline: delta score: PASS
+  pipeline: candidate count: PASS
+  pipeline: side consistent: PASS
+  pipeline: tier determined: PASS
+  Full Placeability Pipeline tests passed!
+
+Testing Placeability Output...
+  info fields not empty: PASS
+  info contains tier: PASS
+  info contains delta: PASS
+  tier 1 description: PASS
+  tier 2 description: PASS
+  TSD info not empty: PASS
+  TSD info contains length: PASS
+  Placeability Output tests passed!
+
+=== All Phase 6 tests passed! ===
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"PlaceabilityTest" end time: Feb 10 17:38 UTC
+"PlaceabilityTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/8 Testing: LocalRealignTest
+3/8 Test: LocalRealignTest
+Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_local_realign"
+Directory: /mnt/home1/miska/hl725/projects/PLACER/build/tests
+"LocalRealignTest" start time: Feb 10 17:38 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Phase 4 Industrial-Grade Tests ===
+Testing BitpackedSeq (2-bit encoding)...
+  Original size: 12 bytes
+  Packed size: 12 bases
+  Memory reduction: 33.3333%
+  BitpackedSeq tests passed!
+Testing SeqView (zero-copy)...
+  SeqView tests passed!
+Testing RealignConfig...
+  RealignConfig tests passed!
+Testing align_sequences...
+  Perfect match score: 15
+  Matches: 12
+  Identity: 1
+  Normalized: 1.25
+  Mismatch score: -1e+09
+  align_sequences tests passed!
+Testing find_seeds...
+  Found 5 seeds (k=4, stride=2)
+  First seed (ACGT): 27
+  find_seeds tests passed!
+Testing populate_locus_set...
+  Locus count: 4
+    Locus: pos=1500, score=60, evidence=1
+    Locus: pos=1600, score=50, evidence=1
+    Locus: pos=3500, score=54, evidence=1
+    Locus: pos=3600, score=45, evidence=1
+  populate_locus_set tests passed!
+Testing rank_loci...
+  rank_loci tests passed!
+Testing placeability calculation...
+  Best score: 1.16
+  Second score: 0
+  Delta: 1.16
+  Confidence: 0.673333
+  placeability tests passed!
+Testing tier determination...
+  Tier determination tests passed!
+Testing batch processing interface...
+  Batch interface test passed!
+
+=== All Industrial-Grade tests passed! ===
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"LocalRealignTest" end time: Feb 10 17:38 UTC
+"LocalRealignTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/8 Testing: AssemblyTest
+4/8 Test: AssemblyTest
+Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_assembly"
+Directory: /mnt/home1/miska/hl725/projects/PLACER/build/tests
+"AssemblyTest" start time: Feb 10 17:38 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Phase 5 Assembly + Collapsing Tests ===
+
+Testing AssemblyConfig...
+  AssemblyConfig tests passed!
+
+Testing StructuralFingerprint...
+  from_contig: PASS
+  hash consistency: PASS
+  fingerprint matches: PASS
+  fingerprint no-match: PASS
+  StructuralFingerprint tests passed!
+
+Testing POA Assembly...
+  single sequence: PASS
+  identical sequences: PASS
+  majority vote: PASS
+  N base handling: PASS
+  POA assembly tests passed!
+
+Testing Multi-Path POA...
+  multi-path input: PASS
+  Multi-path POA tests passed!
+
+Testing Contig Structure...
+  contig sequence: PASS
+  contig up flank: PASS
+  contig ins: PASS
+  contig down flank: PASS
+  left breakpoint: PASS
+  right breakpoint: PASS
+  Contig structure tests passed!
+
+Testing StructuralRepresentative...
+  rep_id: PASS
+  contig_ids: PASS
+  polymorphism: PASS
+  polyA mean: PASS
+  StructuralRepresentative tests passed!
+
+Testing Structural Collapsing...
+  collapse count: PASS
+  merged total_reads: PASS
+  merged avg_quality: PASS
+  merged representative found: PASS
+  Structural collapsing tests passed!
+
+Testing AssemblyEngine...
+  empty batch: PASS
+  AssemblyEngine interface tests passed!
+
+Testing PolyA Extraction...
+  polyA mean: PASS
+  PolyA extraction tests passed!
+
+=== All Phase 5 tests passed! ===
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"AssemblyTest" end time: Feb 10 17:38 UTC
+"AssemblyTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/8 Testing: ComponentTest
+2/8 Test: ComponentTest
+Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_component"
+Directory: /mnt/home1/miska/hl725/projects/PLACER/build/tests
+"ComponentTest" start time: Feb 10 17:38 UTC
+Output:
+----------------------------------------------------------
+=== PLACER Phase 3 Tests ===
+Testing ComponentBuilder (empty input)...
+  Empty input tests passed!
+Testing ComponentBuilder (reads without signals)...
+  Components: 0
+  Anchors: 0
+  No signals tests passed!
+Testing ComponentBuilder (basic)...
+  Total anchors: 0
+  Components: 0
+  Components created:
+  Basic ComponentBuilder tests passed!
+Testing ComponentBuilder (multi-chromosome)...
+  Components: 0
+  Multi-chromosome tests passed!
+Testing ComponentBuilder (span threshold)...
+  Breakers triggered: 0
+  Components: 0
+  Span threshold tests passed!
+Testing ComponentBuilder (insertion events)...
+  Components: 0
+  Anchors: 0
+  Insertion event tests passed!
+Testing ComponentBuilder (SA splits)...
+  Anchors: 0
+  SA split tests passed!
+Testing ComponentBuilder (real BAM data)...
+  Loaded 79 reads from BAM
+  Total anchors: 191
+  Components: 14
+  Breakers triggered: 0
+    Component 0: [74813-74824], reads=3, anchors=3
+    Component 1: [80279-80311], reads=8, anchors=8
+    Component 2: [81072-81116], reads=4, anchors=4
+    Component 3: [81200-81203], reads=6, anchors=6
+    Component 4: [82619-82671], reads=5, anchors=5
+    Component 5: [84027-84034], reads=3, anchors=3
+    Component 6: [84394-84394], reads=4, anchors=4
+    Component 7: [84484-84512], reads=7, anchors=7
+    Component 8: [86456-86468], reads=7, anchors=7
+    Component 9: [86982-86982], reads=4, anchors=4
+    Component 10: [88212-88212], reads=4, anchors=4
+    Component 11: [90223-90274], reads=3, anchors=3
+    Component 12: [90500-90500], reads=3, anchors=3
+    Component 13: [90777-90815], reads=22, anchors=22
+  Real BAM tests passed!
+
+=== All Phase 3 tests passed! ===
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"ComponentTest" end time: Feb 10 17:38 UTC
+"ComponentTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+1/8 Testing: StreamTest
+1/8 Test: StreamTest
 Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_stream"
-Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
-"StreamTest" start time: Feb 10 13:04 UTC
+Directory: /mnt/home1/miska/hl725/projects/PLACER/build/tests
+"StreamTest" start time: Feb 10 17:38 UTC
 Output:
 ----------------------------------------------------------
 === PLACER Phase 1 Tests ===
@@ -92,403 +525,11 @@ Testing Gate1 with real BAM data...
 
 === All tests passed! ===
 <end of output>
-Test time =   0.35 sec
+Test time =   0.07 sec
 ----------------------------------------------------------
 Test Passed.
-"StreamTest" end time: Feb 10 13:04 UTC
+"StreamTest" end time: Feb 10 17:38 UTC
 "StreamTest" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-2/7 Testing: ComponentTest
-2/7 Test: ComponentTest
-Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_component"
-Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
-"ComponentTest" start time: Feb 10 13:04 UTC
-Output:
-----------------------------------------------------------
-=== PLACER Phase 3 Tests ===
-Testing ComponentBuilder (empty input)...
-  Empty input tests passed!
-Testing ComponentBuilder (reads without signals)...
-  Components: 0
-  Anchors: 0
-  No signals tests passed!
-Testing ComponentBuilder (basic)...
-  Total anchors: 0
-  Components: 0
-  Components created:
-  Basic ComponentBuilder tests passed!
-Testing ComponentBuilder (multi-chromosome)...
-  Components: 0
-  Multi-chromosome tests passed!
-Testing ComponentBuilder (span threshold)...
-  Breakers triggered: 0
-  Components: 0
-  Span threshold tests passed!
-Testing ComponentBuilder (insertion events)...
-  Components: 0
-  Anchors: 0
-  Insertion event tests passed!
-Testing ComponentBuilder (SA splits)...
-  Anchors: 0
-  SA split tests passed!
-Testing ComponentBuilder (real BAM data)...
-  Loaded 79 reads from BAM
-  Total anchors: 191
-  Components: 14
-  Breakers triggered: 0
-    Component 0: [74813-74824], reads=3, anchors=3
-    Component 1: [80279-80311], reads=8, anchors=8
-    Component 2: [81072-81116], reads=4, anchors=4
-    Component 3: [81200-81203], reads=6, anchors=6
-    Component 4: [82619-82671], reads=5, anchors=5
-    Component 5: [84027-84034], reads=3, anchors=3
-    Component 6: [84394-84394], reads=4, anchors=4
-    Component 7: [84484-84512], reads=7, anchors=7
-    Component 8: [86456-86468], reads=7, anchors=7
-    Component 9: [86982-86982], reads=4, anchors=4
-    Component 10: [88212-88212], reads=4, anchors=4
-    Component 11: [90223-90274], reads=3, anchors=3
-    Component 12: [90500-90500], reads=3, anchors=3
-    Component 13: [90777-90815], reads=22, anchors=22
-  Real BAM tests passed!
-
-=== All Phase 3 tests passed! ===
-<end of output>
-Test time =   0.08 sec
-----------------------------------------------------------
-Test Passed.
-"ComponentTest" end time: Feb 10 13:04 UTC
-"ComponentTest" time elapsed: 00:00:00
-----------------------------------------------------------
-
-3/7 Testing: LocalRealignTest
-3/7 Test: LocalRealignTest
-Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_local_realign"
-Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
-"LocalRealignTest" start time: Feb 10 13:04 UTC
-Output:
-----------------------------------------------------------
-=== PLACER Phase 4 Industrial-Grade Tests ===
-Testing BitpackedSeq (2-bit encoding)...
-  Original size: 12 bytes
-  Packed size: 12 bases
-  Memory reduction: 33.3333%
-  BitpackedSeq tests passed!
-Testing SeqView (zero-copy)...
-  SeqView tests passed!
-Testing RealignConfig...
-  RealignConfig tests passed!
-Testing align_sequences...
-  Perfect match score: 15
-  Matches: 12
-  Identity: 1
-  Normalized: 1.25
-  Mismatch score: -1e+09
-  align_sequences tests passed!
-Testing find_seeds...
-  Found 5 seeds (k=4, stride=2)
-  First seed (ACGT): 27
-  find_seeds tests passed!
-Testing populate_locus_set...
-  Locus count: 4
-    Locus: pos=1500, score=60, evidence=1
-    Locus: pos=1600, score=50, evidence=1
-    Locus: pos=3500, score=54, evidence=1
-    Locus: pos=3600, score=45, evidence=1
-  populate_locus_set tests passed!
-Testing rank_loci...
-  rank_loci tests passed!
-Testing placeability calculation...
-  Best score: 1.16
-  Second score: 0
-  Delta: 1.16
-  Confidence: 0.673333
-  placeability tests passed!
-Testing tier determination...
-  Tier determination tests passed!
-Testing batch processing interface...
-  Batch interface test passed!
-
-=== All Industrial-Grade tests passed! ===
-<end of output>
-Test time =   0.06 sec
-----------------------------------------------------------
-Test Passed.
-"LocalRealignTest" end time: Feb 10 13:04 UTC
-"LocalRealignTest" time elapsed: 00:00:00
-----------------------------------------------------------
-
-4/7 Testing: AssemblyTest
-4/7 Test: AssemblyTest
-Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_assembly"
-Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
-"AssemblyTest" start time: Feb 10 13:04 UTC
-Output:
-----------------------------------------------------------
-=== PLACER Phase 5 Assembly + Collapsing Tests ===
-
-Testing AssemblyConfig...
-  AssemblyConfig tests passed!
-
-Testing StructuralFingerprint...
-  from_contig: PASS
-  hash consistency: PASS
-  fingerprint matches: PASS
-  fingerprint no-match: PASS
-  StructuralFingerprint tests passed!
-
-Testing POA Assembly...
-  single sequence: PASS
-  identical sequences: PASS
-  majority vote: PASS
-  N base handling: PASS
-  POA assembly tests passed!
-
-Testing Multi-Path POA...
-  multi-path input: PASS
-  Multi-path POA tests passed!
-
-Testing Contig Structure...
-  contig sequence: PASS
-  contig up flank: PASS
-  contig ins: PASS
-  contig down flank: PASS
-  left breakpoint: PASS
-  right breakpoint: PASS
-  Contig structure tests passed!
-
-Testing StructuralRepresentative...
-  rep_id: PASS
-  contig_ids: PASS
-  polymorphism: PASS
-  polyA mean: PASS
-  StructuralRepresentative tests passed!
-
-Testing Structural Collapsing...
-  collapse count: PASS
-  merged total_reads: PASS
-  merged avg_quality: PASS
-  merged representative found: PASS
-  Structural collapsing tests passed!
-
-Testing AssemblyEngine...
-  empty batch: PASS
-  AssemblyEngine interface tests passed!
-
-Testing PolyA Extraction...
-  polyA mean: PASS
-  PolyA extraction tests passed!
-
-=== All Phase 5 tests passed! ===
-<end of output>
-Test time =   0.12 sec
-----------------------------------------------------------
-Test Passed.
-"AssemblyTest" end time: Feb 10 13:04 UTC
-"AssemblyTest" time elapsed: 00:00:00
-----------------------------------------------------------
-
-5/7 Testing: PlaceabilityTest
-5/7 Test: PlaceabilityTest
-Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_placeability"
-Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
-"PlaceabilityTest" start time: Feb 10 13:04 UTC
-Output:
-----------------------------------------------------------
-=== PLACER Phase 6 Placeability + Tier Tests ===
-
-Testing PlaceabilityConfig...
-  PlaceabilityConfig tests passed!
-
-Testing ExtendedPlaceabilityReport...
-  ExtendedPlaceabilityReport tests passed!
-
-Testing Placeability Score Calculation...
-  high delta calculation: PASS
-  low delta calculation: PASS
-  same scores delta: PASS
-  negative scores delta: PASS
-  Placeability Score tests passed!
-
-Testing Side Consistency...
-  consistent sides (within threshold): PASS
-  inconsistent sides check: PASS
-  exact same positions: PASS
-  one side missing: PASS
-  Side Consistency tests passed!
-
-Testing Support Consistency...
-  high support consistency: PASS
-  low support consistency: FAIL
-  single score consistency: PASS
-  empty scores consistency: PASS
-  Support Consistency tests passed!
-
-Testing Tier Determination...
-  tier 1 determination: FAIL
-  tier 2 or 3 determination: FAIL
-  tier 3 determination: FAIL
-  tier boundary case: FAIL
-  Tier Determination tests passed!
-
-Testing TSD Detection...
-  valid TSD found: PASS
-  TSD length positive: PASS
-  TSD detection runs: PASS
-  TSD with prefix match: PASS
-  TSD prefix length: FAIL
-  TSD Detection tests passed!
-
-Testing TSD Significance...
-  TSD significance check runs: PASS
-  polyA TSD not significant: PASS
-  TSD Significance tests passed!
-
-Testing Locus Evidence...
-  locus evidence batch size: PASS
-  locus evidence average: PASS
-  Locus Evidence tests passed!
-
-Testing Full Placeability Pipeline...
-  pipeline: best locus: PASS
-  pipeline: delta score: PASS
-  pipeline: candidate count: PASS
-  pipeline: side consistent: PASS
-  pipeline: tier determined: PASS
-  Full Placeability Pipeline tests passed!
-
-Testing Placeability Output...
-  info fields not empty: PASS
-  info contains tier: PASS
-  info contains delta: PASS
-  tier 1 description: PASS
-  tier 2 description: PASS
-  TSD info not empty: PASS
-  TSD info contains length: PASS
-  Placeability Output tests passed!
-
-=== All Phase 6 tests passed! ===
-<end of output>
-Test time =   0.08 sec
-----------------------------------------------------------
-Test Passed.
-"PlaceabilityTest" end time: Feb 10 13:04 UTC
-"PlaceabilityTest" time elapsed: 00:00:00
-----------------------------------------------------------
-
-6/7 Testing: PlaceabilityIntegrationTest
-6/7 Test: PlaceabilityIntegrationTest
-Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_placeability_integration"
-Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
-"PlaceabilityIntegrationTest" start time: Feb 10 13:04 UTC
-Output:
-----------------------------------------------------------
-=== PLACER Placeability Integration Tests ===
-
-=== Integration Test with tldr_optimized/test data ===
-Loaded 1 targets from targets.test.txt
-
---- Target 1: chrTEST:90777-90789 ---
-  Best locus: 90777
-  Delta score: 1.42084
-  Tier: 3
-  Support reads: 8
-  Side consistent: no
-  TSD found: yes
-  TSD length: 13
-  INFO: PLACEABILITY=1.028;TIER=3;DELTA=1.42;CONSISTENCY=0.969;CANDIDATES=2;SUPPORT=8;SIDES=INCONSISTENT;STR...
-
-=== Integration test passed! ===
-
-=== TSD Detection with Realistic Flanks ===
-  Test 1 - Perfect TSD: found=1 len=18 method=exact_prefix
-  Test 2 - 1-mismatch TSD: found=1 len=17
-  Test 3 - No TSD: found=0
-  Test 4 - PolyA TSD: found=1 sig=0
-  All TSD tests passed!
-
-=== Tier Classification Tests ===
-  Tier 1 test: tier=3 delta=4.2724
-  Tier 5 test (empty): tier=5
-  Ambiguous test: tier=4 candidates=3
-  All tier classification tests passed!
-
-=== Output Format Tests ===
-  INFO field: PLACEABILITY=45.200;TIER=1;DELTA=35.50;CONSISTENCY=0.880;CANDIDATES=2;SUPPORT=8;...
-  JSON length: 451 bytes
-  All output format tests passed!
-
-=== All Integration Tests Passed! ===
-<end of output>
-Test time =   0.04 sec
-----------------------------------------------------------
-Test Passed.
-"PlaceabilityIntegrationTest" end time: Feb 10 13:04 UTC
-"PlaceabilityIntegrationTest" time elapsed: 00:00:00
-----------------------------------------------------------
-
-7/7 Testing: GenotypingTest
-7/7 Test: GenotypingTest
-Command: "/mnt/home1/miska/hl725/projects/PLACER/build/tests/test_genotyping"
-Directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests
-"GenotypingTest" start time: Feb 10 13:04 UTC
-Output:
-----------------------------------------------------------
-=== PLACER Phase 7 Genotyping Tests ===
-
-Testing GenotypeConfig...
-  GenotypeConfig tests passed!
-
-Testing GenotypeResult...
-  GenotypeResult tests passed!
-
-Testing ReadEvidence...
-  ReadEvidence tests passed!
-
-Testing SpatialPriorCalculator...
-  SpatialPriorCalculator tests passed!
-
-Testing StructuralPriorCalculator...
-  StructuralPriorCalculator tests passed!
-
-Testing EMEngine...
-  EM converged: PASS
-  Positive log likelihood: PASS
-  E[ALT] + E[REF] + E[NULL] = 1: PASS
-  High ALT fraction: FAIL
-  Empty evidence: E[NULL]=1: PASS
-  EMEngine tests passed!
-
-Testing Genotyper...
-  Genotype produced: PASS
-  Valid genotype: PASS
-  GQ computed: PASS
-  AF computed: PASS
-  Genotyper tests passed!
-
-Testing Utility Functions...
-  Beta CI low >= 0: PASS
-  Beta CI high <= 1: PASS
-  Beta CI valid range: PASS
-  Phred from prob: PASS
-  Positive likelihood ratio: PASS
-  Utility Functions tests passed!
-
-Testing Genotyping Pipeline Integration...
-  ALT signal: GT=1/1 E[ALT]=0.708455 E[REF]=0.291545 E[NULL]=3.56333e-11
-  Clear ALT: high E[ALT]: PASS
-  High NULL: GT=./. E[NULL]=0.730692
-  High NULL: marked: PASS
-  Genotyping Pipeline tests passed!
-
-=== All Phase 7 tests passed! ===
-<end of output>
-Test time =   0.02 sec
-----------------------------------------------------------
-Test Passed.
-"GenotypingTest" end time: Feb 10 13:04 UTC
-"GenotypingTest" time elapsed: 00:00:00
-----------------------------------------------------------
-
-End testing: Feb 10 13:04 UTC
+End testing: Feb 10 17:38 UTC

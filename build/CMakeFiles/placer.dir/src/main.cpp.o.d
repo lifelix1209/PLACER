@@ -1,5 +1,5 @@
 CMakeFiles/placer.dir/src/main.cpp.o: \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/main.cpp \
+ /mnt/home1/miska/hl725/projects/PLACER/src/main.cpp \
  /usr/include/stdc-predef.h /usr/include/c++/11/iostream \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/os_defines.h \
@@ -150,7 +150,11 @@ CMakeFiles/placer.dir/src/main.cpp.o: \
  /usr/include/c++/11/bits/locale_facets.tcc \
  /usr/include/c++/11/bits/basic_ios.tcc \
  /usr/include/c++/11/bits/ostream.tcc /usr/include/c++/11/istream \
- /usr/include/c++/11/bits/istream.tcc /usr/include/c++/11/chrono \
+ /usr/include/c++/11/bits/istream.tcc /usr/include/c++/11/fstream \
+ /usr/include/c++/11/bits/codecvt.h \
+ /usr/include/x86_64-linux-gnu/c++/11/bits/basic_file.h \
+ /usr/include/x86_64-linux-gnu/c++/11/bits/c++io.h \
+ /usr/include/c++/11/bits/fstream.tcc /usr/include/c++/11/chrono \
  /usr/include/c++/11/ratio /usr/include/c++/11/limits \
  /usr/include/c++/11/ctime /usr/include/c++/11/bits/parse_numbers.h \
  /usr/include/c++/11/memory /usr/include/c++/11/bits/stl_uninitialized.h \
@@ -172,21 +176,32 @@ CMakeFiles/placer.dir/src/main.cpp.o: \
  /usr/include/c++/11/bits/atomic_lockfree_defines.h \
  /usr/include/c++/11/backward/auto_ptr.h \
  /usr/include/c++/11/pstl/glue_memory_defs.h \
- /usr/include/c++/11/pstl/execution_defs.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
- /usr/include/c++/11/vector /usr/include/c++/11/bits/stl_vector.h \
+ /usr/include/c++/11/pstl/execution_defs.h /usr/include/c++/11/vector \
+ /usr/include/c++/11/bits/stl_vector.h \
  /usr/include/c++/11/bits/stl_bvector.h \
- /usr/include/c++/11/bits/vector.tcc /usr/include/c++/11/functional \
- /usr/include/c++/11/bits/std_function.h \
- /usr/include/c++/11/unordered_map /usr/include/c++/11/bits/hashtable.h \
+ /usr/include/c++/11/bits/vector.tcc /usr/include/c++/11/unordered_map \
+ /usr/include/c++/11/bits/hashtable.h \
  /usr/include/c++/11/bits/hashtable_policy.h \
  /usr/include/c++/11/bits/enable_special_members.h \
  /usr/include/c++/11/bits/node_handle.h \
  /usr/include/c++/11/bits/unordered_map.h \
- /usr/include/c++/11/bits/erase_if.h /usr/include/c++/11/bits/stl_algo.h \
+ /usr/include/c++/11/bits/erase_if.h /usr/include/c++/11/unordered_set \
+ /usr/include/c++/11/bits/unordered_set.h /usr/include/c++/11/algorithm \
+ /usr/include/c++/11/bits/stl_algo.h \
  /usr/include/c++/11/bits/algorithmfwd.h \
  /usr/include/c++/11/bits/stl_heap.h \
  /usr/include/c++/11/bits/uniform_int_dist.h \
+ /usr/include/c++/11/pstl/glue_algorithm_defs.h \
+ /usr/include/c++/11/functional /usr/include/c++/11/bits/std_function.h \
+ /usr/include/c++/11/sstream /usr/include/c++/11/bits/sstream.tcc \
+ /usr/include/c++/11/iomanip /usr/include/c++/11/locale \
+ /usr/include/c++/11/bits/locale_facets_nonio.h \
+ /usr/include/x86_64-linux-gnu/c++/11/bits/time_members.h \
+ /usr/include/x86_64-linux-gnu/c++/11/bits/messages_members.h \
+ /usr/include/libintl.h /usr/include/c++/11/bits/locale_facets_nonio.tcc \
+ /usr/include/c++/11/bits/locale_conv.h \
+ /usr/include/c++/11/bits/quoted_string.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/sam.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts.h \
  /usr/include/inttypes.h \
@@ -207,11 +222,11 @@ CMakeFiles/placer.dir/src/main.cpp.o: \
  /usr/include/x86_64-linux-gnu/bits/uio_lim.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/kroundup.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts_endian.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/window_buffer.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/window_buffer.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
  /usr/include/c++/11/deque /usr/include/c++/11/bits/stl_deque.h \
  /usr/include/c++/11/bits/deque.tcc \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/window_stats.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/window_stats.h \
  /usr/include/c++/11/cmath /usr/include/math.h \
  /usr/include/x86_64-linux-gnu/bits/math-vector.h \
  /usr/include/x86_64-linux-gnu/bits/libm-simd-decl-stubs.h \
@@ -234,23 +249,39 @@ CMakeFiles/placer.dir/src/main.cpp.o: \
  /usr/include/c++/11/tr1/poly_hermite.tcc \
  /usr/include/c++/11/tr1/poly_laguerre.tcc \
  /usr/include/c++/11/tr1/riemann_zeta.tcc \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/trigger.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/window_buffer.h \
- /usr/include/c++/11/atomic /usr/include/c++/11/algorithm \
- /usr/include/c++/11/pstl/glue_algorithm_defs.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/task_queue.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/trigger.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/window_buffer.h \
+ /usr/include/c++/11/atomic \
+ /mnt/home1/miska/hl725/projects/PLACER/include/task_queue.h \
  /usr/include/c++/11/queue /usr/include/c++/11/bits/stl_queue.h \
  /usr/include/c++/11/thread /usr/include/c++/11/bits/std_thread.h \
  /usr/include/c++/11/bits/this_thread_sleep.h /usr/include/c++/11/mutex \
  /usr/include/c++/11/bits/std_mutex.h \
  /usr/include/c++/11/bits/unique_lock.h \
- /usr/include/c++/11/condition_variable /usr/include/c++/11/fstream \
- /usr/include/c++/11/bits/codecvt.h \
- /usr/include/x86_64-linux-gnu/c++/11/bits/basic_file.h \
- /usr/include/x86_64-linux-gnu/c++/11/bits/c++io.h \
- /usr/include/c++/11/bits/fstream.tcc \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/gate1_filter.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/gate1.h \
- /usr/include/c++/11/unordered_set \
- /usr/include/c++/11/bits/unordered_set.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/task_queue.h
+ /usr/include/c++/11/condition_variable \
+ /mnt/home1/miska/hl725/projects/PLACER/include/gate1.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/gate1_filter.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/gate1.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/task_queue.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/component_builder.h \
+ /usr/include/c++/11/numeric /usr/include/c++/11/bits/stl_numeric.h \
+ /usr/include/c++/11/pstl/glue_numeric_defs.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/local_realign.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/component_builder.h \
+ /usr/include/c++/11/optional /usr/include/c++/11/concepts \
+ /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/faidx.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/assembly.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/local_realign.h \
+ /usr/include/c++/11/cstring /usr/include/c++/11/set \
+ /usr/include/c++/11/bits/stl_tree.h /usr/include/c++/11/bits/stl_set.h \
+ /usr/include/c++/11/bits/stl_multiset.h /usr/include/c++/11/map \
+ /usr/include/c++/11/bits/stl_map.h \
+ /usr/include/c++/11/bits/stl_multimap.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/placeability.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/assembly.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/genotyping.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/placeability.h \
+ /usr/include/c++/11/random /usr/include/c++/11/bits/random.h \
+ /usr/include/x86_64-linux-gnu/c++/11/bits/opt_random.h \
+ /usr/include/c++/11/bits/random.tcc \
+ /mnt/home1/miska/hl725/projects/PLACER/include/te_reverse_index.h

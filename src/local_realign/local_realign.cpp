@@ -489,16 +489,44 @@ std::string compress_cigar(const std::string& expanded) {
 GenomeAccessor::GenomeAccessor(std::string_view fasta_path)
     : fasta_path_(fasta_path) {
     load_fai(fasta_path);
+
+    // [新增] 打开文件并保持打开状态
+    if (!fasta_path_.empty()) {
+        file_ = new std::ifstream(fasta_path_, std::ios::binary);
+        if (!file_->is_open()) {
+            delete file_;
+            file_ = nullptr;
+        }
+    }
+}
+
+// [新增] 析构函数：关闭文件
+GenomeAccessor::~GenomeAccessor() {
+    if (file_ != nullptr) {
+        file_->close();
+        delete file_;
+        file_ = nullptr;
+    }
 }
 
 GenomeAccessor::GenomeAccessor(GenomeAccessor&& other) noexcept
     : fasta_path_(std::move(other.fasta_path_))
-    , index_(std::move(other.index_)) {}
+    , index_(std::move(other.index_))
+    , file_(other.file_) {
+    other.file_ = nullptr;
+}
 
 GenomeAccessor& GenomeAccessor::operator=(GenomeAccessor&& other) noexcept {
     if (this != &other) {
+        // 先关闭旧文件
+        if (file_ != nullptr) {
+            file_->close();
+            delete file_;
+        }
         fasta_path_ = std::move(other.fasta_path_);
         index_ = std::move(other.index_);
+        file_ = other.file_;
+        other.file_ = nullptr;
     }
     return *this;
 }
@@ -542,6 +570,11 @@ std::optional<SeqView> GenomeAccessor::fetch_region(
         return std::nullopt;
     }
 
+    // [修正] 检查持久化文件句柄
+    if (file_ == nullptr || !file_->is_open()) {
+        return std::nullopt;
+    }
+
     const auto& idx = index_[chrom_tid];
 
     // [修正] 范围验证
@@ -557,16 +590,17 @@ std::optional<SeqView> GenomeAccessor::fetch_region(
     int64_t file_offset = idx.offset + start + (start / idx.line_blen);
     int64_t fetch_len = (end - start) + ((end - start) / idx.line_blen) + 2;
 
-    static thread_local std::string chunk;
-    static thread_local std::string cleaned;
+    // [修正] 使用 thread_local 缓冲区避免每次分配
+    thread_local static std::string chunk;
+    thread_local static std::string cleaned;
     chunk.clear();
     cleaned.clear();
     chunk.resize(static_cast<size_t>(fetch_len));
     cleaned.reserve(region_len);
 
-    std::ifstream file(fasta_path_);
-    file.seekg(file_offset);
-    file.read(chunk.data(), fetch_len);
+    // [修正] 使用持久化文件句柄
+    file_->seekg(file_offset);
+    file_->read(chunk.data(), fetch_len);
 
     // 去除换行符 + 转大写
     for (char c : chunk) {
@@ -661,10 +695,152 @@ AlignmentResult LocalRealigner::dispatch_align_(
     std::string_view query,
     std::string_view target) {
 
+    // [优化] 根据序列长度选择对齐策略
+    size_t min_len = std::min(query.size(), target.size());
+    size_t max_len = std::max(query.size(), target.size());
+
+    // 1. 短序列：使用 Hamming 距离（等长）或简化 DP
+    if (min_len <= 16) {
+        return hamming_align_(query, target);
+    }
+
+    // 2. 中等序列：使用带状对齐 (banded alignment)
+    if (min_len <= 64) {
+        return banded_align_(query, target, 8);  // bandwidth = 8
+    }
+
+    // 3. 长序列：使用 SIMD 或完整对齐
     if (config_.use_simd && query.size() >= 32) {
         return simd_align_(query, target);
     }
     return scalar_align_(query, target);
+}
+
+// [新增] 快速 Hamming 距离对齐（短序列）
+AlignmentResult LocalRealigner::hamming_align_(
+    std::string_view query,
+    std::string_view target) {
+
+    AlignmentResult result;
+
+    if (query.empty() || target.empty()) {
+        return result;
+    }
+
+    // 长度差异惩罚
+    int len_diff = static_cast<int>(
+        query.size() > target.size() ? query.size() - target.size() : target.size() - query.size());
+
+    // 计算 Hamming 距离
+    int matches = 0;
+    int mismatches = 0;
+    int min_len = static_cast<int>(std::min(query.size(), target.size()));
+
+    for (int i = 0; i < min_len; ++i) {
+        char qc = std::toupper(query[i]);
+        char tc = std::toupper(target[i]);
+        if (qc == tc || qc == 'N' || tc == 'N') {
+            matches++;
+        } else {
+            mismatches++;
+        }
+    }
+
+    // 分数计算
+    int score = matches * config_.match - mismatches * config_.mismatch
+                - len_diff * (config_.gap_open + config_.gap_extend);
+
+    result.score = score;
+    result.normalized_score = static_cast<double>(score) / std::max(min_len, 1);
+    result.matches = matches;
+    result.mismatches = mismatches;
+    result.identity = static_cast<float>(matches) / std::max(min_len, 1);
+    result.has_indel = (len_diff > 0);
+    result.gap_opens = len_diff > 0 ? 1 : 0;
+    result.gap_extensions = len_diff > 0 ? len_diff - 1 : 0;
+
+    return result;
+}
+
+// [新增] 带状对齐（中等序列）
+AlignmentResult LocalRealigner::banded_align_(
+    std::string_view query,
+    std::string_view target,
+    int bandwidth) {
+
+    AlignmentResult result;
+
+    if (query.empty() || target.empty()) {
+        return result;
+    }
+
+    const int qlen = static_cast<int>(query.size());
+    const int tlen = static_cast<int>(target.size());
+    const int k = std::min(bandwidth, std::min(qlen, tlen) / 2 + 1);
+
+    // 使用简化的 Smith-Waterman 带状 DP
+    // 只计算对角线附近 bandwidth 范围内的值
+
+    std::vector<int> prev(2 * k + 1, INT_MIN / 4);
+    std::vector<int> curr(2 * k + 1, INT_MIN / 4);
+
+    // 初始化
+    prev[k] = 0;
+
+    int best_score = 0;
+    int best_i = 0, best_j = 0;
+
+    for (int j = 1; j <= tlen; ++j) {
+        for (int diag = -k; diag <= k; ++diag) {
+            int i = diag + j;  // query index
+            curr[diag + k] = INT_MIN / 4;
+
+            if (i < 0 || i > qlen) continue;
+
+            // Match/Mismatch
+            if (i > 0) {
+                char qc = std::toupper(query[i - 1]);
+                char tc = std::toupper(target[j - 1]);
+                int8_t sub = (qc == tc || qc == 'N' || tc == 'N') ?
+                    config_.match : -config_.mismatch;
+                curr[diag + k] = prev[diag + k] + sub;
+            }
+
+            // Gap in target (deletion from query)
+            if (diag > -k && j > 1) {
+                int val = prev[diag - 1 + k] + config_.gap_open + config_.gap_extend;
+                curr[diag + k] = std::max(curr[diag + k], val);
+            }
+
+            // Gap in query (insertion from query)
+            if (diag < k && i > 1) {
+                int val = prev[diag + 1 + k] + config_.gap_open + config_.gap_extend;
+                curr[diag + k] = std::max(curr[diag + k], val);
+            }
+
+            // 更新最佳分数
+            if (curr[diag + k] > best_score) {
+                best_score = curr[diag + k];
+                best_i = i;
+                best_j = j;
+            }
+        }
+        std::swap(prev, curr);
+    }
+
+    // 简化结果
+    result.score = best_score;
+    result.normalized_score = static_cast<double>(best_score) /
+        std::max(std::min(qlen, tlen), 1);
+    result.matches = best_score > 0 ?
+        static_cast<int>(best_score / config_.match) : 0;
+    result.mismatches = 0;
+    result.identity = result.normalized_score > 1.0 ? 1.0f :
+        static_cast<float>(std::max(0.0, result.normalized_score));
+    result.has_indel = (best_i != best_j);
+    result.gap_opens = (best_i != best_j) ? 1 : 0;
+
+    return result;
 }
 
 AlignmentResult LocalRealigner::simd_align_(
@@ -1120,6 +1296,95 @@ PlaceabilityReport LocalRealigner::realign_component(
     }
 
     return report;
+}
+
+// ============================================================================
+// Collect Evidence - 优化版本
+// [优化]
+// 1. 限制每个 component 最多处理 max_reads_per_component reads
+// 2. 限制每个 component 最多处理 max_loci_per_component loci
+// 3. 距离预过滤：跳过太远的 read-locus 组合
+// ============================================================================
+
+std::vector<LocusEvidence> LocalRealigner::collect_evidence(
+    Component& component,
+    const std::vector<ReadSketch>& reads,
+    const GenomeAccessor& genome) {
+
+    // Step 1: 填充候选位点
+    populate_locus_set(component, reads);
+
+    if (component.locus_set.empty()) {
+        component.locus_set.push_back({
+            component.chrom_tid,
+            component.centroid,
+            1.0,
+            static_cast<int>(component.read_count),
+            0x04  // default evidence
+        });
+    }
+
+    // Step 2: 排序并限制候选位点数量
+    component.locus_set = rank_loci(
+        std::move(component.locus_set), config_);
+
+    // [优化] 限制 loci 数量
+    const size_t max_loci = std::min(static_cast<size_t>(config_.max_locus_per_component),
+                                     component.locus_set.size());
+    if (component.locus_set.size() > max_loci) {
+        component.locus_set.resize(max_loci);
+    }
+
+    // Step 3: 限制 reads 数量
+    std::vector<size_t> sampled_reads;
+    const size_t max_reads = std::min(static_cast<size_t>(config_.max_reads_per_component),
+                                      component.read_indices.size());
+
+    // 分层采样：从 read_indices 开头取 max_reads 个
+    for (size_t i = 0; i < component.read_indices.size() && sampled_reads.size() < max_reads; ++i) {
+        sampled_reads.push_back(component.read_indices[i]);
+    }
+
+    // Step 4: 对每个 read × 每个 locus 生成证据
+    std::vector<LocusEvidence> all_evidence;
+    all_evidence.reserve(sampled_reads.size() * component.locus_set.size());
+
+    // [优化] 预计算距离阈值
+    double dist_threshold = config_.search_window * config_.min_normalized_score;
+
+    for (size_t read_idx : sampled_reads) {
+        if (read_idx >= reads.size()) continue;
+
+        const auto& read = reads[read_idx];
+
+        for (const auto& locus : component.locus_set) {
+            // [优化] 距离预过滤
+            double dist = std::abs(
+                static_cast<double>(read.pos) - locus.pos);
+            if (dist > dist_threshold) {
+                continue;  // 太远的组合直接跳过
+            }
+
+            LocusEvidence ev;
+            ev.read_idx = read_idx;
+            ev.locus_pos = locus.pos;
+            ev.is_reverse = (read.flag & 0x10) != 0;
+            ev.evidence_bits = 0;
+
+            // 距离评分
+            ev.normalized_score = std::max(
+                0.0, 1.0 - dist / config_.search_window);
+            ev.total_score = ev.normalized_score * 100;
+
+            if (ev.normalized_score > config_.min_normalized_score) {
+                ev.evidence_bits |= 0x02;
+            }
+
+            all_evidence.push_back(ev);
+        }
+    }
+
+    return all_evidence;
 }
 
 // ============================================================================

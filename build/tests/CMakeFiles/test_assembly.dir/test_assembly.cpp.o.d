@@ -1,5 +1,5 @@
 tests/CMakeFiles/test_assembly.dir/test_assembly.cpp.o: \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_assembly.cpp \
+ /mnt/home1/miska/hl725/projects/PLACER/tests/test_assembly.cpp \
  /usr/include/stdc-predef.h /usr/include/c++/11/cassert \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/os_defines.h \
@@ -157,9 +157,9 @@ tests/CMakeFiles/test_assembly.dir/test_assembly.cpp.o: \
  /usr/include/c++/11/bits/stl_bvector.h \
  /usr/include/c++/11/bits/vector.tcc /usr/include/c++/11/array \
  /usr/include/c++/11/utility /usr/include/c++/11/bits/stl_relops.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/assembly.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/component_builder.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/assembly.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/component_builder.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
  /usr/include/c++/11/functional /usr/include/c++/11/tuple \
  /usr/include/c++/11/bits/uses_allocator.h \
  /usr/include/c++/11/bits/invoke.h /usr/include/c++/11/bits/refwrap.h \
@@ -196,7 +196,7 @@ tests/CMakeFiles/test_assembly.dir/test_assembly.cpp.o: \
  /usr/include/x86_64-linux-gnu/bits/uio_lim.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/kroundup.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts_endian.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/task_queue.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/task_queue.h \
  /usr/include/c++/11/queue /usr/include/c++/11/deque \
  /usr/include/c++/11/bits/stl_deque.h /usr/include/c++/11/bits/deque.tcc \
  /usr/include/c++/11/bits/stl_queue.h /usr/include/c++/11/memory \
@@ -226,7 +226,7 @@ tests/CMakeFiles/test_assembly.dir/test_assembly.cpp.o: \
  /usr/include/c++/11/bits/fstream.tcc /usr/include/c++/11/numeric \
  /usr/include/c++/11/bits/stl_numeric.h \
  /usr/include/c++/11/pstl/glue_numeric_defs.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/local_realign.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/local_realign.h \
  /usr/include/c++/11/optional /usr/include/c++/11/concepts \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/faidx.h \
  /usr/include/c++/11/algorithm \
@@ -238,6 +238,6 @@ tests/CMakeFiles/test_assembly.dir/test_assembly.cpp.o: \
  /usr/include/c++/11/bits/stl_multimap.h \
  /usr/include/c++/11/unordered_set \
  /usr/include/c++/11/bits/unordered_set.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/component_builder.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/local_realign.h
+ /mnt/home1/miska/hl725/projects/PLACER/include/component_builder.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/local_realign.h

@@ -366,6 +366,32 @@ test_genotyping/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_genotyping.dir/build.make tests/CMakeFiles/test_genotyping.dir/build
 .PHONY : test_genotyping/fast
 
+#=============================================================================
+# Target rules for targets named test_te_reverse_index
+
+# Build rule for target.
+test_te_reverse_index: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_te_reverse_index
+.PHONY : test_te_reverse_index
+
+# fast build rule for target.
+test_te_reverse_index/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/build
+.PHONY : test_te_reverse_index/fast
+
+#=============================================================================
+# Target rules for targets named te_reverse_index
+
+# Build rule for target.
+te_reverse_index: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 te_reverse_index
+.PHONY : te_reverse_index
+
+# fast build rule for target.
+te_reverse_index/fast:
+	$(MAKE) $(MAKESILENT) -f src/te_reverse_index/CMakeFiles/te_reverse_index.dir/build.make src/te_reverse_index/CMakeFiles/te_reverse_index.dir/build
+.PHONY : te_reverse_index/fast
+
 src/main.o: src/main.cpp.o
 .PHONY : src/main.o
 
@@ -411,6 +437,7 @@ help:
 	@echo "... placeability"
 	@echo "... placer"
 	@echo "... stream"
+	@echo "... te_reverse_index"
 	@echo "... test_assembly"
 	@echo "... test_component"
 	@echo "... test_genotyping"
@@ -418,6 +445,7 @@ help:
 	@echo "... test_placeability"
 	@echo "... test_placeability_integration"
 	@echo "... test_stream"
+	@echo "... test_te_reverse_index"
 	@echo "... src/main.o"
 	@echo "... src/main.i"
 	@echo "... src/main.s"

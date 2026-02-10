@@ -82,6 +82,11 @@ if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   include("/mnt/home1/miska/hl725/projects/PLACER/build/tests/cmake_install.cmake")
 endif()
 
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("/mnt/home1/miska/hl725/projects/PLACER/build/src/te_reverse_index/cmake_install.cmake")
+endif()
+
 if(CMAKE_INSTALL_COMPONENT)
   set(CMAKE_INSTALL_MANIFEST "install_manifest_${CMAKE_INSTALL_COMPONENT}.txt")
 else()

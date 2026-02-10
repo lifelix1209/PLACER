@@ -1,5 +1,5 @@
 tests/CMakeFiles/test_stream.dir/test_stream.cpp.o: \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_stream.cpp \
+ /mnt/home1/miska/hl725/projects/PLACER/tests/test_stream.cpp \
  /usr/include/stdc-predef.h /usr/include/c++/11/iostream \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/os_defines.h \
@@ -152,7 +152,7 @@ tests/CMakeFiles/test_stream.dir/test_stream.cpp.o: \
  /usr/include/c++/11/bits/ostream.tcc /usr/include/c++/11/istream \
  /usr/include/c++/11/bits/istream.tcc /usr/include/c++/11/cassert \
  /usr/include/assert.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
  /usr/include/c++/11/vector /usr/include/c++/11/bits/stl_uninitialized.h \
  /usr/include/c++/11/bits/stl_vector.h \
  /usr/include/c++/11/bits/stl_bvector.h \
@@ -194,8 +194,8 @@ tests/CMakeFiles/test_stream.dir/test_stream.cpp.o: \
  /usr/include/x86_64-linux-gnu/bits/uio_lim.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/kroundup.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts_endian.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/window_buffer.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/window_buffer.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
  /usr/include/c++/11/deque /usr/include/c++/11/bits/stl_deque.h \
  /usr/include/c++/11/bits/deque.tcc /usr/include/c++/11/memory \
  /usr/include/c++/11/bits/stl_raw_storage_iter.h \
@@ -211,7 +211,7 @@ tests/CMakeFiles/test_stream.dir/test_stream.cpp.o: \
  /usr/include/c++/11/backward/auto_ptr.h \
  /usr/include/c++/11/pstl/glue_memory_defs.h \
  /usr/include/c++/11/pstl/execution_defs.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/window_stats.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/window_stats.h \
  /usr/include/c++/11/cmath /usr/include/math.h \
  /usr/include/x86_64-linux-gnu/bits/math-vector.h \
  /usr/include/x86_64-linux-gnu/bits/libm-simd-decl-stubs.h \
@@ -235,11 +235,11 @@ tests/CMakeFiles/test_stream.dir/test_stream.cpp.o: \
  /usr/include/c++/11/tr1/poly_hermite.tcc \
  /usr/include/c++/11/tr1/poly_laguerre.tcc \
  /usr/include/c++/11/tr1/riemann_zeta.tcc \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/trigger.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/window_buffer.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/trigger.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/window_buffer.h \
  /usr/include/c++/11/atomic /usr/include/c++/11/algorithm \
  /usr/include/c++/11/pstl/glue_algorithm_defs.h \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/task_queue.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/task_queue.h \
  /usr/include/c++/11/queue /usr/include/c++/11/bits/stl_queue.h \
  /usr/include/c++/11/thread /usr/include/c++/11/bits/std_thread.h \
  /usr/include/c++/11/bits/this_thread_sleep.h /usr/include/c++/11/chrono \
@@ -252,6 +252,6 @@ tests/CMakeFiles/test_stream.dir/test_stream.cpp.o: \
  /usr/include/x86_64-linux-gnu/c++/11/bits/basic_file.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++io.h \
  /usr/include/c++/11/bits/fstream.tcc \
- /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/gate1.h \
+ /mnt/home1/miska/hl725/projects/PLACER/include/gate1.h \
  /usr/include/c++/11/unordered_set \
  /usr/include/c++/11/bits/unordered_set.h

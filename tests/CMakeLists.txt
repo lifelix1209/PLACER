@@ -136,3 +136,26 @@ target_include_directories(test_genotyping PRIVATE
 )
 
 add_test(NAME GenotypingTest COMMAND test_genotyping)
+
+# Phase 8 TE Reverse Index Tests
+add_executable(test_te_reverse_index
+    test_te_reverse_index.cpp
+)
+
+target_link_libraries(test_te_reverse_index PRIVATE
+    stream
+    gate1
+    component
+    local_realign
+    assembly
+    placeability
+    genotyping
+    te_reverse_index
+    hts::htslib
+)
+
+target_include_directories(test_te_reverse_index PRIVATE
+    ${HTSLIB_INCLUDE_DIR}
+)
+
+add_test(NAME TEReverseIndexTest COMMAND test_te_reverse_index)

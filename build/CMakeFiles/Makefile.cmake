@@ -17,6 +17,7 @@ set(CMAKE_MAKEFILE_DEPENDS
   "../src/local_realign/CMakeLists.txt"
   "../src/placeability/CMakeLists.txt"
   "../src/stream/CMakeLists.txt"
+  "../src/te_reverse_index/CMakeLists.txt"
   "../tests/CMakeLists.txt"
   "/usr/share/cmake-3.22/Modules/CMakeCXXInformation.cmake"
   "/usr/share/cmake-3.22/Modules/CMakeCommonLanguageInclude.cmake"
@@ -51,6 +52,7 @@ set(CMAKE_MAKEFILE_PRODUCTS
   "src/placeability/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/genotyping/CMakeFiles/CMakeDirectoryInformation.cmake"
   "tests/CMakeFiles/CMakeDirectoryInformation.cmake"
+  "src/te_reverse_index/CMakeFiles/CMakeDirectoryInformation.cmake"
   )
 
 # Dependency information for all targets:
@@ -70,4 +72,6 @@ set(CMAKE_DEPEND_INFO_FILES
   "tests/CMakeFiles/test_placeability.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_placeability_integration.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_genotyping.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_te_reverse_index.dir/DependInfo.cmake"
+  "src/te_reverse_index/CMakeFiles/te_reverse_index.dir/DependInfo.cmake"
   )

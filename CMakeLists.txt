@@ -33,7 +33,7 @@ set_target_properties(hts::htslib PROPERTIES
 add_executable(placer src/main.cpp)
 
 target_include_directories(placer PRIVATE ${HTSLIB_INCLUDE_DIR})
-target_link_libraries(placer PRIVATE hts::htslib stream gate1 component local_realign assembly placeability genotyping)
+target_link_libraries(placer PRIVATE hts::htslib stream gate1 component local_realign assembly placeability genotyping te_reverse_index)
 
 # Add subdirectories
 add_subdirectory(src/stream)
@@ -47,3 +47,6 @@ add_subdirectory(src/genotyping)
 # Test configuration
 enable_testing()
 add_subdirectory(tests)
+
+# Add TE Reverse Index module (Phase 8)
+add_subdirectory(src/te_reverse_index)

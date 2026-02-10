@@ -59,14 +59,14 @@ void test_genotype_result() {
     print_test_header("GenotypeResult");
 
     GenotypeResult result;
-    result.e_alt = 0.6;
-    result.e_ref = 0.3;
-    result.e_null = 0.1;
+    result.mix_alt = 0.6;
+    result.mix_ref = 0.3;
+    result.mix_null = 0.1;
     result.genotype = "0/1";
     result.gq = 30;
     result.af = 0.667;
 
-    assert(result.e_alt == 0.6);
+    assert(result.mix_alt == 0.6);
     assert(result.genotype == "0/1");
     assert(result.gq == 30);
 
@@ -96,7 +96,7 @@ void test_read_evidence() {
     evidence.contig_support = true;
     evidence.contig_score = 0.8;
     evidence.te_family_id = 5;
-    evidence.representative_family = 5;
+    evidence.structural_score = 0.7;
 
     assert(evidence.read_idx == 0);
     assert(evidence.locus_pos == 1000);
@@ -123,7 +123,7 @@ void test_spatial_prior() {
     // Test 1: Read at locus (distance = 0)
     {
         double pi_alt, pi_ref, pi_null;
-        calculator.calculate_prior(0.0, pi_alt, pi_ref, pi_null);
+        calculator.calculate_prior(0.0, 0.5, pi_alt, pi_ref, pi_null);
 
         // Near locus should have high ALT/REF prior
         assert(pi_alt > pi_null);
@@ -133,7 +133,7 @@ void test_spatial_prior() {
     // Test 2: Read far from locus
     {
         double pi_alt, pi_ref, pi_null;
-        calculator.calculate_prior(1000.0, pi_alt, pi_ref, pi_null);
+        calculator.calculate_prior(1000.0, 0.5, pi_alt, pi_ref, pi_null);
 
         // Far from locus should have higher NULL prior
         assert(pi_null > pi_alt);
@@ -231,9 +231,9 @@ void test_em_engine() {
     }
 
     // Test 1: EM convergence
-    std::vector<double> priors;
+    std::vector<std::array<double, 3>> priors;
     for (size_t i = 0; i < evidence.size(); ++i) {
-        priors.push_back(0.5);
+        priors.push_back({0.5, 0.3, 0.2});  // pi_alt, pi_ref, pi_null
     }
 
     GenotypeResult result;
@@ -242,17 +242,17 @@ void test_em_engine() {
     check_result("EM converged", iterations <= config.max_em_iterations);
     check_result("Positive log likelihood", log_lik < 0);  // Log likelihood should be negative
     check_result("E[ALT] + E[REF] + E[NULL] = 1",
-                 std::abs(result.e_alt + result.e_ref + result.e_null - 1.0) < 0.01);
+                 std::abs(result.mix_alt + result.mix_ref + result.mix_null - 1.0) < 0.01);
 
     // Should have high ALT fraction due to evidence
-    check_result("High ALT fraction", result.e_alt > 0.5);
+    check_result("High ALT fraction", result.mix_alt > 0.5);
 
     // Test 2: Empty evidence
     {
         std::vector<ReadEvidence> empty;
         GenotypeResult empty_result;
         engine.run_em(empty, {}, empty_result);
-        check_result("Empty evidence: E[NULL]=1", empty_result.e_null > 0.99);
+        check_result("Empty evidence: mix_null=1", empty_result.mix_null > 0.99);
     }
 
     std::cout << "  EMEngine tests passed!\n";
@@ -295,8 +295,11 @@ void test_genotyper() {
         reads.push_back(r);
     }
 
+    // Create dummy GenomeAccessor
+    GenomeAccessor genome("");
+
     // Run genotyping
-    GenotypeResult result = genotyper.genotype(rep, evidence, reads);
+    GenotypeResult result = genotyper.genotype(rep, evidence, reads, genome);
 
     check_result("Genotype produced", !result.genotype.empty());
     check_result("Valid genotype", result.genotype == "0/0" ||
@@ -352,6 +355,9 @@ void test_genotyping_pipeline() {
 
     Genotyper genotyper(config);
 
+    // Create dummy GenomeAccessor
+    GenomeAccessor genome("");
+
     // Test case 1: Clear ALT signal
     {
         StructuralRepresentative rep;
@@ -376,14 +382,14 @@ void test_genotyping_pipeline() {
             reads.push_back(r);
         }
 
-        GenotypeResult result = genotyper.genotype(rep, evidence, reads);
+        GenotypeResult result = genotyper.genotype(rep, evidence, reads, genome);
 
         std::cout << "  ALT signal: GT=" << result.genotype
-                  << " E[ALT]=" << result.e_alt
-                  << " E[REF]=" << result.e_ref
-                  << " E[NULL]=" << result.e_null << "\n";
+                  << " mix_alt=" << result.mix_alt
+                  << " mix_ref=" << result.mix_ref
+                  << " mix_null=" << result.mix_null << "\n";
 
-        check_result("Clear ALT: high E[ALT]", result.e_alt > 0.5);
+        check_result("Clear ALT: high mix_alt", result.mix_alt > 0.5);
     }
 
     // Test case 2: High NULL background
@@ -410,10 +416,10 @@ void test_genotyping_pipeline() {
             reads.push_back(r);
         }
 
-        GenotypeResult result = genotyper.genotype(rep, evidence, reads);
+        GenotypeResult result = genotyper.genotype(rep, evidence, reads, genome);
 
         std::cout << "  High NULL: GT=" << result.genotype
-                  << " E[NULL]=" << result.e_null << "\n";
+                  << " mix_null=" << result.mix_null << "\n";
 
         check_result("High NULL: marked", result.high_background);
     }
