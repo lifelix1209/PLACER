@@ -6,41 +6,128 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Use pysam's bundled htslib headers
-execute_process(
-    COMMAND python3 -c "import pysam; inc = pysam.get_include(); print(inc[1] if len(inc) > 1 else inc[0])"
-    OUTPUT_VARIABLE HTSLIB_INCLUDE_DIR
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-
-message(STATUS "Found htslib headers: ${HTSLIB_INCLUDE_DIR}")
-
-# System htslib library path
-set(HTSLIB_LIBRARY "/usr/lib/x86_64-linux-gnu/libhts.so.3")
-
-if(NOT EXISTS ${HTSLIB_LIBRARY})
-    message(FATAL_ERROR "Cannot find htslib library at ${HTSLIB_LIBRARY}")
+# abPOA backend compatibility:
+# - x86_64: enabled by default
+# - arm64/aarch64: disabled by default (can be overridden via -DPLACER_ENABLE_ABPOA=ON)
+set(_PLACER_ABPOA_DEFAULT ON)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+    set(_PLACER_ABPOA_DEFAULT OFF)
+endif()
+option(PLACER_ENABLE_ABPOA "Build with bundled abPOA backend" ${_PLACER_ABPOA_DEFAULT})
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$" AND PLACER_ENABLE_ABPOA)
+    message(WARNING
+        "Bundled abPOA backend is currently x86-SIMD oriented and may fail on arm64.\n"
+        "Falling back to PLACER built-in consensus backend."
+    )
+    set(PLACER_ENABLE_ABPOA OFF)
 endif()
 
+# ============================================================================
+# htslib (cross-platform auto detection)
+# Supports Linux/macOS and manual overrides:
+#   -DHTSLIB_ROOT=<prefix>
+#   -DHTSLIB_INCLUDE_DIR=<path containing htslib/sam.h>
+#   -DHTSLIB_LIBRARY=<full path to libhts>
+# ============================================================================
+set(HTSLIB_ROOT "" CACHE PATH "Root directory of htslib installation")
+set(HTSLIB_INCLUDE_DIR "" CACHE PATH "Directory containing htslib/sam.h")
+set(HTSLIB_LIBRARY "" CACHE FILEPATH "Path to libhts library file")
+
+set(_HTSLIB_INCLUDE_HINTS)
+if(NOT HTSLIB_INCLUDE_DIR)
+    execute_process(
+        COMMAND python3 -c "import pysam; print(';'.join(pysam.get_include()))"
+        OUTPUT_VARIABLE _PYSAM_INCLUDE_HINTS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _PYSAM_INCLUDE_STATUS
+        ERROR_QUIET
+    )
+    if(_PYSAM_INCLUDE_STATUS EQUAL 0 AND _PYSAM_INCLUDE_HINTS)
+        list(APPEND _HTSLIB_INCLUDE_HINTS ${_PYSAM_INCLUDE_HINTS})
+    endif()
+endif()
+
+set(_HTSLIB_HINT_ROOTS
+    ${HTSLIB_ROOT}
+    $ENV{HTSLIB_ROOT}
+    $ENV{CONDA_PREFIX}
+    /opt/homebrew
+    /usr/local
+    /usr
+    /opt/anaconda3
+)
+
+if(NOT HTSLIB_INCLUDE_DIR)
+    find_path(_HTSLIB_INCLUDE_DIR_FOUND
+        NAMES htslib/sam.h
+        HINTS ${_HTSLIB_INCLUDE_HINTS}
+        PATHS ${_HTSLIB_HINT_ROOTS}
+        PATH_SUFFIXES include include/htslib htslib
+    )
+    if(_HTSLIB_INCLUDE_DIR_FOUND)
+        set(HTSLIB_INCLUDE_DIR "${_HTSLIB_INCLUDE_DIR_FOUND}" CACHE PATH
+            "Directory containing htslib/sam.h" FORCE)
+    endif()
+endif()
+
+if(NOT HTSLIB_LIBRARY)
+    find_library(_HTSLIB_LIBRARY_FOUND
+        NAMES hts libhts
+        PATHS ${_HTSLIB_HINT_ROOTS}
+        PATH_SUFFIXES lib lib64
+    )
+    if(_HTSLIB_LIBRARY_FOUND)
+        set(HTSLIB_LIBRARY "${_HTSLIB_LIBRARY_FOUND}" CACHE FILEPATH
+            "Path to libhts library file" FORCE)
+    endif()
+endif()
+
+if(NOT HTSLIB_INCLUDE_DIR OR NOT HTSLIB_LIBRARY)
+    message(FATAL_ERROR
+        "Cannot find htslib.\n"
+        "Detected HTSLIB_INCLUDE_DIR='${HTSLIB_INCLUDE_DIR}'\n"
+        "Detected HTSLIB_LIBRARY='${HTSLIB_LIBRARY}'\n"
+        "Install htslib or pass explicit paths:\n"
+        "  -DHTSLIB_ROOT=<prefix>\n"
+        "  -DHTSLIB_INCLUDE_DIR=<path containing htslib/sam.h>\n"
+        "  -DHTSLIB_LIBRARY=<full path to libhts>"
+    )
+endif()
+
+message(STATUS "Found htslib headers: ${HTSLIB_INCLUDE_DIR}")
 message(STATUS "Found htslib library: ${HTSLIB_LIBRARY}")
 
-# Create imported target for htslib
-add_library(hts::htslib STATIC IMPORTED)
+add_library(hts::htslib UNKNOWN IMPORTED)
 set_target_properties(hts::htslib PROPERTIES
     IMPORTED_LOCATION "${HTSLIB_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORY "${HTSLIB_INCLUDE_DIR}"
+    INTERFACE_INCLUDE_DIRECTORIES "${HTSLIB_INCLUDE_DIR}"
 )
 
 # ============================================================================
-# abPOA Library (third_party) - use its own CMakeLists.txt
+# abPOA Library (third_party)
 # ============================================================================
-add_subdirectory(third_party/abPOA)
+if(PLACER_ENABLE_ABPOA)
+    add_subdirectory(third_party/abPOA)
+    message(STATUS "abPOA backend: enabled")
+else()
+    message(STATUS "abPOA backend: disabled (using fallback consensus backend)")
+endif()
 
 # Main executable
 add_executable(placer src/main.cpp)
 
 target_include_directories(placer PRIVATE ${HTSLIB_INCLUDE_DIR})
-target_link_libraries(placer PRIVATE hts::htslib stream gate1 component local_realign abpoa assembly placeability genotyping te_reverse_index)
+target_link_libraries(placer PRIVATE
+    hts::htslib
+    stream
+    gate1
+    component
+    local_realign
+    assembly
+    placeability
+    genotyping
+    te_reverse_index
+)
 
 # Add subdirectories
 add_subdirectory(src/stream)

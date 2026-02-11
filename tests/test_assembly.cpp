@@ -3,10 +3,17 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <algorithm>
 #include "assembly.h"
 #include "component_builder.h"
 #include "bam_reader.h"
 #include "local_realign.h"
+#include "test_path_utils.h"
+
+namespace placer {
+ReadBreakpoint detect_breakpoint_from_cigar(
+    const std::vector<std::pair<char, int>>& cigar_ops);
+}
 
 using namespace placer;
 
@@ -32,9 +39,10 @@ void test_structural_fingerprint() {
 
     // Test basic fingerprint creation
     StructuralFingerprint fp1 = StructuralFingerprint::from_contig(
-        "ACGTACGT", 100, 200, 1, 0);
+        "ACGTACGT", 100, 200, 1, 0, 3);
     assert(fp1.breakpoint_l == 80);
     assert(fp1.breakpoint_r == 200);
+    assert(fp1.tid == 3);
     assert(fp1.te_family_id == 1);
     assert(fp1.orientation == 0);
     check_result("from_contig", true);
@@ -42,21 +50,124 @@ void test_structural_fingerprint() {
     // Test hash
     uint64_t h1 = fp1.hash();
     StructuralFingerprint fp2 = StructuralFingerprint::from_contig(
-        "TGCATGC", 100, 200, 1, 0);
+        "TGCATGC", 100, 200, 1, 0, 3);
     uint64_t h2 = fp2.hash();
     check_result("hash consistency", h1 == h2);
 
     // Test matches
     StructuralFingerprint fp3 = StructuralFingerprint::from_contig(
-        "ACGTACGT", 105, 210, 1, 0);  // Slightly different positions
+        "ACGTACGT", 105, 210, 1, 0, 3);  // Slightly different positions
     check_result("fingerprint matches", fp1.matches(fp3));
 
     // Test non-matching fingerprint
     StructuralFingerprint fp4 = StructuralFingerprint::from_contig(
-        "ACGTACGT", 500, 600, 2, 0);  // Different position and TE family
+        "ACGTACGT", 500, 600, 2, 0, 3);  // Different position and TE family
     check_result("fingerprint no-match", !fp1.matches(fp4));
 
     std::cout << "  StructuralFingerprint tests passed!\n";
+}
+
+// ============================================================================
+// RTree / POA Core Structure Tests
+// ============================================================================
+
+void test_rtree_spatial_query() {
+    print_test_header("RTree Spatial Query");
+
+    RTree tree;
+    tree.insert(0.0f, 0.0f, 10.0f, 10.0f, 0);
+    tree.insert(1000.0f, 1000.0f, 1010.0f, 1010.0f, 1);
+    tree.insert(2000.0f, 2000.0f, 2010.0f, 2010.0f, 2);
+
+    auto has_idx = [](const std::vector<int>& values, int idx) {
+        return std::find(values.begin(), values.end(), idx) != values.end();
+    };
+
+    auto mid = tree.range_query(995.0f, 995.0f, 1015.0f, 1015.0f);
+    check_result("query mid contains idx=1", has_idx(mid, 1));
+    check_result("query mid excludes idx=0", !has_idx(mid, 0));
+    check_result("query mid excludes idx=2", !has_idx(mid, 2));
+
+    auto high = tree.range_query(1995.0f, 1995.0f, 2020.0f, 2020.0f);
+    check_result("query high contains idx=2", has_idx(high, 2));
+    check_result("query high excludes idx=0", !has_idx(high, 0));
+
+    std::cout << "  RTree spatial query tests passed!\n";
+}
+
+void test_poa_predecessor_overflow() {
+    print_test_header("POA Predecessor Overflow");
+
+    POAArena arena(32);
+    const uint32_t target = arena.allocate_node('T');
+
+    std::vector<uint32_t> preds;
+    for (int i = 0; i < 6; ++i) {
+        uint32_t pred = arena.allocate_node(static_cast<char>('A' + (i % 4)));
+        preds.push_back(pred);
+        bool inserted = arena.add_edge(pred, target);
+        check_result("edge inserted", inserted);
+    }
+
+    const POANode* target_node = arena.get_node(target);
+    bool all_present = (target_node != nullptr);
+    for (uint32_t pred : preds) {
+        all_present = all_present && target_node->predecessors.contains(pred);
+    }
+
+    check_result("overflow predecessor size",
+        target_node && target_node->predecessors.size() == preds.size());
+    check_result("overflow predecessor contains all", all_present);
+    check_result("indegree equals unique edges",
+        target_node && target_node->indegree == preds.size());
+
+    bool duplicate_inserted = arena.add_edge(preds.front(), target);
+    target_node = arena.get_node(target);
+    check_result("duplicate edge rejected", !duplicate_inserted);
+    check_result("indegree stable after duplicate",
+        target_node && target_node->indegree == preds.size());
+
+    std::cout << "  POA predecessor overflow tests passed!\n";
+}
+
+// ============================================================================
+// Breakpoint and Segment Semantics Tests
+// ============================================================================
+
+void test_breakpoint_detection_semantics() {
+    print_test_header("Breakpoint Detection Semantics");
+
+    auto bp_ins = detect_breakpoint_from_cigar({
+        {'M', 10}, {'I', 60}, {'M', 20}
+    });
+    check_result("insertion valid", bp_ins.is_valid);
+    check_result("insertion type", bp_ins.type == ReadBreakpoint::INSERTION);
+    check_result("insertion read_pos", bp_ins.read_pos == 10);
+    check_result("insertion ref_pos is event-time", bp_ins.ref_pos == 10);
+    check_result("insertion len captured", bp_ins.insertion_len == 60);
+
+    auto bp_split = detect_breakpoint_from_cigar({
+        {'M', 15}, {'N', 100}, {'M', 20}
+    });
+    check_result("split valid", bp_split.is_valid);
+    check_result("split type", bp_split.type == ReadBreakpoint::SPLIT);
+    check_result("split read_pos", bp_split.read_pos == 15);
+    check_result("split ref_pos is event-time", bp_split.ref_pos == 15);
+
+    auto bp_clip_5p = detect_breakpoint_from_cigar({
+        {'S', 25}, {'M', 60}, {'S', 10}
+    });
+    check_result("5p clip chosen by longer clip", bp_clip_5p.type == ReadBreakpoint::SOFT_CLIP_5P);
+    check_result("5p clip read_pos", bp_clip_5p.read_pos == 25);
+
+    auto bp_clip_3p = detect_breakpoint_from_cigar({
+        {'S', 10}, {'M', 60}, {'S', 25}
+    });
+    check_result("3p clip chosen by longer clip", bp_clip_3p.type == ReadBreakpoint::SOFT_CLIP_3P);
+    check_result("3p clip read_pos", bp_clip_3p.read_pos == 70);
+    check_result("3p clip ref_pos", bp_clip_3p.ref_pos == 60);
+
+    std::cout << "  Breakpoint detection semantics tests passed!\n";
 }
 
 // ============================================================================
@@ -303,6 +414,64 @@ void test_structural_collapse() {
 // AssemblyEngine Interface Tests
 // ============================================================================
 
+void test_batch_support_reads_preserved() {
+    print_test_header("Batch Support Reads Preservation");
+
+    AssemblyConfig config;
+    config.min_reads_for_poa = 2;
+    config.max_reads_for_poa = 20;
+    config.breakpoint_upstream = 40;
+    config.breakpoint_downstream = 40;
+    config.ins_min_length = 30;
+
+    AssemblyEngine engine(config);
+
+    Component component{};
+    component.id = 42;
+    component.chrom_tid = 0;
+    component.start = 1000;
+    component.end = 1100;
+    component.read_count = 10;  // intentionally larger than reads.size()
+
+    std::vector<ReadSketch> reads;
+    for (int i = 0; i < 6; ++i) {
+        ReadSketch read;
+        read.qname = "read_" + std::to_string(i);
+        read.tid = 0;
+        read.pos = 1000 + i;
+        read.end_pos = read.pos + 80;
+        read.flag = 0;
+        read.mapq = 60;
+        read.sequence = std::string(80, 'A') + std::string(80, 'T');
+        read.cigar_ops = {{'M', 80}, {'S', 80}};
+        read.total_clip_len = 80;
+        read.breakpoint = detect_breakpoint_from_cigar(read.cigar_ops);
+        reads.push_back(std::move(read));
+    }
+
+    const std::string ref_path = placer_test::resolve_test_file(
+        "PLACER_TEST_REF",
+        {"test_data/ref.fa", "tests/data/ref.fa"});
+    GenomeAccessor genome(ref_path);
+
+    auto contigs_component = engine.assemble_component(component, reads, genome);
+    check_result("component-level contig exists", !contigs_component.empty());
+
+    std::vector<Component> components = {component};
+    auto contigs_batch = engine.assemble_batch(components, reads, genome);
+    check_result("batch-level contig exists", !contigs_batch.empty());
+
+    int32_t component_support = contigs_component.front().support_reads;
+    int32_t batch_support = contigs_batch.front().support_reads;
+
+    check_result("batch keeps assembled support",
+        batch_support == component_support);
+    check_result("batch support bounded by sampled reads",
+        batch_support <= static_cast<int32_t>(reads.size()));
+
+    std::cout << "  Batch support read preservation tests passed!\n";
+}
+
 void test_assembly_engine() {
     print_test_header("AssemblyEngine");
 
@@ -312,10 +481,13 @@ void test_assembly_engine() {
     std::vector<Component> empty_components;
     std::vector<ReadSketch> empty_reads;
 
-    GenomeAccessor::IndexEntry idx;
-    idx.name = "chrTEST";
-    idx.length = 1000000;
-    GenomeAccessor genome("/mnt/home1/miska/hl725/projects/tldr_optimized/test/ref.fa");
+    const std::string ref_path = placer_test::resolve_test_file(
+        "PLACER_TEST_REF",
+        {"test_data/ref.fa", "tests/data/ref.fa"});
+    if (ref_path.empty()) {
+        std::cout << "  [INFO] No reference fixture found; using empty GenomeAccessor\n";
+    }
+    GenomeAccessor genome(ref_path);
 
     auto contigs = engine.assemble_batch(empty_components, empty_reads, genome);
     check_result("empty batch", contigs.empty());
@@ -353,11 +525,15 @@ int main() {
     try {
         test_assembly_config();
         test_structural_fingerprint();
+        test_rtree_spatial_query();
+        test_poa_predecessor_overflow();
+        test_breakpoint_detection_semantics();
         test_poa_assembly();
         test_multipath_poa();
         test_contig_structure();
         test_structural_representative();
         test_structural_collapse();
+        test_batch_support_reads_preserved();
         test_assembly_engine();
         test_polya_extraction();
 

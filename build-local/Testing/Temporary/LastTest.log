@@ -1,0 +1,546 @@
+Start testing: Feb 11 15:19 GMT
+----------------------------------------------------------
+1/8 Testing: StreamTest
+1/8 Test: StreamTest
+Command: "/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests/test_stream"
+Directory: /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests
+"StreamTest" start time: Feb 11 15:19 GMT
+Output:
+----------------------------------------------------------
+=== PLACER Phase 1 Tests ===
+Testing WindowStats...
+  Quantile estimate: 980.1
+  Observations: 100
+  Q99 clip for chr1: 298
+  WindowStats tests passed!
+Testing BamReader...
+  [SKIP] Missing BAM fixture (set PLACER_TEST_BAM to enable this test)
+Testing WindowBuffer...
+  Windows created: 3
+  Window stats: bases_covered=5000
+  Sealed windows: 0
+  WindowBuffer tests passed!
+Testing chromosome switching...
+  Windows after chr1 read: 1
+  Windows after chr2 read: 1
+  Windows after returning to chr1: 1
+  Chromosome switching tests passed!
+Testing WindowBuffer (empty state)...
+  Empty buffer has 0 windows: OK
+  seal_and_flush on empty buffer: OK
+  WindowBuffer empty state tests passed!
+Testing Trigger...
+  Trigger score: 1
+  Triggered: yes
+  Clip trig: yes
+  Trigger tests passed!
+Testing TaskQueue...
+  All placeholder tasks processed
+  Testing submit_serialized with read data...
+  submit_serialized returned: success
+  Serialized task processed
+  TaskQueue tests passed!
+Testing TaskQueue (close on empty)...
+  close() on empty queue: OK
+  TaskQueue close on empty tests passed!
+Testing TaskSerializer (round-trip)...
+  Task saved successfully
+  Task loaded successfully
+  Data integrity verified
+  Read fields verified: 3 reads
+  TaskSerializer tests passed!
+Testing integration (full pipeline)...
+  [SKIP] Missing BAM fixture (set PLACER_TEST_BAM to enable this test)
+
+=== PLACER Phase 2 Tests ===
+Testing HashTEIndex (bit-packed k-mers)...
+  Index size: 8 k-mers
+  Query 'ACGT': hit_count=2, density=1
+  Query 'GGGGGGGG': hit_count=0
+  Query 'ACGTACGT' passes strict: yes
+  Query 'ACGT' passes strict: no
+  HashTEIndex tests passed!
+Testing HashTEIndex build_from_fasta...
+  Index size: 59 k-mers
+  Family names: 3
+  Query L1-like seq: hit_count=14
+  HashTEIndex FASTA tests passed!
+Testing HashTEIndex N character handling...
+  Query with N: hit_count=10
+  Query 'NNNNNNNN': hit_count=0
+  N handling tests passed!
+Testing Gate1 probe extraction...
+  Probes extracted: 4
+  END probes: 2, CLIP: 1, INS: 1
+  Probe extraction tests passed!
+Testing Gate1 evaluate...
+  TE-like read: passed=yes, total_hits=96, dominant_family=0
+  Background read: passed=no, total_hits=0
+  Gate1 evaluate tests passed!
+Testing Gate1 passes (fast path)...
+  TE-like read passes: yes
+  Background read passes: no
+  Gate1 passes tests passed!
+Testing Gate1 with real BAM data...
+  [SKIP] Missing BAM fixture (set PLACER_TEST_BAM to enable this test)
+
+=== All tests passed! ===
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"StreamTest" end time: Feb 11 15:19 GMT
+"StreamTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/8 Testing: ComponentTest
+2/8 Test: ComponentTest
+Command: "/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests/test_component"
+Directory: /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests
+"ComponentTest" start time: Feb 11 15:19 GMT
+Output:
+----------------------------------------------------------
+=== PLACER Phase 3 Tests ===
+Testing ComponentBuilder (empty input)...
+  Empty input tests passed!
+Testing ComponentBuilder (reads without signals)...
+  Components: 0
+  Anchors: 0
+  No signals tests passed!
+Testing ComponentBuilder (basic)...
+  Total anchors: 3
+  Components: 0
+  Components created:
+  Basic ComponentBuilder tests passed!
+Testing ComponentBuilder (multi-chromosome)...
+  Components: 0
+  Multi-chromosome tests passed!
+Testing ComponentBuilder (span threshold)...
+  Breakers triggered: 1
+  Components: 1
+  Span threshold tests passed!
+Testing ComponentBuilder (insertion events)...
+  Components: 0
+  Anchors: 1
+  Insertion event tests passed!
+Testing ComponentBuilder (SA splits)...
+  Anchors: 3
+  SA split tests passed!
+Testing ComponentBuilder (real BAM data)...
+  [SKIP] Missing BAM fixture (set PLACER_TEST_BAM to enable this test)
+
+=== All Phase 3 tests passed! ===
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"ComponentTest" end time: Feb 11 15:19 GMT
+"ComponentTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/8 Testing: LocalRealignTest
+3/8 Test: LocalRealignTest
+Command: "/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests/test_local_realign"
+Directory: /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests
+"LocalRealignTest" start time: Feb 11 15:19 GMT
+Output:
+----------------------------------------------------------
+=== PLACER Phase 4 Industrial-Grade Tests ===
+Testing BitpackedSeq (2-bit encoding)...
+  Original size: 12 bytes
+  Packed size: 12 bases
+  Memory reduction: 33.3333%
+  BitpackedSeq tests passed!
+Testing SeqView (zero-copy)...
+  SeqView tests passed!
+Testing RealignConfig...
+  RealignConfig tests passed!
+Testing align_sequences...
+  Perfect match score: 15
+  Matches: 12
+  Identity: 1
+  Normalized: 1.25
+  Mismatch score: -1e+09
+  align_sequences tests passed!
+Testing find_seeds...
+  Found 5 seeds (k=4, stride=2)
+  First seed (ACGT): 27
+  find_seeds tests passed!
+Testing populate_locus_set...
+  Locus count: 4
+    Locus: pos=1500, score=60, evidence=1
+    Locus: pos=1600, score=50, evidence=1
+    Locus: pos=3500, score=54, evidence=1
+    Locus: pos=3600, score=45, evidence=1
+  populate_locus_set tests passed!
+Testing rank_loci...
+  rank_loci tests passed!
+Testing placeability calculation...
+  Best score: 1.16
+  Second score: 0
+  Delta: 1.16
+  Confidence: 0.673333
+  placeability tests passed!
+Testing tier determination...
+  Tier determination tests passed!
+Testing batch processing interface...
+  Batch interface test passed!
+
+=== All Industrial-Grade tests passed! ===
+<end of output>
+Test time =   0.14 sec
+----------------------------------------------------------
+Test Passed.
+"LocalRealignTest" end time: Feb 11 15:19 GMT
+"LocalRealignTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/8 Testing: AssemblyTest
+4/8 Test: AssemblyTest
+Command: "/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests/test_assembly"
+Directory: /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests
+"AssemblyTest" start time: Feb 11 15:19 GMT
+Output:
+----------------------------------------------------------
+=== PLACER Phase 5 Assembly + Collapsing Tests ===
+
+Testing AssemblyConfig...
+  AssemblyConfig tests passed!
+
+Testing StructuralFingerprint...
+  from_contig: PASS
+  hash consistency: PASS
+  fingerprint matches: PASS
+  fingerprint no-match: PASS
+  StructuralFingerprint tests passed!
+
+Testing RTree Spatial Query...
+  query mid contains idx=1: PASS
+  query mid excludes idx=0: PASS
+  query mid excludes idx=2: PASS
+  query high contains idx=2: PASS
+  query high excludes idx=0: PASS
+  RTree spatial query tests passed!
+
+Testing POA Predecessor Overflow...
+  edge inserted: PASS
+  edge inserted: PASS
+  edge inserted: PASS
+  edge inserted: PASS
+  edge inserted: PASS
+  edge inserted: PASS
+  overflow predecessor size: PASS
+  overflow predecessor contains all: PASS
+  indegree equals unique edges: PASS
+  duplicate edge rejected: PASS
+  indegree stable after duplicate: PASS
+  POA predecessor overflow tests passed!
+
+Testing Breakpoint Detection Semantics...
+  insertion valid: PASS
+  insertion type: PASS
+  insertion read_pos: PASS
+  insertion ref_pos is event-time: PASS
+  insertion len captured: PASS
+  split valid: PASS
+  split type: PASS
+  split read_pos: PASS
+  split ref_pos is event-time: PASS
+  5p clip chosen by longer clip: PASS
+  5p clip read_pos: PASS
+  3p clip chosen by longer clip: PASS
+  3p clip read_pos: PASS
+  3p clip ref_pos: PASS
+  Breakpoint detection semantics tests passed!
+
+Testing POA Assembly...
+  single sequence: PASS
+  identical sequences: PASS
+  majority vote: PASS
+  N base handling: PASS
+  POA assembly tests passed!
+
+Testing Multi-Path POA...
+  multi-path input: PASS
+  Multi-path POA tests passed!
+
+Testing Contig Structure...
+  contig sequence: PASS
+  contig up flank: PASS
+  contig ins: PASS
+  contig down flank: PASS
+  left breakpoint: PASS
+  right breakpoint: PASS
+  Contig structure tests passed!
+
+Testing StructuralRepresentative...
+  rep_id: PASS
+  contig_ids: PASS
+  polymorphism: PASS
+  polyA mean: PASS
+  StructuralRepresentative tests passed!
+
+Testing Structural Collapsing...
+  collapse count: PASS
+  merged total_reads: PASS
+  merged avg_quality: PASS
+  merged representative found: PASS
+  Structural collapsing tests passed!
+
+Testing Batch Support Reads Preservation...
+  component-level contig exists: PASS
+  batch-level contig exists: PASS
+  batch keeps assembled support: PASS
+  batch support bounded by sampled reads: PASS
+  Batch support read preservation tests passed!
+
+Testing AssemblyEngine...
+  [INFO] No reference fixture found; using empty GenomeAccessor
+  empty batch: PASS
+  AssemblyEngine interface tests passed!
+
+Testing PolyA Extraction...
+  polyA mean: PASS
+  PolyA extraction tests passed!
+
+=== All Phase 5 tests passed! ===
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"AssemblyTest" end time: Feb 11 15:19 GMT
+"AssemblyTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/8 Testing: PlaceabilityTest
+5/8 Test: PlaceabilityTest
+Command: "/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests/test_placeability"
+Directory: /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests
+"PlaceabilityTest" start time: Feb 11 15:19 GMT
+Output:
+----------------------------------------------------------
+=== PLACER Phase 6 Placeability + Tier Tests ===
+
+Testing PlaceabilityConfig...
+  PlaceabilityConfig tests passed!
+
+Testing ExtendedPlaceabilityReport...
+  ExtendedPlaceabilityReport tests passed!
+
+Testing Placeability Score Calculation...
+  high delta calculation: PASS
+  low delta calculation: PASS
+  same scores delta: PASS
+  negative scores delta: PASS
+  Placeability Score tests passed!
+
+Testing Side Consistency...
+  consistent sides (within threshold): PASS
+  inconsistent sides check: PASS
+  exact same positions: PASS
+  one side missing: PASS
+  Side Consistency tests passed!
+
+Testing Support Consistency...
+  high support consistency: PASS
+  low support consistency: FAIL
+  single score consistency: PASS
+  empty scores consistency: PASS
+  Support Consistency tests passed!
+
+Testing Tier Determination...
+  tier 1 determination: FAIL
+  tier 2 or 3 determination: FAIL
+  tier 3 determination: FAIL
+  tier boundary case: FAIL
+  Tier Determination tests passed!
+
+Testing TSD Detection...
+  valid TSD found: PASS
+  TSD length positive: PASS
+  TSD detection runs: PASS
+  TSD with prefix match: PASS
+  TSD prefix length: FAIL
+  TSD Detection tests passed!
+
+Testing TSD Significance...
+  TSD significance check runs: PASS
+  polyA TSD not significant: PASS
+  TSD Significance tests passed!
+
+Testing Locus Evidence...
+  locus evidence batch size: PASS
+  locus evidence average: PASS
+  Locus Evidence tests passed!
+
+Testing Full Placeability Pipeline...
+  pipeline: best locus: PASS
+  pipeline: delta score: PASS
+  pipeline: candidate count: PASS
+  pipeline: side consistent: PASS
+  pipeline: tier determined: PASS
+  Full Placeability Pipeline tests passed!
+
+Testing Placeability Output...
+  info fields not empty: PASS
+  info contains tier: PASS
+  info contains delta: PASS
+  tier 1 description: PASS
+  tier 2 description: PASS
+  TSD info not empty: PASS
+  TSD info contains length: PASS
+  Placeability Output tests passed!
+
+=== All Phase 6 tests passed! ===
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"PlaceabilityTest" end time: Feb 11 15:19 GMT
+"PlaceabilityTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/8 Testing: PlaceabilityIntegrationTest
+6/8 Test: PlaceabilityIntegrationTest
+Command: "/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests/test_placeability_integration"
+Directory: /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests
+"PlaceabilityIntegrationTest" start time: Feb 11 15:19 GMT
+Output:
+----------------------------------------------------------
+=== PLACER Placeability Integration Tests ===
+
+=== Integration Test with tldr_optimized/test data ===
+  [SKIP] Missing target list fixture (set PLACER_TEST_TARGETS to enable this test)
+
+=== TSD Detection with Realistic Flanks ===
+  Test 1 - Perfect TSD: found=1 len=18 method=exact_prefix
+  Test 2 - 1-mismatch TSD: found=1 len=17
+  Test 3 - No TSD: found=0
+  Test 4 - PolyA TSD: found=1 sig=0
+  All TSD tests passed!
+
+=== Tier Classification Tests ===
+  Tier 1 test: tier=3 delta=4.2724
+  Tier 5 test (empty): tier=5
+  Ambiguous test: tier=4 candidates=3
+  All tier classification tests passed!
+
+=== Output Format Tests ===
+  INFO field: PLACEABILITY=45.200;TIER=1;DELTA=35.50;CONSISTENCY=0.880;CANDIDATES=2;SUPPORT=8;...
+  JSON length: 451 bytes
+  All output format tests passed!
+
+=== All Integration Tests Passed! ===
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"PlaceabilityIntegrationTest" end time: Feb 11 15:19 GMT
+"PlaceabilityIntegrationTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/8 Testing: GenotypingTest
+7/8 Test: GenotypingTest
+Command: "/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests/test_genotyping"
+Directory: /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests
+"GenotypingTest" start time: Feb 11 15:19 GMT
+Output:
+----------------------------------------------------------
+=== PLACER Phase 7 Genotyping Tests ===
+
+Testing GenotypeConfig...
+  GenotypeConfig tests passed!
+
+Testing GenotypeResult...
+  GenotypeResult tests passed!
+
+Testing ReadEvidence...
+  ReadEvidence tests passed!
+
+Testing SpatialPriorCalculator...
+  SpatialPriorCalculator tests passed!
+
+Testing StructuralPriorCalculator...
+  StructuralPriorCalculator tests passed!
+
+Testing EMEngine...
+  EM converged: PASS
+  Positive log likelihood: PASS
+  E[ALT] + E[REF] + E[NULL] = 1: PASS
+  High ALT fraction: PASS
+  Empty evidence: mix_null=1: PASS
+  EMEngine tests passed!
+
+Testing Genotyper...
+  Genotype produced: PASS
+  Valid genotype: PASS
+  GQ computed: PASS
+  AF computed: PASS
+  Genotyper tests passed!
+
+Testing Utility Functions...
+  Beta CI low >= 0: PASS
+  Beta CI high <= 1: PASS
+  Beta CI valid range: PASS
+  Phred from prob: PASS
+  Positive likelihood ratio: PASS
+  Utility Functions tests passed!
+
+Testing Genotyping Pipeline Integration...
+  ALT signal: GT=0/1 mix_alt=0.999998 mix_ref=9.99998e-07 mix_null=9.99998e-07
+  Clear ALT: high mix_alt: PASS
+  High NULL: GT=0/0 mix_null=0.999998
+  High NULL: marked: PASS
+  Genotyping Pipeline tests passed!
+
+=== All Phase 7 tests passed! ===
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"GenotypingTest" end time: Feb 11 15:19 GMT
+"GenotypingTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/8 Testing: TEReverseIndexTest
+8/8 Test: TEReverseIndexTest
+Command: "/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests/test_te_reverse_index"
+Directory: /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests
+"TEReverseIndexTest" start time: Feb 11 15:19 GMT
+Output:
+----------------------------------------------------------
+=== PLACER Phase 8 TE Reverse Index Tests ===
+
+Testing TEReverseIndexConfig...
+  TEReverseIndexConfig tests passed!
+
+Testing GenomeKmerIndex...
+GenomeKmerIndex built from 2 sequences: 20 bases, 8 unique k-mers
+  GenomeKmerIndex tests passed!
+
+Testing RescuedLocus...
+  RescuedLocus tests passed!
+
+Testing ReadRescueResult...
+  ReadRescueResult tests passed!
+
+Testing TEReverseIndex...
+GenomeKmerIndex built from 1 sequences: 12 bases, 4 unique k-mers
+  TEReverseIndex basic tests passed!
+
+Testing Utility Functions...
+  Utility Functions tests passed!
+
+Testing Rescue Pipeline Integration...
+  Rescue Pipeline integration tests passed!
+
+=== All Phase 8 tests passed! ===
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"TEReverseIndexTest" end time: Feb 11 15:19 GMT
+"TEReverseIndexTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Feb 11 15:19 GMT

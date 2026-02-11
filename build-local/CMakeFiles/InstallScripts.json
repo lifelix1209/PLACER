@@ -1,0 +1,17 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/src/stream/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/src/gate1/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/src/component/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/src/local_realign/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/src/abpoa_wrapper/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/src/assembly/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/src/placeability/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/src/genotyping/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/tests/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-local/src/te_reverse_index/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

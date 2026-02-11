@@ -5,9 +5,11 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <sstream>
 #include "placeability.h"
 #include "local_realign.h"
 #include "bam_reader.h"
+#include "test_path_utils.h"
 
 using namespace placer;
 
@@ -73,8 +75,21 @@ std::vector<LocusEvidence> simulate_evidence_for_target(
 void test_with_test_data() {
     std::cout << "\n=== Integration Test with tldr_optimized/test data ===\n";
 
+    const std::string targets_path = placer_test::resolve_test_file(
+        "PLACER_TEST_TARGETS",
+        {"test_data/targets.test.txt", "tests/data/targets.test.txt"});
+    if (!placer_test::require_path_or_skip(
+            targets_path, "target list fixture", "PLACER_TEST_TARGETS")) {
+        return;
+    }
+
     // Read targets
-    auto targets = read_targets("/mnt/home1/miska/hl725/projects/tldr_optimized/test/targets.test.txt");
+    auto targets = read_targets(targets_path);
+    if (targets.empty()) {
+        std::cout << "  [SKIP] Target list is empty or unreadable: "
+                  << targets_path << std::endl;
+        return;
+    }
     std::cout << "Loaded " << targets.size() << " targets from targets.test.txt\n";
 
     // For each target, create evidence and test placeability

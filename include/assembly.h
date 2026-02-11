@@ -86,6 +86,56 @@ struct PredList {
     uint8_t inline_count = 0;
     std::vector<uint32_t>* overflow = nullptr;  // 溢出时使用
 
+    PredList() = default;
+
+    PredList(const PredList& other)
+        : inline_count(other.inline_count),
+          overflow(other.overflow ? new std::vector<uint32_t>(*other.overflow) : nullptr) {
+        std::copy(std::begin(other.inline_preds), std::end(other.inline_preds), std::begin(inline_preds));
+    }
+
+    PredList& operator=(const PredList& other) {
+        if (this == &other) return *this;
+
+        std::copy(std::begin(other.inline_preds), std::end(other.inline_preds), std::begin(inline_preds));
+        inline_count = other.inline_count;
+
+        if (other.overflow) {
+            if (!overflow) {
+                overflow = new std::vector<uint32_t>();
+            }
+            *overflow = *other.overflow;
+        } else {
+            delete overflow;
+            overflow = nullptr;
+        }
+
+        return *this;
+    }
+
+    PredList(PredList&& other) noexcept
+        : inline_count(other.inline_count), overflow(other.overflow) {
+        std::copy(std::begin(other.inline_preds), std::end(other.inline_preds), std::begin(inline_preds));
+        other.inline_count = 0;
+        std::fill(std::begin(other.inline_preds), std::end(other.inline_preds), UINT32_MAX);
+        other.overflow = nullptr;
+    }
+
+    PredList& operator=(PredList&& other) noexcept {
+        if (this == &other) return *this;
+
+        delete overflow;
+        std::copy(std::begin(other.inline_preds), std::end(other.inline_preds), std::begin(inline_preds));
+        inline_count = other.inline_count;
+        overflow = other.overflow;
+
+        other.inline_count = 0;
+        std::fill(std::begin(other.inline_preds), std::end(other.inline_preds), UINT32_MAX);
+        other.overflow = nullptr;
+
+        return *this;
+    }
+
     ~PredList() {
         delete overflow;
     }
@@ -576,7 +626,8 @@ struct StructuralFingerprint {
         int32_t left_bp,
         int32_t right_bp,
         int32_t te_family,
-        int8_t orient);
+        int8_t orient,
+        int32_t tid = -1);
 
     // 双端匹配：检查右端点重叠（用于发现左端点很远但右端点重叠的 SV）
     bool right_overlaps(const StructuralFingerprint& other) const {
@@ -600,6 +651,7 @@ struct StructuralFingerprint {
 
 struct Contig {
     std::string sequence;
+    int32_t chrom_tid = -1;
     int32_t left_breakpoint = -1;
     int32_t right_breakpoint = -1;
     int32_t te_family_id = -1;
@@ -766,6 +818,7 @@ struct ReadSegments {
     std::string ins;     // Insertion/clip sequence at breakpoint
     std::string down;   // Downstream flank (first N bp after breakpoint)
     size_t read_idx;    // Original read index in reads vector
+    ReadBreakpoint::Type breakpoint_type = ReadBreakpoint::NONE;
 };
 
 // ============================================================================
@@ -809,6 +862,11 @@ private:
     StructuralRepresentative merge_contigs(
         const std::vector<int>& indices,
         std::vector<Contig>& contigs);
+    std::string build_flank_consensus(
+        const std::vector<std::string>& sequences);
+    double compute_consensus_quality(
+        int alignment_score,
+        const std::vector<std::string>& sequences) const;
     int extract_polya_length(std::string_view seq);
     std::string simple_majority_consensus(
         const std::vector<std::string>& sequences);

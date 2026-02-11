@@ -1,19 +1,45 @@
 #include <iostream>
 #include <cassert>
+#include <filesystem>
 #include "bam_reader.h"
 #include "window_buffer.h"
 #include "window_stats.h"
 #include "trigger.h"
 #include "task_queue.h"
 #include "gate1.h"
+#include "test_path_utils.h"
 
 using namespace placer;
+
+const std::string& test_bam_path() {
+    static const std::string path = placer_test::resolve_test_file(
+        "PLACER_TEST_BAM",
+        {"test_data/test.bam", "tests/data/test.bam"});
+    return path;
+}
+
+const std::string& test_te_fasta_path() {
+    static const std::string path = placer_test::resolve_test_file(
+        "PLACER_TEST_TE_FASTA",
+        {"test_data/te_test.fa"});
+    return path;
+}
 
 void test_bam_reader() {
     std::cout << "Testing BamReader..." << std::endl;
 
-    BamReader reader("/mnt/home1/miska/hl725/projects/tldr_optimized/test/test.bam");
-    assert(reader.is_valid());
+    const auto& bam_path = test_bam_path();
+    if (!placer_test::require_path_or_skip(
+            bam_path, "BAM fixture", "PLACER_TEST_BAM")) {
+        return;
+    }
+
+    BamReader reader(bam_path);
+    if (!reader.is_valid()) {
+        std::cout << "  [SKIP] Failed to open BAM fixture: " << bam_path
+                  << std::endl;
+        return;
+    }
 
     int64_t count = 0;
     auto callback = [&count](const ReadSketch& read) {
@@ -327,7 +353,8 @@ void test_task_serialization() {
     }
 
     // Create serializer
-    TaskSerializer serializer("/tmp/placer_test_tasks");
+    const std::string temp_task_dir = placer_test::make_temp_dir("placer_test_tasks");
+    TaskSerializer serializer(temp_task_dir);
     bool saved = serializer.save_task(original);
     assert(saved);
     std::cout << "  Task saved successfully" << std::endl;
@@ -335,7 +362,7 @@ void test_task_serialization() {
     // Load task back
     TaskData loaded;
     bool loaded_ok = serializer.load_task(
-        "/tmp/placer_test_tasks/task_0_test_chr1_90000.task", loaded);
+        temp_task_dir + "/task_0_test_chr1_90000.task", loaded);
 
     assert(loaded_ok);
     std::cout << "  Task loaded successfully" << std::endl;
@@ -381,8 +408,18 @@ void test_integration() {
 
     WindowBuffer window_buffer(wconfig);
 
-    BamReader reader("/mnt/home1/miska/hl725/projects/tldr_optimized/test/test.bam");
-    assert(reader.is_valid());
+    const auto& bam_path = test_bam_path();
+    if (!placer_test::require_path_or_skip(
+            bam_path, "BAM fixture", "PLACER_TEST_BAM")) {
+        return;
+    }
+
+    BamReader reader(bam_path);
+    if (!reader.is_valid()) {
+        std::cout << "  [SKIP] Failed to open BAM fixture: " << bam_path
+                  << std::endl;
+        return;
+    }
 
     int64_t count = 0;
     int64_t triggered_count = 0;
@@ -471,7 +508,13 @@ void test_hash_te_index_fasta() {
     HashTEIndexConfig config;
     config.kmer_size = 3;
 
-    auto index = HashTEIndex::build_from_fasta("/mnt/home1/miska/hl725/projects/PLACER/test_data/te_test.fa", config);
+    const auto& te_fasta = test_te_fasta_path();
+    if (!placer_test::require_path_or_skip(
+            te_fasta, "TE FASTA fixture", "PLACER_TEST_TE_FASTA")) {
+        return;
+    }
+
+    auto index = HashTEIndex::build_from_fasta(te_fasta, config);
     assert(index != nullptr);
     std::cout << "  Index size: " << index->size() << " k-mers" << std::endl;
     assert(index->size() > 0);
@@ -528,8 +571,13 @@ void test_gate1_extract_probes() {
     config.min_ins_len = 10;
     config.ins_neighborhood = 20;
 
-    auto te_index = HashTEIndex::build_from_fasta("/mnt/home1/miska/hl725/projects/PLACER/test_data/te_test.fa",
-                                                   HashTEIndexConfig());
+    const auto& te_fasta = test_te_fasta_path();
+    if (!placer_test::require_path_or_skip(
+            te_fasta, "TE FASTA fixture", "PLACER_TEST_TE_FASTA")) {
+        return;
+    }
+
+    auto te_index = HashTEIndex::build_from_fasta(te_fasta, HashTEIndexConfig());
     assert(te_index != nullptr);
 
     Gate1 gate1(std::shared_ptr<HashTEIndex>(te_index.release()), config);
@@ -668,14 +716,29 @@ void test_gate1_real_bam() {
     config.min_hit_count = 3;
     config.min_density = 0.05;
 
-    auto te_index = HashTEIndex::build_from_fasta("/mnt/home1/miska/hl725/projects/PLACER/test_data/te_test.fa",
-                                                   HashTEIndexConfig());
+    const auto& te_fasta = test_te_fasta_path();
+    if (!placer_test::require_path_or_skip(
+            te_fasta, "TE FASTA fixture", "PLACER_TEST_TE_FASTA")) {
+        return;
+    }
+
+    auto te_index = HashTEIndex::build_from_fasta(te_fasta, HashTEIndexConfig());
     assert(te_index != nullptr);
 
     Gate1 gate1(std::shared_ptr<HashTEIndex>(te_index.release()), config);
 
-    BamReader reader("/mnt/home1/miska/hl725/projects/tldr_optimized/test/test.bam");
-    assert(reader.is_valid());
+    const auto& bam_path = test_bam_path();
+    if (!placer_test::require_path_or_skip(
+            bam_path, "BAM fixture", "PLACER_TEST_BAM")) {
+        return;
+    }
+
+    BamReader reader(bam_path);
+    if (!reader.is_valid()) {
+        std::cout << "  [SKIP] Failed to open BAM fixture: " << bam_path
+                  << std::endl;
+        return;
+    }
 
     int64_t count = 0;
     int64_t passed = 0;
@@ -690,7 +753,11 @@ void test_gate1_real_bam() {
     int64_t result = reader.stream(callback);
     std::cout << "  Processed " << result << " reads from BAM" << std::endl;
     std::cout << "  Gate1 passed: " << passed << " reads" << std::endl;
-    std::cout << "  Pass rate: " << (100.0 * passed / count) << "%" << std::endl;
+    if (count > 0) {
+        std::cout << "  Pass rate: " << (100.0 * passed / count) << "%" << std::endl;
+    } else {
+        std::cout << "  Pass rate: n/a (no reads)" << std::endl;
+    }
 
     std::cout << "  Gate1 BAM tests passed!" << std::endl;
 }

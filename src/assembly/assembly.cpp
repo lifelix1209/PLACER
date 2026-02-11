@@ -1,7 +1,9 @@
 #include "assembly.h"
 #include <algorithm>
 #include <cmath>
+#if __has_include(<execution>)
 #include <execution>
+#endif
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
@@ -127,16 +129,21 @@ void RTree::recalc_mbr(RTreeNode* node) {
 
 // [修正] choose_leaf: 区分叶子层和内部层，叶子层用 R*-tree 的 overlap 最小化
 RTreeNode* RTree::choose_leaf(RTreeNode* node, float x1, float y1, float x2, float y2) {
-    // 叶子节点：children 都是数据节点（data >= 0）或者没有 children
-    if (node->is_leaf()) return node;
+    if (!node || node->children.empty()) return node;
 
-    // 检查是否下一层就是叶子层
-    bool next_is_leaf = !node->children.empty() && node->children[0]->is_leaf();
+    // 当前节点的 children 已经是数据记录，当前节点就是插入目标叶层
+    if (node->children[0]->is_leaf()) {
+        return node;
+    }
+
+    // 检查 child 层是否为“叶层节点”（其 children 为数据记录）
+    bool child_is_leaf_level =
+        !node->children[0]->children.empty() && node->children[0]->children[0]->is_leaf();
 
     RTreeNode* best = nullptr;
 
-    if (next_is_leaf) {
-        // R*-tree: 选择 overlap 增量最小的 child
+    if (child_is_leaf_level) {
+        // 选择叶层节点时，优先最小 overlap 增量（R*-tree 策略）
         int best_overlap_delta = INT_MAX;
         float best_enlargement = std::numeric_limits<float>::max();
         float best_area = std::numeric_limits<float>::max();
@@ -156,7 +163,7 @@ RTreeNode* RTree::choose_leaf(RTreeNode* node, float x1, float y1, float x2, flo
             }
         }
     } else {
-        // 内部层：选择 enlargement 最小的 child
+        // 更高内部层：选择 enlargement 最小的 child
         float best_enlargement = std::numeric_limits<float>::max();
         float best_area = std::numeric_limits<float>::max();
 
@@ -275,6 +282,7 @@ void RTree::insert(float x1, float y1, float x2, float y2, int data) {
     // 插入到叶子
     new_node->parent = leaf;
     leaf->children.push_back(new_node);
+    recalc_mbr(leaf);
     size_++;
 
     RTreeNode* split_sibling = nullptr;
@@ -488,26 +496,8 @@ bool POAArena::add_edge(uint32_t from, uint32_t to) {
 
     edges_.insert(e);
 
-    // 维护 from 的出边链表（sibling chain）
-    // new_node.next_sibling = from.first_out; from.first_out = to;
-    // 但 next_sibling 是 to 节点的属性 → 不对！
-    // 我们需要一个 per-edge 的 sibling 链，或者用 out_edges 列表
-    //
-    // [修正方案] 改用显式出边列表存储在节点中
-    // 由于 POANode 结构可能有 first_out + next_sibling 的设计，
-    // 我们用 sibling 链来表示同一个 from 的多条出边：
-    //   from.first_out → child1, child1.next_sibling → child2, ...
-    // 但 next_sibling 是 child 节点的字段，会被多个 parent 共享时冲突！
-    //
-    // 正确做法：用独立的出边列表。这里我们在 POANode 中加 out_edges。
-    // 但为了不改头文件太多，我们用 edges_ set 来遍历出边。
-
     // 维护 predecessor
-    auto& preds = nodes_[to].predecessors;
-    if (preds.inline_count < 4) {  // 假设 inline 容量为 4
-        preds.inline_preds[preds.inline_count++] = from;
-    }
-    // 如果超过 inline 容量，需要 overflow 处理（这里简化为丢弃）
+    nodes_[to].predecessors.add(from);
 
     nodes_[to].indegree++;
 
@@ -848,24 +838,33 @@ QualityWeightedConsensus QualityWeightedConsensus::extract(
 
         // 查找同一拓扑位置的其他节点（通过 predecessors 的后继关系）
         // 这些是在 POA 中被"合并"到同一列的不同碱基
-        // 在标准 POA 中，这些节点通过 align_info 链接
-        // 这里简化：检查所有与 main_node 共享前驱的节点
-        for (uint8_t k = 0; k < main_node->predecessors.inline_count; ++k) {
-            uint32_t pred = main_node->predecessors.inline_preds[k];
-            // 找 pred 的所有后继
+        std::unordered_set<uint32_t> seen_alt_nodes;
+        seen_alt_nodes.insert(main_node_idx);
+
+        auto collect_from_pred = [&](uint32_t pred) {
             for (const auto& e : arena.get_edges()) {
-                if (e.from == pred && e.to != main_node_idx) {
-                    const POANode* alt_node = arena.get_node(e.to);
-                    if (alt_node) {
-                        int alt_topo = node_to_topo[e.to];
-                        // 如果 alt 节点的拓扑序与 main 相近（±1），视为同列
-                        if (alt_topo >= 0 && std::abs(alt_topo - topo_idx) <= 1) {
-                            int abi = base_to_idx(alt_node->base);
-                            base_votes[abi] += alt_node->count;
-                            total_votes += alt_node->count;
-                        }
-                    }
+                if (e.from != pred || e.to == main_node_idx) continue;
+                if (!seen_alt_nodes.insert(e.to).second) continue;
+
+                const POANode* alt_node = arena.get_node(e.to);
+                if (!alt_node) continue;
+
+                int alt_topo = node_to_topo[e.to];
+                // 如果 alt 节点的拓扑序与 main 相近（±1），视为同列
+                if (alt_topo >= 0 && std::abs(alt_topo - topo_idx) <= 1) {
+                    int abi = base_to_idx(alt_node->base);
+                    base_votes[abi] += alt_node->count;
+                    total_votes += alt_node->count;
                 }
+            }
+        };
+
+        for (uint8_t k = 0; k < main_node->predecessors.inline_count; ++k) {
+            collect_from_pred(main_node->predecessors.inline_preds[k]);
+        }
+        if (main_node->predecessors.overflow) {
+            for (uint32_t pred : *main_node->predecessors.overflow) {
+                collect_from_pred(pred);
             }
         }
 
@@ -960,7 +959,12 @@ AssemblyEngine::AssemblyEngine(AssemblyConfig config)
  * - is_valid: true if this read has a clear breakpoint signal
  */
 ReadBreakpoint detect_breakpoint_from_cigar(const std::vector<std::pair<char, int>>& cigar_ops) {
-    ReadBreakpoint bp;
+    ReadBreakpoint bp{};
+    bp.read_pos = -1;
+    bp.ref_pos = -1;
+    bp.type = ReadBreakpoint::NONE;
+    bp.insertion_len = 0;
+    bp.is_valid = false;
 
     int32_t read_pos = 0;  // Current position in read sequence
     int32_t ref_pos = 0;   // Current position in reference
@@ -968,11 +972,13 @@ ReadBreakpoint detect_breakpoint_from_cigar(const std::vector<std::pair<char, in
     // Track soft-clip boundaries
     int32_t clip_5p_pos = -1;  // Position after 5' clip (clip end in read)
     int32_t clip_3p_start = -1; // Position where 3' clip starts in read
+    int32_t clip_5p_len = -1;   // 5' soft clip length
+    int32_t clip_3p_len = -1;   // 3' soft clip length
+    int32_t clip_3p_ref_pos = -1; // Reference position at 3' clip boundary
 
-    // Track insertion boundaries
-    int32_t ins_start_read = -1;
-
-    for (const auto& [op, len] : cigar_ops) {
+    for (size_t op_idx = 0; op_idx < cigar_ops.size(); ++op_idx) {
+        char op = cigar_ops[op_idx].first;
+        int len = cigar_ops[op_idx].second;
         switch (op) {
             case 'M':  // Match/mismatch
                 read_pos += len;
@@ -981,7 +987,9 @@ ReadBreakpoint detect_breakpoint_from_cigar(const std::vector<std::pair<char, in
             case 'I':  // Insertion to reference (deletion from read perspective)
                 if (bp.read_pos < 0) {
                     bp.read_pos = read_pos;
+                    bp.ref_pos = ref_pos;
                     bp.type = ReadBreakpoint::INSERTION;
+                    bp.insertion_len = len;
                     bp.is_valid = true;
                 }
                 read_pos += len;
@@ -992,19 +1000,27 @@ ReadBreakpoint detect_breakpoint_from_cigar(const std::vector<std::pair<char, in
             case 'N':  // Skipped region (splice junction)
                 if (bp.read_pos < 0) {
                     bp.read_pos = read_pos;
+                    bp.ref_pos = ref_pos;
                     bp.type = ReadBreakpoint::SPLIT;
                     bp.is_valid = true;
                 }
                 ref_pos += len;
                 break;
+            case 'P':  // Padding (silent in read/reference coordinates)
+                break;
             case 'S':  // Soft clip
                 if (len >= 10) {  // Only significant clips
-                    if (clip_5p_pos < 0) {
+                    bool at_read_start = (read_pos == 0);
+                    bool at_cigar_end = (op_idx + 1 == cigar_ops.size());
+                    if (at_read_start && clip_5p_pos < 0) {
                         // 5' soft clip
                         clip_5p_pos = len;  // Clip ends at position len
-                    } else {
+                        clip_5p_len = len;
+                    } else if (at_cigar_end || !at_read_start) {
                         // 3' soft clip (after alignment)
                         clip_3p_start = read_pos;
+                        clip_3p_len = len;
+                        clip_3p_ref_pos = ref_pos;
                     }
                 }
                 read_pos += len;
@@ -1025,31 +1041,34 @@ ReadBreakpoint detect_breakpoint_from_cigar(const std::vector<std::pair<char, in
     // Determine best breakpoint from clip information
     // Priority: SPLIT > INSERTION > SOFT_CLIP
 
-    // If we have a split/insertion, use it
-    if (bp.read_pos >= 0) {
-        bp.ref_pos = ref_pos;  // Approximate ref position
+    // If we have a split/insertion, use event-time coordinates already recorded
+    if (bp.is_valid && bp.read_pos >= 0) {
         return bp;
     }
 
     // Otherwise, use clip boundaries
     if (clip_5p_pos > 0 && clip_3p_start > 0) {
         // Both clips present - use the one with more evidence
-        // For TE insertions, 3' clip is often more informative
-        if (clip_3p_start >= static_cast<int32_t>(bp.read_pos)) {
+        // 优先选择 clipping 更长的一端，长度相同优先 3'
+        if (clip_3p_len >= clip_5p_len) {
             bp.read_pos = clip_3p_start;
+            bp.ref_pos = clip_3p_ref_pos;
             bp.type = ReadBreakpoint::SOFT_CLIP_3P;
             bp.is_valid = true;
         } else {
             bp.read_pos = clip_5p_pos;
+            bp.ref_pos = 0;
             bp.type = ReadBreakpoint::SOFT_CLIP_5P;
             bp.is_valid = true;
         }
     } else if (clip_5p_pos > 0) {
         bp.read_pos = clip_5p_pos;
+        bp.ref_pos = 0;
         bp.type = ReadBreakpoint::SOFT_CLIP_5P;
         bp.is_valid = true;
     } else if (clip_3p_start > 0) {
         bp.read_pos = clip_3p_start;
+        bp.ref_pos = clip_3p_ref_pos;
         bp.type = ReadBreakpoint::SOFT_CLIP_3P;
         bp.is_valid = true;
     }
@@ -1113,7 +1132,9 @@ std::vector<ReadSegments> AssemblyEngine::extract_segments(
 
         // Detect breakpoint from CIGAR if not already set
         ReadBreakpoint bp = read.breakpoint;
-        if (!bp.is_valid && !read.cigar_ops.empty()) {
+        if ((!bp.is_valid ||
+             (bp.type == ReadBreakpoint::INSERTION && bp.insertion_len <= 0)) &&
+            !read.cigar_ops.empty()) {
             bp = detect_breakpoint_from_cigar(read.cigar_ops);
         }
 
@@ -1123,32 +1144,101 @@ std::vector<ReadSegments> AssemblyEngine::extract_segments(
 
         ReadSegments seg;
         seg.read_idx = idx;
+        seg.breakpoint_type = bp.type;
 
         int32_t bp_pos = bp.read_pos;  // Position in read sequence
+        int32_t read_len = static_cast<int32_t>(read.sequence.size());
+        if (bp_pos < 0 || bp_pos > read_len) {
+            continue;
+        }
 
-        // UP: last N bp before breakpoint
-        int32_t up_start = bp_pos - config_.breakpoint_upstream;
+        // Type-aware insertion/clip span and flank anchors
+        int32_t ins_start = -1;
+        int32_t ins_end = -1;
+        int32_t left_anchor = bp_pos;
+        int32_t right_anchor = bp_pos;
+
+        switch (bp.type) {
+            case ReadBreakpoint::SOFT_CLIP_5P: {
+                // 5' clip sequence is [0, bp_pos)
+                ins_start = 0;
+                ins_end = bp_pos;
+                left_anchor = 0;
+                right_anchor = bp_pos;
+                break;
+            }
+            case ReadBreakpoint::SOFT_CLIP_3P: {
+                // 3' clip sequence is [bp_pos, read_end)
+                ins_start = bp_pos;
+                ins_end = read_len;
+                left_anchor = bp_pos;
+                right_anchor = read_len;
+                break;
+            }
+            case ReadBreakpoint::INSERTION: {
+                ins_start = bp_pos;
+                int32_t ins_len = bp.insertion_len;
+                if (ins_len <= 0 && !read.cigar_ops.empty()) {
+                    // Recover robustly from legacy breakpoint records lacking insertion_len
+                    ReadBreakpoint recovered = detect_breakpoint_from_cigar(read.cigar_ops);
+                    if (recovered.is_valid &&
+                        recovered.type == ReadBreakpoint::INSERTION &&
+                        recovered.read_pos == bp_pos &&
+                        recovered.insertion_len > 0) {
+                        ins_len = recovered.insertion_len;
+                    }
+                }
+
+                if (ins_len > 0) {
+                    ins_end = std::min(read_len, bp_pos + ins_len);
+                } else {
+                    // Cannot confidently recover insertion span
+                    continue;
+                }
+                left_anchor = ins_start;
+                right_anchor = ins_end;
+                break;
+            }
+            case ReadBreakpoint::SPLIT:
+                // Split-only evidence has no reliable insertion sequence in primary read
+                continue;
+            default:
+                continue;
+        }
+
+        if (ins_start < 0 || ins_end <= ins_start || ins_start >= read_len) {
+            continue;
+        }
+
+        // Cap extremely long insertion/clip segments
+        constexpr int32_t kMaxInsLen = 1000;
+        if (ins_end - ins_start > kMaxInsLen) {
+            if (bp.type == ReadBreakpoint::SOFT_CLIP_5P) {
+                ins_start = ins_end - kMaxInsLen;
+            } else {
+                ins_end = ins_start + kMaxInsLen;
+            }
+        }
+        ins_start = std::clamp(ins_start, 0, read_len);
+        ins_end = std::clamp(ins_end, 0, read_len);
+        if (ins_end <= ins_start) {
+            continue;
+        }
+
+        // UP: last N bp before left anchor
+        int32_t up_start = left_anchor - config_.breakpoint_upstream;
         if (up_start < 0) up_start = 0;
-        int32_t up_len = bp_pos - up_start;
+        int32_t up_len = left_anchor - up_start;
         if (up_len > 0 && static_cast<int32_t>(read.sequence.size()) > up_start) {
             up_len = std::min(up_len, static_cast<int32_t>(read.sequence.size()) - up_start);
             seg.up = read.sequence.substr(up_start, up_len);
         }
 
-        // INS/CLIP: from breakpoint forward
-        // Cap length to prevent extremely long insertions from dominating
-        int32_t ins_len = config_.breakpoint_downstream;
-        int32_t ins_max = std::min(static_cast<int32_t>(1000), config_.breakpoint_downstream * 3);
-        ins_len = std::min(ins_len, ins_max);
-        if (bp_pos + ins_len > static_cast<int32_t>(read.sequence.size())) {
-            ins_len = static_cast<int32_t>(read.sequence.size()) - bp_pos;
-        }
-        if (ins_len > 0) {
-            seg.ins = read.sequence.substr(bp_pos, ins_len);
-        }
+        // INS/CLIP: type-specific span
+        seg.ins = read.sequence.substr(ins_start, ins_end - ins_start);
 
-        // DOWN: first N bp after breakpoint (after INS)
-        int32_t down_start = bp_pos + seg.ins.length();
+        // DOWN: first N bp after right anchor
+        int32_t down_start = right_anchor;
         if (down_start < static_cast<int32_t>(read.sequence.size())) {
             int32_t down_len = std::min(config_.breakpoint_downstream,
                 static_cast<int32_t>(read.sequence.size()) - down_start);
@@ -1157,10 +1247,42 @@ std::vector<ReadSegments> AssemblyEngine::extract_segments(
             }
         }
 
-        // Only include reads with minimum evidence
-        if (seg.up.length() >= static_cast<size_t>(config_.breakpoint_upstream * 0.6) &&
-            seg.ins.length() >= static_cast<size_t>(config_.ins_min_length)) {
+        // Only include reads with insertion evidence and at least one supporting flank
+        size_t min_flank = static_cast<size_t>(std::max(10, config_.breakpoint_upstream * 6 / 10));
+        bool has_flank = seg.up.length() >= min_flank || seg.down.length() >= min_flank;
+        if (has_flank && seg.ins.length() >= static_cast<size_t>(config_.ins_min_length)) {
             result.push_back(std::move(seg));
+        }
+    }
+
+    // Keep dominant breakpoint evidence type to avoid mixing incompatible windows
+    if (result.size() >= 3) {
+        std::array<size_t, 5> type_counts{};
+        for (const auto& seg : result) {
+            int t = static_cast<int>(seg.breakpoint_type);
+            if (t >= 0 && t < static_cast<int>(type_counts.size())) {
+                type_counts[t]++;
+            }
+        }
+
+        int dominant_type = ReadBreakpoint::NONE;
+        size_t dominant_count = 0;
+        for (int t = 0; t < static_cast<int>(type_counts.size()); ++t) {
+            if (type_counts[t] > dominant_count) {
+                dominant_count = type_counts[t];
+                dominant_type = t;
+            }
+        }
+
+        if (dominant_count > 0 && dominant_count < result.size()) {
+            std::vector<ReadSegments> filtered;
+            filtered.reserve(dominant_count);
+            for (auto& seg : result) {
+                if (static_cast<int>(seg.breakpoint_type) == dominant_type) {
+                    filtered.push_back(std::move(seg));
+                }
+            }
+            result = std::move(filtered);
         }
     }
 
@@ -1230,12 +1352,16 @@ std::vector<size_t> AssemblyEngine::stratified_sample(
 }
 
 StructuralFingerprint AssemblyEngine::build_fingerprint(const Contig& contig) const {
+    std::string_view ins_sequence = contig.ins_seq.empty()
+        ? std::string_view(contig.sequence)
+        : std::string_view(contig.ins_seq);
     return StructuralFingerprint::from_contig(
-        contig.sequence,
+        ins_sequence,
         contig.left_breakpoint,
         contig.right_breakpoint,
         contig.te_family_id,
-        contig.orientation);
+        contig.orientation,
+        contig.chrom_tid);
 }
 
 // ============================================================================
@@ -1280,11 +1406,15 @@ std::vector<Contig> AssemblyEngine::assemble_component(
         const auto& seg = read_segments[i];
 
         // Minimum requirements for homology comparison
-        const size_t MIN_UP = 30;
-        const size_t MIN_INS = 50;
-        const size_t MIN_DOWN = 30;
+        const size_t MIN_FLANK = 30;
+        const size_t MIN_INS = static_cast<size_t>(config_.ins_min_length);
 
-        if (seg.up.length() < MIN_UP || seg.ins.length() < MIN_INS) {
+        bool has_left_flank = seg.up.length() >= MIN_FLANK;
+        bool has_right_flank = seg.down.length() >= MIN_FLANK;
+        if (!has_left_flank && !has_right_flank) {
+            continue;
+        }
+        if (seg.ins.length() < MIN_INS) {
             continue;
         }
 
@@ -1315,9 +1445,12 @@ std::vector<Contig> AssemblyEngine::assemble_component(
         // Not enough reads for meaningful analysis
         // Try single contig with what we have
         std::vector<std::string> seqs_for_poa;
+        std::vector<std::string> ins_for_poa;
         seqs_for_poa.reserve(read_segments.size());
+        ins_for_poa.reserve(read_segments.size());
         for (const auto& seg : read_segments) {
             seqs_for_poa.push_back(seg.up + seg.ins + seg.down);
+            ins_for_poa.push_back(seg.ins);
         }
 
         if (seqs_for_poa.size() >= 2) {
@@ -1326,14 +1459,21 @@ std::vector<Contig> AssemblyEngine::assemble_component(
             if (!consensus.empty()) {
                 Contig contig;
                 contig.sequence = consensus;
-                contig.ins_seq = consensus;
+                contig.ins_seq = build_flank_consensus(ins_for_poa);
+                if (contig.ins_seq.empty()) {
+                    contig.ins_seq = consensus;
+                }
+                contig.chrom_tid = component.chrom_tid;
                 contig.left_breakpoint = component.start;
                 contig.right_breakpoint = component.end;
+                contig.source_component_id = component.id;
                 contig.support_reads = static_cast<int32_t>(seqs_for_poa.size());
-                contig.consensus_quality = 0.7;
+                int alignment_score = poa_ctx_.engine.get_score();
+                contig.consensus_quality =
+                    compute_consensus_quality(alignment_score, seqs_for_poa);
 
                 contig.fingerprint = build_fingerprint(contig);
-                int polya = extract_polya_length(contig.sequence);
+                int polya = extract_polya_length(contig.ins_seq);
                 if (polya > 0) contig.trunc_level = 1;
 
                 contigs.push_back(std::move(contig));
@@ -1361,6 +1501,146 @@ std::vector<Contig> AssemblyEngine::assemble_component(
     bool should_split = sim_stats.split_triggered &&
                        analysis_windows.size() >= 6;
 
+    // 必要自检：桶内相似度应显著高于桶间相似度，否则回退单群
+    auto split_is_consistent =
+        [&](const ComponentSimilarityAnalyzer::BucketResult& bucket) -> bool {
+            if (!bucket.valid || bucket.bucket_a.size() < 3 || bucket.bucket_b.size() < 3) {
+                return false;
+            }
+
+            MinimizerSet minimizer({15, 10, 64});
+            std::vector<std::unordered_set<uint64_t>> minimizer_sets;
+            minimizer_sets.reserve(analysis_windows.size());
+            for (const auto& window : analysis_windows) {
+                minimizer_sets.push_back(minimizer.extract(window));
+            }
+
+            constexpr size_t kMaxPairsPerMetric = 1500;
+            std::mt19937 rng(42);
+
+            auto mean_within = [&](const std::vector<size_t>& ids) -> double {
+                if (ids.size() < 2) return 0.0;
+
+                size_t n = ids.size();
+                size_t total_pairs = n * (n - 1) / 2;
+                double sum = 0.0;
+                size_t used_pairs = 0;
+
+                if (total_pairs <= kMaxPairsPerMetric) {
+                    for (size_t i = 0; i < n; ++i) {
+                        for (size_t j = i + 1; j < n; ++j) {
+                            sum += MinimizerSet::jaccard(
+                                minimizer_sets[ids[i]], minimizer_sets[ids[j]]);
+                            used_pairs++;
+                        }
+                    }
+                } else {
+                    std::uniform_int_distribution<size_t> dist(0, n - 1);
+                    std::unordered_set<uint64_t> seen;
+                    seen.reserve(kMaxPairsPerMetric * 2);
+
+                    while (used_pairs < kMaxPairsPerMetric) {
+                        size_t i = dist(rng);
+                        size_t j = dist(rng);
+                        if (i == j) continue;
+                        if (i > j) std::swap(i, j);
+
+                        uint64_t key = (static_cast<uint64_t>(i) << 32) | j;
+                        if (!seen.insert(key).second) continue;
+
+                        sum += MinimizerSet::jaccard(
+                            minimizer_sets[ids[i]], minimizer_sets[ids[j]]);
+                        used_pairs++;
+                    }
+                }
+
+                return used_pairs > 0 ? sum / used_pairs : 0.0;
+            };
+
+            auto mean_between =
+                [&](const std::vector<size_t>& a, const std::vector<size_t>& b) -> double {
+                    if (a.empty() || b.empty()) return 0.0;
+
+                    size_t total_pairs = a.size() * b.size();
+                    double sum = 0.0;
+                    size_t used_pairs = 0;
+
+                    if (total_pairs <= kMaxPairsPerMetric) {
+                        for (size_t i : a) {
+                            for (size_t j : b) {
+                                sum += MinimizerSet::jaccard(minimizer_sets[i], minimizer_sets[j]);
+                                used_pairs++;
+                            }
+                        }
+                    } else {
+                        std::uniform_int_distribution<size_t> dist_a(0, a.size() - 1);
+                        std::uniform_int_distribution<size_t> dist_b(0, b.size() - 1);
+                        std::unordered_set<uint64_t> seen;
+                        seen.reserve(kMaxPairsPerMetric * 2);
+
+                        while (used_pairs < kMaxPairsPerMetric) {
+                            size_t ia = dist_a(rng);
+                            size_t ib = dist_b(rng);
+                            uint64_t key = (static_cast<uint64_t>(ia) << 32) | ib;
+                            if (!seen.insert(key).second) continue;
+
+                            sum += MinimizerSet::jaccard(
+                                minimizer_sets[a[ia]], minimizer_sets[b[ib]]);
+                            used_pairs++;
+                        }
+                    }
+
+                    return used_pairs > 0 ? sum / used_pairs : 0.0;
+                };
+
+            double mean_aa = mean_within(bucket.bucket_a);
+            double mean_bb = mean_within(bucket.bucket_b);
+            double mean_ab = mean_between(bucket.bucket_a, bucket.bucket_b);
+
+            std::vector<size_t> window_lengths;
+            window_lengths.reserve(analysis_windows.size());
+            size_t window_length_sum = 0;
+            for (const auto& w : analysis_windows) {
+                window_lengths.push_back(w.size());
+                window_length_sum += w.size();
+            }
+            std::sort(window_lengths.begin(), window_lengths.end());
+
+            auto get_len_percentile = [&](double p) -> double {
+                if (window_lengths.empty()) return 0.0;
+                double idx = p * (window_lengths.size() - 1);
+                size_t low = static_cast<size_t>(idx);
+                size_t high = std::min(low + 1, window_lengths.size() - 1);
+                double frac = idx - low;
+                return window_lengths[low] * (1.0 - frac) + window_lengths[high] * frac;
+            };
+
+            double win_mean = analysis_windows.empty()
+                ? 0.0
+                : static_cast<double>(window_length_sum) / analysis_windows.size();
+            double win_p10 = get_len_percentile(0.10);
+            double win_p90 = get_len_percentile(0.90);
+
+            constexpr double kMinIntraInterDelta = 0.08;
+            bool pass = mean_aa >= mean_ab + kMinIntraInterDelta &&
+                        mean_bb >= mean_ab + kMinIntraInterDelta;
+
+            std::cerr << "[AssemblySplitStats] component=" << component.id
+                      << " tid=" << component.chrom_tid
+                      << " n=" << analysis_windows.size()
+                      << " A=" << bucket.bucket_a.size()
+                      << " B=" << bucket.bucket_b.size()
+                      << " mean_aa=" << mean_aa
+                      << " mean_bb=" << mean_bb
+                      << " mean_ab=" << mean_ab
+                      << " win_mean=" << win_mean
+                      << " win_p10=" << win_p10
+                      << " win_p90=" << win_p90
+                      << " pass=" << (pass ? 1 : 0) << "\n";
+
+            return pass;
+        };
+
     // ================================================================
     // Step 4: Build contigs (single or split)
     // ================================================================
@@ -1371,18 +1651,22 @@ std::vector<Contig> AssemblyEngine::assemble_component(
 
         if (bucket_result.valid &&
             bucket_result.bucket_a.size() >= 3 &&
-            bucket_result.bucket_b.size() >= 3) {
+            bucket_result.bucket_b.size() >= 3 &&
+            split_is_consistent(bucket_result)) {
 
             // ========================================================
             // Bucket A: Build contig from bucket A reads
             // ========================================================
             std::vector<std::string> seqs_a;
+            std::vector<std::string> ins_a;
             seqs_a.reserve(bucket_result.bucket_a.size());
+            ins_a.reserve(bucket_result.bucket_a.size());
 
             for (size_t win_idx : bucket_result.bucket_a) {
                 size_t seg_idx = segment_indices[win_idx];
                 const auto& seg = read_segments[seg_idx];
                 seqs_a.push_back(seg.up + seg.ins + seg.down);
+                ins_a.push_back(seg.ins);
             }
 
             poa_ctx_.reset();
@@ -1391,11 +1675,18 @@ std::vector<Contig> AssemblyEngine::assemble_component(
             if (!consensus_a.empty()) {
                 Contig contig;
                 contig.sequence = consensus_a;
-                contig.ins_seq = consensus_a;
+                contig.ins_seq = build_flank_consensus(ins_a);
+                if (contig.ins_seq.empty()) {
+                    contig.ins_seq = consensus_a;
+                }
+                contig.chrom_tid = component.chrom_tid;
                 contig.left_breakpoint = component.start;
                 contig.right_breakpoint = component.end;
+                contig.source_component_id = component.id;
                 contig.support_reads = static_cast<int32_t>(seqs_a.size());
-                contig.consensus_quality = 0.8;
+                int alignment_score = poa_ctx_.engine.get_score();
+                contig.consensus_quality =
+                    compute_consensus_quality(alignment_score, seqs_a);
 
                 // Collect UP/DOWN for flanks
                 std::vector<std::string> up_seqs, down_seqs;
@@ -1408,11 +1699,11 @@ std::vector<Contig> AssemblyEngine::assemble_component(
                     down_seqs.push_back(read_segments[seg_idx].down);
                 }
 
-                contig.up_flank_seq = simple_majority_consensus(up_seqs);
-                contig.down_flank_seq = simple_majority_consensus(down_seqs);
+                contig.up_flank_seq = build_flank_consensus(up_seqs);
+                contig.down_flank_seq = build_flank_consensus(down_seqs);
 
                 contig.fingerprint = build_fingerprint(contig);
-                int polya = extract_polya_length(contig.sequence);
+                int polya = extract_polya_length(contig.ins_seq);
                 if (polya > 0) contig.trunc_level = 1;
 
                 contigs.push_back(std::move(contig));
@@ -1422,12 +1713,15 @@ std::vector<Contig> AssemblyEngine::assemble_component(
             // Bucket B: Build contig from bucket B reads
             // ========================================================
             std::vector<std::string> seqs_b;
+            std::vector<std::string> ins_b;
             seqs_b.reserve(bucket_result.bucket_b.size());
+            ins_b.reserve(bucket_result.bucket_b.size());
 
             for (size_t win_idx : bucket_result.bucket_b) {
                 size_t seg_idx = segment_indices[win_idx];
                 const auto& seg = read_segments[seg_idx];
                 seqs_b.push_back(seg.up + seg.ins + seg.down);
+                ins_b.push_back(seg.ins);
             }
 
             poa_ctx_.reset();
@@ -1436,11 +1730,18 @@ std::vector<Contig> AssemblyEngine::assemble_component(
             if (!consensus_b.empty()) {
                 Contig contig;
                 contig.sequence = consensus_b;
-                contig.ins_seq = consensus_b;
+                contig.ins_seq = build_flank_consensus(ins_b);
+                if (contig.ins_seq.empty()) {
+                    contig.ins_seq = consensus_b;
+                }
+                contig.chrom_tid = component.chrom_tid;
                 contig.left_breakpoint = component.start;
                 contig.right_breakpoint = component.end;
+                contig.source_component_id = component.id;
                 contig.support_reads = static_cast<int32_t>(seqs_b.size());
-                contig.consensus_quality = 0.8;
+                int alignment_score = poa_ctx_.engine.get_score();
+                contig.consensus_quality =
+                    compute_consensus_quality(alignment_score, seqs_b);
 
                 // Collect UP/DOWN for flanks
                 std::vector<std::string> up_seqs, down_seqs;
@@ -1453,11 +1754,11 @@ std::vector<Contig> AssemblyEngine::assemble_component(
                     down_seqs.push_back(read_segments[seg_idx].down);
                 }
 
-                contig.up_flank_seq = simple_majority_consensus(up_seqs);
-                contig.down_flank_seq = simple_majority_consensus(down_seqs);
+                contig.up_flank_seq = build_flank_consensus(up_seqs);
+                contig.down_flank_seq = build_flank_consensus(down_seqs);
 
                 contig.fingerprint = build_fingerprint(contig);
-                int polya = extract_polya_length(contig.sequence);
+                int polya = extract_polya_length(contig.ins_seq);
                 if (polya > 0) contig.trunc_level = 1;
 
                 contigs.push_back(std::move(contig));
@@ -1471,10 +1772,13 @@ std::vector<Contig> AssemblyEngine::assemble_component(
     // Fall back: Single contig from all reads
     // ================================================================
     std::vector<std::string> seqs_all;
+    std::vector<std::string> ins_all;
     seqs_all.reserve(read_segments.size());
+    ins_all.reserve(read_segments.size());
 
     for (const auto& seg : read_segments) {
         seqs_all.push_back(seg.up + seg.ins + seg.down);
+        ins_all.push_back(seg.ins);
     }
 
     poa_ctx_.reset();
@@ -1483,15 +1787,19 @@ std::vector<Contig> AssemblyEngine::assemble_component(
     if (!consensus.empty()) {
         Contig contig;
         contig.sequence = consensus;
-        contig.ins_seq = consensus;
+        contig.ins_seq = build_flank_consensus(ins_all);
+        if (contig.ins_seq.empty()) {
+            contig.ins_seq = consensus;
+        }
+        contig.chrom_tid = component.chrom_tid;
         contig.left_breakpoint = component.start;
         contig.right_breakpoint = component.end;
+        contig.source_component_id = component.id;
         contig.support_reads = static_cast<int32_t>(seqs_all.size());
 
         int alignment_score = poa_ctx_.engine.get_score();
-        int seq_len = static_cast<int>(seqs_all[0].size());
-        contig.consensus_quality = std::clamp(
-            static_cast<double>(alignment_score) / (seq_len * 2), 0.0, 1.0);
+        contig.consensus_quality =
+            compute_consensus_quality(alignment_score, seqs_all);
 
         // Collect flanks
         std::vector<std::string> up_seqs, down_seqs;
@@ -1503,17 +1811,57 @@ std::vector<Contig> AssemblyEngine::assemble_component(
             down_seqs.push_back(seg.down);
         }
 
-        contig.up_flank_seq = simple_majority_consensus(up_seqs);
-        contig.down_flank_seq = simple_majority_consensus(down_seqs);
+        contig.up_flank_seq = build_flank_consensus(up_seqs);
+        contig.down_flank_seq = build_flank_consensus(down_seqs);
 
         contig.fingerprint = build_fingerprint(contig);
-        int polya = extract_polya_length(contig.sequence);
+        int polya = extract_polya_length(contig.ins_seq);
         if (polya > 0) contig.trunc_level = 1;
 
         contigs.push_back(std::move(contig));
     }
 
     return contigs;
+}
+
+// ============================================================================
+// Consensus Helpers
+// ============================================================================
+
+std::string AssemblyEngine::build_flank_consensus(
+    const std::vector<std::string>& sequences) {
+
+    if (sequences.empty()) return "";
+    if (sequences.size() == 1) return sequences[0];
+
+    poa_ctx_.reset();
+    std::string consensus = poa_ctx_.engine.build_consensus(sequences);
+    if (!consensus.empty()) {
+        return consensus;
+    }
+
+    // Fallback: abPOA unavailable/failed 时退化为逐位多数投票
+    return simple_majority_consensus(sequences);
+}
+
+double AssemblyEngine::compute_consensus_quality(
+    int alignment_score,
+    const std::vector<std::string>& sequences) const {
+
+    if (sequences.empty()) return 0.0;
+
+    size_t max_len = 0;
+    for (const auto& seq : sequences) {
+        max_len = std::max(max_len, seq.size());
+    }
+
+    if (max_len == 0) return 0.0;
+
+    // 与默认评分参数对齐：match=2，按理论最佳分数归一化
+    double denom = static_cast<double>(max_len) * 2.0;
+    if (denom <= 0.0) return 0.0;
+
+    return std::clamp(static_cast<double>(alignment_score) / denom, 0.0, 1.0);
 }
 
 // ============================================================================
@@ -1588,14 +1936,24 @@ std::vector<Contig> AssemblyEngine::assemble_batch(
     std::vector<size_t> indices(components.size());
     std::iota(indices.begin(), indices.end(), 0);
 
-    // 并行处理
+    // 并行处理（若标准并行策略不可用则退化为串行）
+#if defined(__cpp_lib_execution) && (__cpp_lib_execution >= 201603L)
     std::for_each(std::execution::par, indices.begin(), indices.end(),
-        [&](size_t idx) {
-            if (idx < components.size()) {
-                results[idx] = assemble_component(
-                    components[idx], reads, genome);
-            }
-        });
+                  [&](size_t idx) {
+                      if (idx < components.size()) {
+                          results[idx] = assemble_component(
+                              components[idx], reads, genome);
+                      }
+                  });
+#else
+    std::for_each(indices.begin(), indices.end(),
+                  [&](size_t idx) {
+                      if (idx < components.size()) {
+                          results[idx] = assemble_component(
+                              components[idx], reads, genome);
+                      }
+                  });
+#endif
 
     // 合并结果
     std::vector<Contig> all_contigs;
@@ -1605,7 +1963,9 @@ std::vector<Contig> AssemblyEngine::assemble_batch(
 
     for (size_t i = 0; i < components.size(); ++i) {
         for (auto& c : results[i]) {
-            c.support_reads = static_cast<int32_t>(components[i].read_count);
+            if (c.source_component_id < 0) {
+                c.source_component_id = components[i].id;
+            }
             all_contigs.push_back(std::move(c));
         }
     }
@@ -1668,10 +2028,11 @@ StructuralFingerprint StructuralFingerprint::from_contig(
     int32_t left_bp,
     int32_t right_bp,
     int32_t te_family,
-    int8_t orient) {
+    int8_t orient,
+    int32_t tid) {
 
     StructuralFingerprint fp;
-    fp.tid = 0;
+    fp.tid = tid;
     fp.breakpoint_l = left_bp;
     fp.breakpoint_r = right_bp;
 
@@ -1879,8 +2240,3 @@ std::vector<StructuralRepresentative> AssemblyEngine::collapse_structurally(
 }
 
 }  // namespace placer
-
-
-
-
-

@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/test_component.dir/test_component.cpp.o -o test_component  -Wl,-rpath,/opt/anaconda3/lib ../src/stream/libstream.a ../src/gate1/libgate1.a ../src/component/libcomponent.a /opt/anaconda3/lib/libhts.dylib ../src/stream/libstream.a /opt/anaconda3/lib/libhts.dylib

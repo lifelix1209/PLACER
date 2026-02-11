@@ -1,0 +1,2 @@
+/usr/bin/ar qc libte_reverse_index.a CMakeFiles/te_reverse_index.dir/te_reverse_index.cpp.o
+/usr/bin/ranlib libte_reverse_index.a

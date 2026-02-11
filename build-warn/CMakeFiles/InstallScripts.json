@@ -1,0 +1,17 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/src/stream/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/src/gate1/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/src/component/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/src/local_realign/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/src/abpoa_wrapper/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/src/assembly/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/src/placeability/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/src/genotyping/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/tests/cmake_install.cmake",
+		"/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build-warn/src/te_reverse_index/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

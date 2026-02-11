@@ -26,6 +26,8 @@ struct ReadBreakpoint {
     } type = NONE;
     // Reference coordinate at this breakpoint (if available)
     int32_t ref_pos = -1;
+    // For INSERTION signal: inserted length from the triggering I-op
+    int32_t insertion_len = 0;
     // Is this a valid evidence breakpoint?
     bool is_valid = false;
 };

@@ -4,6 +4,7 @@
 #include "bam_reader.h"
 #include "component_builder.h"
 #include "task_queue.h"
+#include "test_path_utils.h"
 
 using namespace placer;
 
@@ -213,8 +214,20 @@ void test_component_builder_real_bam() {
     config.max_cluster_span = 200;
     builder = ComponentBuilder(config);
 
-    BamReader reader("/mnt/home1/miska/hl725/projects/tldr_optimized/test/test.bam");
-    assert(reader.is_valid());
+    const std::string bam_path = placer_test::resolve_test_file(
+        "PLACER_TEST_BAM",
+        {"test_data/test.bam", "tests/data/test.bam"});
+    if (!placer_test::require_path_or_skip(
+            bam_path, "BAM fixture", "PLACER_TEST_BAM")) {
+        return;
+    }
+
+    BamReader reader(bam_path);
+    if (!reader.is_valid()) {
+        std::cout << "  [SKIP] Failed to open BAM fixture: " << bam_path
+                  << std::endl;
+        return;
+    }
 
     std::vector<ReadSketch> reads;
     int64_t count = 0;

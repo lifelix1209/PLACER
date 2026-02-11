@@ -6,8 +6,20 @@
 #include <memory>
 #include <cstdint>
 
-// Include abPOA types (must come before any usage)
+#ifndef PLACER_HAS_ABPOA
+#define PLACER_HAS_ABPOA 0
+#endif
+
+#if PLACER_HAS_ABPOA
+extern "C" {
 #include <abpoa.h>
+}
+#else
+extern "C" {
+typedef struct abpoa_para_t abpoa_para_t;
+typedef struct abpoa_t abpoa_t;
+}
+#endif
 
 namespace placer {
 
@@ -93,6 +105,7 @@ private:
     abpoa_para_t* para_ = nullptr;
     abpoa_t* ab_ = nullptr;
     int best_score_ = 0;
+    std::string last_consensus_;
 
     // Convert DNA string to abPOA format (uint8_t array with 0-3 encoding)
     std::vector<uint8_t> encode_sequence(const std::string& seq) const;

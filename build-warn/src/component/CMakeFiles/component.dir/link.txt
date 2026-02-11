@@ -1,0 +1,2 @@
+/usr/bin/ar qc libcomponent.a CMakeFiles/component.dir/component_builder.cpp.o
+/usr/bin/ranlib libcomponent.a

@@ -1,7 +1,9 @@
 #include "component_builder.h"
 #include <algorithm>
 #include <cmath>
+#if __has_include(<execution>)
 #include <execution>
+#endif
 #include <numeric>
 #include <unordered_set>
 #include <cassert>
@@ -57,8 +59,12 @@ std::vector<Component> ComponentBuilder::build(
         return {};
     }
 
-    // 全局排序：先按 tid，再按 pos
+    // 全局排序：先按 tid，再按 pos（若标准并行策略不可用则退化为串行）
+#if defined(__cpp_lib_execution) && (__cpp_lib_execution >= 201603L)
     std::sort(std::execution::par, all_anchors.begin(), all_anchors.end());
+#else
+    std::sort(all_anchors.begin(), all_anchors.end());
+#endif
 
     // ===== Step 2: 密度聚类 =====
     AnchorSpan anchor_span(all_anchors.data(), all_anchors.size());
