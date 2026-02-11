@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
 
 # Include any dependencies generated for this target.
 include tests/CMakeFiles/test_genotyping.dir/depend.make
@@ -72,16 +72,16 @@ include tests/CMakeFiles/test_genotyping.dir/flags.make
 tests/CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o: tests/CMakeFiles/test_genotyping.dir/flags.make
 tests/CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o: ../tests/test_genotyping.cpp
 tests/CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o: tests/CMakeFiles/test_genotyping.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object tests/CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT tests/CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o -MF CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o.d -o CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o -c /mnt/home1/miska/hl725/projects/PLACER/tests/test_genotyping.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object tests/CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o"
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT tests/CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o -MF CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o.d -o CMakeFiles/test_genotyping.dir/test_genotyping.cpp.o -c /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_genotyping.cpp
 
 tests/CMakeFiles/test_genotyping.dir/test_genotyping.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/test_genotyping.dir/test_genotyping.cpp.i"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/home1/miska/hl725/projects/PLACER/tests/test_genotyping.cpp > CMakeFiles/test_genotyping.dir/test_genotyping.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_genotyping.cpp > CMakeFiles/test_genotyping.dir/test_genotyping.cpp.i
 
 tests/CMakeFiles/test_genotyping.dir/test_genotyping.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/test_genotyping.dir/test_genotyping.cpp.s"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/home1/miska/hl725/projects/PLACER/tests/test_genotyping.cpp -o CMakeFiles/test_genotyping.dir/test_genotyping.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_genotyping.cpp -o CMakeFiles/test_genotyping.dir/test_genotyping.cpp.s
 
 # Object files for target test_genotyping
 test_genotyping_OBJECTS = \
@@ -106,20 +106,22 @@ tests/test_genotyping: src/assembly/libassembly.a
 tests/test_genotyping: src/component/libcomponent.a
 tests/test_genotyping: src/local_realign/liblocal_realign.a
 tests/test_genotyping: src/stream/libstream.a
+tests/test_genotyping: src/abpoa_wrapper/libabpoa_wrapper.a
+tests/test_genotyping: third_party/abPOA/lib/libabpoa.a
 tests/test_genotyping: /usr/lib/x86_64-linux-gnu/libhts.so.3
 tests/test_genotyping: tests/CMakeFiles/test_genotyping.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable test_genotyping"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/test_genotyping.dir/link.txt --verbose=$(VERBOSE)
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable test_genotyping"
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/test_genotyping.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
 tests/CMakeFiles/test_genotyping.dir/build: tests/test_genotyping
 .PHONY : tests/CMakeFiles/test_genotyping.dir/build
 
 tests/CMakeFiles/test_genotyping.dir/clean:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && $(CMAKE_COMMAND) -P CMakeFiles/test_genotyping.dir/cmake_clean.cmake
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && $(CMAKE_COMMAND) -P CMakeFiles/test_genotyping.dir/cmake_clean.cmake
 .PHONY : tests/CMakeFiles/test_genotyping.dir/clean
 
 tests/CMakeFiles/test_genotyping.dir/depend:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/home1/miska/hl725/projects/PLACER /mnt/home1/miska/hl725/projects/PLACER/tests /mnt/home1/miska/hl725/projects/PLACER/build /mnt/home1/miska/hl725/projects/PLACER/build/tests /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_genotyping.dir/DependInfo.cmake --color=$(COLOR)
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/beegfs6/home1/miska/hl725/projects/PLACER /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_genotyping.dir/DependInfo.cmake --color=$(COLOR)
 .PHONY : tests/CMakeFiles/test_genotyping.dir/depend
 

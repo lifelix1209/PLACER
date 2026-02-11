@@ -19,6 +19,7 @@ add_library(assembly STATIC
 # Include directories
 target_include_directories(assembly PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_SOURCE_DIR}/third_party/abPOA/src
 )
 
 # Link dependencies
@@ -26,6 +27,7 @@ target_link_libraries(assembly
     PUBLIC
         component
         local_realign
+        abpoa_wrapper
 )
 
 # Compile options

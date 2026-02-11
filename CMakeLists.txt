@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
-project(PLACER VERSION 0.1.0 LANGUAGES CXX)
+project(PLACER VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Use pysam's bundled htslib headers
 execute_process(
@@ -29,17 +31,23 @@ set_target_properties(hts::htslib PROPERTIES
     INTERFACE_INCLUDE_DIRECTORY "${HTSLIB_INCLUDE_DIR}"
 )
 
+# ============================================================================
+# abPOA Library (third_party) - use its own CMakeLists.txt
+# ============================================================================
+add_subdirectory(third_party/abPOA)
+
 # Main executable
 add_executable(placer src/main.cpp)
 
 target_include_directories(placer PRIVATE ${HTSLIB_INCLUDE_DIR})
-target_link_libraries(placer PRIVATE hts::htslib stream gate1 component local_realign assembly placeability genotyping te_reverse_index)
+target_link_libraries(placer PRIVATE hts::htslib stream gate1 component local_realign abpoa assembly placeability genotyping te_reverse_index)
 
 # Add subdirectories
 add_subdirectory(src/stream)
 add_subdirectory(src/gate1)
 add_subdirectory(src/component)
 add_subdirectory(src/local_realign)
+add_subdirectory(src/abpoa_wrapper)
 add_subdirectory(src/assembly)
 add_subdirectory(src/placeability)
 add_subdirectory(src/genotyping)

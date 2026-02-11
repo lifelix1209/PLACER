@@ -1,0 +1,9 @@
+libdir=/usr/local/lib
+includedir=/usr/local/include
+
+Name: abPOA
+Description: abPOA 
+Version: 
+
+Libs: -L${libdir} -labpoa -lz -lpthread -lm
+Cflags: -I${includedir}

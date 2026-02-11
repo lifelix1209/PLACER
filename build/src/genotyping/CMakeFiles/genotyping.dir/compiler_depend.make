@@ -286,18 +286,99 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
   /usr/include/c++/11/concepts \
   /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/faidx.h \
   ../include/assembly.h \
+  ../include/abpoa_wrapper.h \
+  ../third_party/abPOA/src/abpoa.h \
+  ../third_party/abPOA/src/simd_instruction.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/immintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/x86gprintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/ia32intrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/adxintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/bmiintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/bmi2intrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/cetintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/cldemoteintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/clflushoptintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/clwbintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/clzerointrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/enqcmdintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/fxsrintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/lzcntintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/lwpintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/movdirintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/mwaitintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/mwaitxintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/pconfigintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/popcntintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/pkuintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/rdseedintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/rtmintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/serializeintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/sgxintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/tbmintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/tsxldtrkintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/uintrintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/waitpkgintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/wbnoinvdintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/xsaveintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/xsavecintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/xsaveoptintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/xsavesintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/xtestintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/hresetintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/mmintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/xmmintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/mm_malloc.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/emmintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/pmmintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/tmmintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/smmintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/wmmintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avxintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avxvnniintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx2intrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512fintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512erintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512pfintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512cdintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vlintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512bwintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512dqintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vlbwintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vldqintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512ifmaintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512ifmavlintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vbmiintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vbmivlintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx5124fmapsintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx5124vnniwintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vpopcntdqintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vbmi2intrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vbmi2vlintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vnniintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vnnivlintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vpopcntdqvlintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512bitalgintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vp2intersectintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vp2intersectvlintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/shaintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/fmaintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/f16cintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/gfniintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/vaesintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/vpclmulqdqintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512bf16vlintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/avx512bf16intrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/amxtileintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/amxint8intrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/amxbf16intrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/prfchwintrin.h \
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/keylockerintrin.h \
+  ../include/minimizer.h \
+  /usr/include/c++/11/unordered_set \
+  /usr/include/c++/11/bits/unordered_set.h \
   /usr/include/c++/11/algorithm \
   /usr/include/c++/11/pstl/glue_algorithm_defs.h \
   /usr/include/c++/11/cstring \
-  /usr/include/c++/11/set \
-  /usr/include/c++/11/bits/stl_tree.h \
-  /usr/include/c++/11/bits/stl_set.h \
-  /usr/include/c++/11/bits/stl_multiset.h \
-  /usr/include/c++/11/map \
-  /usr/include/c++/11/bits/stl_map.h \
-  /usr/include/c++/11/bits/stl_multimap.h \
-  /usr/include/c++/11/unordered_set \
-  /usr/include/c++/11/bits/unordered_set.h \
   /usr/include/c++/11/cmath \
   /usr/include/math.h \
   /usr/include/x86_64-linux-gnu/bits/math-vector.h \
@@ -322,6 +403,17 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
   /usr/include/c++/11/tr1/poly_hermite.tcc \
   /usr/include/c++/11/tr1/poly_laguerre.tcc \
   /usr/include/c++/11/tr1/riemann_zeta.tcc \
+  /usr/include/c++/11/random \
+  /usr/include/c++/11/bits/random.h \
+  /usr/include/x86_64-linux-gnu/c++/11/bits/opt_random.h \
+  /usr/include/c++/11/bits/random.tcc \
+  /usr/include/c++/11/set \
+  /usr/include/c++/11/bits/stl_tree.h \
+  /usr/include/c++/11/bits/stl_set.h \
+  /usr/include/c++/11/bits/stl_multiset.h \
+  /usr/include/c++/11/map \
+  /usr/include/c++/11/bits/stl_map.h \
+  /usr/include/c++/11/bits/stl_multimap.h \
   /usr/include/c++/11/sstream \
   /usr/include/c++/11/bits/sstream.tcc \
   /usr/include/c++/11/iomanip \
@@ -333,10 +425,6 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
   /usr/include/c++/11/bits/locale_facets_nonio.tcc \
   /usr/include/c++/11/bits/locale_conv.h \
   /usr/include/c++/11/bits/quoted_string.h \
-  /usr/include/c++/11/random \
-  /usr/include/c++/11/bits/random.h \
-  /usr/include/x86_64-linux-gnu/c++/11/bits/opt_random.h \
-  /usr/include/c++/11/bits/random.tcc \
   ../include/assembly.h \
   ../include/placeability.h \
   /usr/include/c++/11/cassert \
@@ -344,12 +432,6 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 
 /usr/include/assert.h:
-
-/usr/include/c++/11/cassert:
-
-/usr/include/c++/11/bits/random.h:
-
-/usr/include/c++/11/random:
 
 /usr/include/c++/11/bits/quoted_string.h:
 
@@ -359,13 +441,23 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/libintl.h:
 
-/usr/include/x86_64-linux-gnu/c++/11/bits/messages_members.h:
-
 /usr/include/x86_64-linux-gnu/c++/11/bits/time_members.h:
 
 /usr/include/c++/11/bits/locale_facets_nonio.h:
 
-/usr/include/c++/11/tr1/riemann_zeta.tcc:
+/usr/include/c++/11/bits/stl_multimap.h:
+
+/usr/include/c++/11/bits/stl_map.h:
+
+/usr/include/c++/11/map:
+
+/usr/include/c++/11/bits/stl_multiset.h:
+
+/usr/include/c++/11/bits/stl_tree.h:
+
+/usr/include/c++/11/set:
+
+/usr/include/c++/11/bits/random.h:
 
 /usr/include/c++/11/tr1/poly_hermite.tcc:
 
@@ -393,23 +485,135 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/x86_64-linux-gnu/bits/math-vector.h:
 
+/usr/include/c++/11/algorithm:
+
 /usr/include/c++/11/bits/unordered_set.h:
 
-/usr/include/c++/11/bits/stl_multimap.h:
+/usr/lib/gcc/x86_64-linux-gnu/11/include/amxbf16intrin.h:
 
-/usr/include/c++/11/bits/stl_map.h:
+/usr/lib/gcc/x86_64-linux-gnu/11/include/amxtileintrin.h:
 
-/usr/include/c++/11/map:
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512bf16vlintrin.h:
 
-/usr/include/c++/11/bits/stl_multiset.h:
+/usr/lib/gcc/x86_64-linux-gnu/11/include/vaesintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/gfniintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/f16cintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/fmaintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/shaintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vp2intersectvlintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vp2intersectintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512bitalgintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vnniintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vbmi2vlintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vpopcntdqintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx5124vnniwintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx5124fmapsintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vbmivlintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vbmiintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512ifmaintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vldqintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512dqintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vlintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512cdintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512erintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512fintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avxintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/wmmintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/pmmintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/xmmintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/mmintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/emmintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/hresetintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/xsavecintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/xsaveintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512pfintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/wbnoinvdintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/waitpkgintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/tsxldtrkintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/tbmintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/sgxintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/serializeintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/rtmintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/rdseedintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/pkuintrin.h:
 
 /usr/include/c++/11/bits/stl_set.h:
 
-/usr/include/c++/11/bits/stl_tree.h:
+/usr/lib/gcc/x86_64-linux-gnu/11/include/popcntintrin.h:
 
-/usr/include/c++/11/set:
+/usr/include/c++/11/cassert:
 
-/usr/include/c++/11/algorithm:
+/usr/lib/gcc/x86_64-linux-gnu/11/include/pconfigintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/mwaitintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/movdirintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/lwpintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/lzcntintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/enqcmdintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/clzerointrin.h:
+
+/usr/include/c++/11/random:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/cldemoteintrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/bmi2intrin.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/ia32intrin.h:
+
+/usr/include/c++/11/tr1/riemann_zeta.tcc:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/x86gprintrin.h:
+
+/usr/include/x86_64-linux-gnu/c++/11/bits/messages_members.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/immintrin.h:
+
+../include/abpoa_wrapper.h:
 
 /usr/include/c++/11/sstream:
 
@@ -418,6 +622,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/faidx.h:
 
 /usr/include/c++/11/optional:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/keylockerintrin.h:
 
 /usr/include/c++/11/bits/stl_numeric.h:
 
@@ -430,6 +636,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/x86_64-linux-gnu/c++/11/bits/basic_file.h:
 
 /usr/include/c++/11/bits/istream.tcc:
+
+../third_party/abPOA/src/abpoa.h:
 
 /usr/include/c++/11/bits/ostream.tcc:
 
@@ -450,6 +658,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/c++/11/bits/locale_classes.h:
 
 /usr/include/c++/11/bits/functional_hash.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/fxsrintrin.h:
 
 /usr/include/c++/11/bits/cxxabi_forced.h:
 
@@ -493,6 +703,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/sam.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vlbwintrin.h:
+
 /usr/include/x86_64-linux-gnu/c++/11/bits/gthr-default.h:
 
 /usr/include/c++/11/ext/concurrence.h:
@@ -517,17 +729,23 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/c++/11/iomanip:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avxvnniintrin.h:
+
 /usr/include/c++/11/cctype:
 
 /usr/include/c++/11/unordered_map:
 
 /usr/include/x86_64-linux-gnu/bits/stdint-intn.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/bmiintrin.h:
+
 /usr/include/x86_64-linux-gnu/bits/types.h:
 
 /usr/include/x86_64-linux-gnu/bits/time64.h:
 
 /usr/include/c++/11/ctime:
+
+../include/minimizer.h:
 
 /usr/include/x86_64-linux-gnu/bits/atomic_wide_counter.h:
 
@@ -539,11 +757,15 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts_defs.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/adxintrin.h:
+
 /usr/include/c++/11/atomic:
 
 /usr/include/x86_64-linux-gnu/c++/11/bits/gthr.h:
 
 /usr/include/c++/11/bits/functexcept.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/smmintrin.h:
 
 /usr/include/c++/11/iosfwd:
 
@@ -556,6 +778,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/c++/11/bits/stl_algobase.h:
 
 /usr/lib/gcc/x86_64-linux-gnu/11/include/stdint.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vnnivlintrin.h:
 
 /usr/include/c++/11/ext/type_traits.h:
 
@@ -589,6 +813,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/c++/11/bits/stringfwd.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/prfchwintrin.h:
+
 /usr/include/c++/11/bits/stl_function.h:
 
 /usr/include/c++/11/bits/memoryfwd.h:
@@ -607,7 +833,11 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/x86_64-linux-gnu/bits/types/__sigset_t.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/amxint8intrin.h:
+
 /usr/include/x86_64-linux-gnu/bits/long-double.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/vpclmulqdqintrin.h:
 
 /usr/include/x86_64-linux-gnu/bits/types/struct_timeval.h:
 
@@ -693,6 +923,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 ../include/local_realign.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/clwbintrin.h:
+
 /usr/include/x86_64-linux-gnu/bits/uio_lim.h:
 
 /usr/include/c++/11/string:
@@ -702,6 +934,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/x86_64-linux-gnu/bits/types/__fpos_t.h:
 
 ../include/bam_reader.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/mwaitxintrin.h:
 
 /usr/include/x86_64-linux-gnu/sys/single_threaded.h:
 
@@ -725,6 +959,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/c++/11/bits/stl_queue.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/tmmintrin.h:
+
 /usr/include/c++/11/bits/unordered_map.h:
 
 /usr/include/c++/11/ext/alloc_traits.h:
@@ -734,6 +970,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/c++/11/bits/string_view.tcc:
 
 ../include/placeability.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/xtestintrin.h:
 
 /usr/include/x86_64-linux-gnu/bits/waitstatus.h:
 
@@ -775,6 +1013,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/c++/11/bits/predefined_ops.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512bwintrin.h:
+
 /usr/include/wchar.h:
 
 /usr/include/c++/11/bits/basic_ios.h:
@@ -789,6 +1029,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/x86_64-linux-gnu/bits/types/wint_t.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/uintrintrin.h:
+
 /usr/include/x86_64-linux-gnu/bits/types/mbstate_t.h:
 
 /usr/include/x86_64-linux-gnu/bits/strings_fortified.h:
@@ -802,6 +1044,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/c++/11/bits/deque.tcc:
 
 /usr/include/x86_64-linux-gnu/bits/fp-logb.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vbmi2intrin.h:
 
 /usr/include/x86_64-linux-gnu/bits/wchar2.h:
 
@@ -842,6 +1086,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/c++/11/cwchar:
 
 /usr/include/x86_64-linux-gnu/bits/select2.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512ifmavlintrin.h:
 
 /usr/include/alloca.h:
 
@@ -891,9 +1137,15 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/c++/11/bits/stl_uninitialized.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512bf16intrin.h:
+
 /usr/include/c++/11/backward/auto_ptr.h:
 
 /usr/include/c++/11/bits/stl_vector.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/mm_malloc.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/cetintrin.h:
 
 /usr/include/c++/11/system_error:
 
@@ -904,6 +1156,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/x86_64-linux-gnu/bits/stdlib-bsearch.h:
 
 /usr/include/c++/11/bits/stl_bvector.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/xsaveoptintrin.h:
 
 /usr/include/c++/11/bits/vector.tcc:
 
@@ -916,6 +1170,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/c++/11/tr1/beta_function.tcc:
 
 /usr/include/c++/11/array:
+
+../third_party/abPOA/src/simd_instruction.h:
 
 /usr/include/c++/11/bits/refwrap.h:
 
@@ -935,6 +1191,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/c++/11/bits/enable_special_members.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx2intrin.h:
+
 /usr/include/stdint.h:
 
 /usr/include/c++/11/bits/ptr_traits.h:
@@ -944,6 +1202,8 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 /usr/include/c++/11/bits/erase_if.h:
 
 /usr/include/c++/11/bits/stl_algo.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/xsavesintrin.h:
 
 /usr/include/c++/11/pstl/execution_defs.h:
 
@@ -977,11 +1237,15 @@ src/genotyping/CMakeFiles/genotyping.dir/genotyping.cpp.o: ../src/genotyping/gen
 
 /usr/include/c++/11/bits/unique_ptr.h:
 
+/usr/lib/gcc/x86_64-linux-gnu/11/include/avx512vpopcntdqvlintrin.h:
+
 /usr/include/c++/11/exception:
 
 /usr/include/c++/11/queue:
 
 /usr/include/c++/11/bits/shared_ptr_atomic.h:
+
+/usr/lib/gcc/x86_64-linux-gnu/11/include/clflushoptintrin.h:
 
 /usr/include/c++/11/bits/parse_numbers.h:
 

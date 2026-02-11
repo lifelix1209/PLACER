@@ -1,5 +1,5 @@
 tests/CMakeFiles/test_component.dir/test_component.cpp.o: \
- /mnt/home1/miska/hl725/projects/PLACER/tests/test_component.cpp \
+ /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_component.cpp \
  /usr/include/stdc-predef.h /usr/include/c++/11/iostream \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/os_defines.h \
@@ -156,7 +156,7 @@ tests/CMakeFiles/test_component.dir/test_component.cpp.o: \
  /usr/include/c++/11/bits/stl_vector.h \
  /usr/include/c++/11/bits/stl_bvector.h \
  /usr/include/c++/11/bits/vector.tcc \
- /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
+ /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
  /usr/include/c++/11/functional /usr/include/c++/11/tuple \
  /usr/include/c++/11/utility /usr/include/c++/11/bits/stl_relops.h \
  /usr/include/c++/11/array /usr/include/c++/11/bits/uses_allocator.h \
@@ -194,9 +194,9 @@ tests/CMakeFiles/test_component.dir/test_component.cpp.o: \
  /usr/include/x86_64-linux-gnu/bits/uio_lim.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/kroundup.h \
  /mnt/home1/miska/hl725/.local/lib/python3.14/site-packages/pysam/include/htslib/htslib/hts_endian.h \
- /mnt/home1/miska/hl725/projects/PLACER/include/component_builder.h \
- /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
- /mnt/home1/miska/hl725/projects/PLACER/include/task_queue.h \
+ /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/component_builder.h \
+ /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
+ /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/task_queue.h \
  /usr/include/c++/11/queue /usr/include/c++/11/deque \
  /usr/include/c++/11/bits/stl_deque.h /usr/include/c++/11/bits/deque.tcc \
  /usr/include/c++/11/bits/stl_queue.h /usr/include/c++/11/memory \
@@ -226,4 +226,4 @@ tests/CMakeFiles/test_component.dir/test_component.cpp.o: \
  /usr/include/c++/11/bits/fstream.tcc /usr/include/c++/11/numeric \
  /usr/include/c++/11/bits/stl_numeric.h \
  /usr/include/c++/11/pstl/glue_numeric_defs.h \
- /mnt/home1/miska/hl725/projects/PLACER/include/task_queue.h
+ /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/task_queue.h

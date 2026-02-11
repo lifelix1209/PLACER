@@ -3,6 +3,8 @@
 
 #include "component_builder.h"
 #include "local_realign.h"
+#include "abpoa_wrapper.h"
+#include "minimizer.h"
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -43,9 +45,15 @@ struct AssemblyConfig {
     int8_t gap_open = -5;
     int8_t gap_extend = -1;
 
-    // 分段参数
+    // 分段参数（旧方式，基于 ref 区间）
     int flank_min_length = 100;
     int ins_min_length = 50;
+
+    // 断点中心提取参数（新方式）
+    int breakpoint_upstream = 50;     // breakpoint 上游截取长度
+    int breakpoint_downstream = 50;   // breakpoint 下游截取长度
+    int min_breakpoint_evidence = 1; // 最小断点证据类型数量
+    bool use_breakpoint_centered = true;  // 是否使用断点中心提取
 
     // 结构合并参数
     int max_components_per_rep = 10;
@@ -601,6 +609,9 @@ struct Contig {
     double consensus_quality = 0.0;
     StructuralFingerprint fingerprint;
 
+    // [新增] 标记来源的 component（用于追踪）
+    int32_t source_component_id = -1;
+
     std::string up_flank_seq;
     std::string ins_seq;
     std::string down_flank_seq;
@@ -636,6 +647,9 @@ struct StructuralRepresentative {
 
     int tier = 3;
     double placeability_score = 0.0;
+
+    // [新增] 标记是否来自 TE reverse index rescue
+    bool from_rescue = false;
 };
 
 // ============================================================================
@@ -700,103 +714,58 @@ bool detect_circular_dna(
     const CircularDNAConfig& config = CircularDNAConfig());
 
 // ============================================================================
-// Industrial-Grade POA Engine（真图对齐）
+// Industrial-Grade POA Engine using abPOA
 // ============================================================================
 
+/**
+ * Simple POA wrapper using abPOA library
+ *
+ * Replaces the complex custom POA implementation with abPOA:
+ * - Adaptive banded dynamic programming (SIMD optimized)
+ * - Heaviest bundling consensus extraction
+ * - Progressive multiple sequence alignment
+ */
 class POAEngine {
 public:
     explicit POAEngine(const AssemblyConfig& config = AssemblyConfig());
 
-    // 构建图（接收外部 arena）
-    uint32_t build_graph(POAArena& arena, const std::vector<SeqSpan>& sequences);
+    // Run POA on a set of sequences
+    // Returns consensus sequence
+    std::string build_consensus(const std::vector<std::string>& sequences);
 
-    // 真图对齐（Smith-Waterman on DAG）
-    int align_to_graph(POAArena& arena, uint32_t graph_start, SeqSpan sequence);
+    // Get alignment score
+    int get_score() const { return last_score_; }
 
-    // 添加对齐后的序列到图（修改拓扑）
-    void add_aligned_sequence(POAArena& arena,
-                              const std::vector<uint32_t>& topo_order,
-                              SeqSpan sequence,
-                              const std::vector<uint8_t>& traceback,
-                              int best_i,
-                              int best_j);
-
-    // 提取共识（最重路径）
-    std::string extract_consensus(POAArena& arena, uint32_t graph_start);
-
-    // 提取多路径
-    std::vector<std::string> extract_paths(POAArena& arena,
-                                           uint32_t graph_start,
-                                           int max_paths);
-
+    // Reset for new alignment
     void reset();
 
 private:
     AssemblyConfig config_;
-
-    // 带状 DP 缓冲区（O(N*W) 内存复杂度）
-    BandedDPBuffer dp_;
-
-    // =========================================================================
-    // 核心算法：真图对齐
-    // =========================================================================
-
-    /**
-     * 在图上执行 Smith-Waterman
-     * 关键：处理多前驱
-     */
-    int graph_smith_waterman(
-        POAArena& arena,
-        const std::vector<uint32_t>& topo_order,
-        SeqSpan sequence,
-        std::vector<uint8_t>& traceback,
-        int& best_j);
-
-    /**
-     * 根据 traceback 更新图拓扑
-     * - Match: 增加计数
-     * - Insertion: 创建新节点链
-     * - Deletion: 添加跳过边
-     */
-    void update_graph_topology(POAArena& arena,
-                              const std::vector<uint32_t>& topo_order,
-                              SeqSpan sequence,
-                              const std::vector<uint8_t>& traceback,
-                              int best_i,
-                              int best_j);
-
-    /**
-     * 找到或创建匹配节点
-     */
-    uint32_t find_or_create_node(POAArena& arena,
-                                  uint32_t current,
-                                  char base,
-                                  uint32_t& next_available);
-
-    /**
-     * 递归提取路径
-     */
-    void extract_paths_recursive(
-        POAArena& arena,
-        uint32_t node_idx,
-        std::string& current_path,
-        std::vector<std::string>& results,
-        int max_paths,
-        std::unordered_set<uint32_t>& visited);
+    AbPOAWrapper abpoa_;
+    int last_score_ = 0;
 };
 
 // ============================================================================
-// Thread-Safe POA Context（线程安全的 POA 计算上下文）
+// Thread-Safe POA Context
 // ============================================================================
 
 struct POAContext {
     POAEngine engine;
-    POAArena arena;
 
     void reset() {
-        arena.reset();
         engine.reset();
     }
+};
+
+/**
+ * Per-read segmented sequences (aligned to same read)
+ * Used for breakpoint-centered analysis and assembly
+ */
+struct ReadSegments {
+    std::string up;      // Upstream flank (last N bp before breakpoint)
+    std::string ins;     // Insertion/clip sequence at breakpoint
+    std::string down;   // Downstream flank (first N bp after breakpoint)
+    size_t read_idx;    // Original read index in reads vector
 };
 
 // ============================================================================
@@ -812,7 +781,6 @@ public:
         const std::vector<ReadSketch>& reads,
         const GenomeAccessor& genome);
 
-    // 线程安全：返回 POAEngine 工厂方法，每个组件使用独立的 POAEngine
     std::vector<Contig> assemble_batch(
         std::vector<Component>& components,
         const std::vector<ReadSketch>& reads,
@@ -825,10 +793,9 @@ public:
 
 private:
     AssemblyConfig config_;
+    POAContext poa_ctx_;
 
-    // 移除共享的 poa_engine_，改为工厂方法创建线程本地上下文
-
-    std::array<std::vector<std::string>, 3> extract_segments(
+    std::vector<ReadSegments> extract_segments(
         const Component& component,
         const std::vector<ReadSketch>& reads,
         const GenomeAccessor& genome);
@@ -845,13 +812,6 @@ private:
     int extract_polya_length(std::string_view seq);
     std::string simple_majority_consensus(
         const std::vector<std::string>& sequences);
-
-    // 线程安全的组件组装辅助函数
-    std::vector<Contig> assemble_component_thread_safe(
-        const Component& component,
-        const std::vector<ReadSketch>& reads,
-        const GenomeAccessor& genome,
-        POAContext& ctx);
 };
 
 }  // namespace placer

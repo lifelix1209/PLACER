@@ -1146,7 +1146,7 @@ PlaceabilityReport LocalRealigner::realign_component(
             component.chrom_tid,
             component.centroid,
             1.0,
-            static_cast<int>(component.read_count),
+            static_cast<uint32_t>(component.read_count),
             0x04  // default evidence
         });
     }
@@ -1319,7 +1319,7 @@ std::vector<LocusEvidence> LocalRealigner::collect_evidence(
             component.chrom_tid,
             component.centroid,
             1.0,
-            static_cast<int>(component.read_count),
+            static_cast<uint32_t>(component.read_count),
             0x04  // default evidence
         });
     }
@@ -1682,6 +1682,183 @@ PlaceabilityReport LocalRealigner::process_component_(
     const GenomeAccessor& genome) {
 
     return realign_component(component, reads, genome);
+}
+
+// ============================================================================
+// realign_and_collect: 真正的比对 + evidence 收集
+// [新增] 使用真实序列比对而非距离评分
+// ============================================================================
+
+RealignResult LocalRealigner::realign_and_collect(
+    Component& component,
+    const std::vector<ReadSketch>& reads,
+    const GenomeAccessor& genome) {
+
+    RealignResult result;
+
+    // Step 1: 填充候选位点
+    populate_locus_set(component, reads);
+
+    if (component.locus_set.empty()) {
+        component.locus_set.push_back({
+            component.chrom_tid,
+            component.centroid,
+            1.0,
+            static_cast<uint32_t>(component.read_count),
+            0x04
+        });
+    }
+
+    // Step 2: 排序并限制候选位点数量
+    component.locus_set = rank_loci(
+        std::move(component.locus_set), config_);
+
+    const size_t max_loci = std::min(
+        static_cast<size_t>(config_.max_locus_per_component),
+        component.locus_set.size());
+    if (component.locus_set.size() > max_loci) {
+        component.locus_set.resize(max_loci);
+    }
+
+    // Step 3: 限制 reads 数量
+    std::vector<size_t> sampled_reads;
+    const size_t max_reads = std::min(
+        static_cast<size_t>(config_.max_reads_per_component),
+        component.read_indices.size());
+
+    for (size_t i = 0;
+         i < component.read_indices.size() && sampled_reads.size() < max_reads;
+         ++i) {
+        sampled_reads.push_back(component.read_indices[i]);
+    }
+
+    // Step 4: 对每个 read × 每个 locus 生成证据（使用真正比对）
+    result.evidence.reserve(sampled_reads.size() * component.locus_set.size());
+
+    for (size_t read_idx : sampled_reads) {
+        if (read_idx >= reads.size()) continue;
+
+        const auto& read = reads[read_idx];
+
+        // 提取 read 的侧翼序列
+        auto [up_flank, down_flank] = extract_flanks_view(
+            read, config_.flank_length, genome);
+
+        for (const auto& locus : component.locus_set) {
+            LocusEvidence ev;
+            ev.read_idx = read_idx;
+            ev.locus_pos = locus.pos;
+            ev.is_reverse = (read.flag & 0x10) != 0;
+            ev.evidence_bits = 0;
+
+            // 真正的序列对齐评分
+            bool has_alignment = false;
+
+            // 提取 locus 周围的参考序列
+            int32_t ref_start = std::max<int32_t>(
+                0, locus.pos - config_.flank_length);
+            int32_t ref_end = locus.pos + config_.flank_length;
+
+            auto ref_opt = genome.fetch(
+                component.chrom_tid, ref_start, ref_end);
+
+            if (ref_opt.has_value() && !read.sequence.empty()) {
+                std::string_view ref_seq = ref_opt->sv();
+                std::string_view read_seq(
+                    read.sequence.data(), read.sequence.size());
+
+                int32_t read_offset = locus.pos - read.pos;
+                int32_t extract_start = std::max<int32_t>(
+                    0, read_offset - config_.flank_length);
+                int32_t extract_end = std::min<int32_t>(
+                    static_cast<int32_t>(read_seq.size()),
+                    read_offset + config_.flank_length);
+
+                if (extract_start < extract_end &&
+                    extract_end <= static_cast<int32_t>(read_seq.size())) {
+
+                    std::string_view read_segment = read_seq.substr(
+                        extract_start, extract_end - extract_start);
+
+                    if (!read_segment.empty() && !ref_seq.empty()) {
+                        AlignmentResult aln = dispatch_align_(
+                            read_segment, ref_seq);
+
+                        if (aln.score > -1e8) {
+                            ev.normalized_score = std::max(0.0, aln.normalized_score);
+                            ev.total_score = aln.score;
+                            ev.weighted_identity = aln.identity;
+                            has_alignment = true;
+
+                            if (aln.identity >= config_.min_identity) {
+                                ev.evidence_bits |= 0x01;
+                            }
+                            if (aln.has_indel) {
+                                ev.evidence_bits |= 0x08;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 如果无法做序列对齐，回退到距离评分
+            if (!has_alignment) {
+                double dist = std::abs(
+                    static_cast<double>(read.pos) - locus.pos);
+                ev.normalized_score = std::max(
+                    0.0, 1.0 - dist / config_.search_window);
+                ev.total_score = ev.normalized_score * 100;
+                ev.weighted_identity = 0.0f;
+
+                if (ev.normalized_score > config_.min_normalized_score) {
+                    ev.evidence_bits |= 0x02;
+                }
+            }
+
+            // SA 证据加成
+            if (locus.evidence_mask & 0x02) {
+                ev.evidence_bits |= 0x04;
+            }
+
+            result.evidence.push_back(ev);
+        }
+    }
+
+    // Step 5: 计算 placeability
+    result.report = calculate_placeability(result.evidence);
+
+    // Step 6: 链统计
+    result.report.forward_count = 0;
+    result.report.reverse_count = 0;
+
+    for (const auto& ev : result.evidence) {
+        if (ev.normalized_score < 0.1) continue;
+        if (ev.is_reverse) ++result.report.reverse_count;
+        else ++result.report.forward_count;
+    }
+
+    result.report.strand_balanced =
+        (result.report.forward_count > 0 && result.report.reverse_count > 0);
+
+    if (result.report.forward_count + result.report.reverse_count > 0) {
+        int min_strand = std::min(
+            result.report.forward_count, result.report.reverse_count);
+        int max_strand = std::max(
+            result.report.forward_count, result.report.reverse_count);
+        result.report.strand_ratio = static_cast<float>(min_strand) /
+            std::max(max_strand, 1);
+    }
+
+    // Step 7: 确定 tier
+    result.report.tier = determine_tier_(result.report);
+
+    // Step 8: 记录最佳 locus
+    if (!component.locus_set.empty() && result.report.best_score > 0) {
+        result.report.best_locus = 0;
+        result.report.best_locus_pos = component.locus_set[0].pos;
+    }
+
+    return result;
 }
 
 }  // namespace placer

@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -142,14 +142,14 @@ install/strip/fast: preinstall/fast
 
 # The main all target
 all: cmake_check_build_system
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/home1/miska/hl725/projects/PLACER/build/src/stream//CMakeFiles/progress.marks
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/src/stream//CMakeFiles/progress.marks
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
 clean:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/clean
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/clean
 .PHONY : clean
 
 # The main clean target
@@ -158,22 +158,22 @@ clean/fast: clean
 
 # Prepare targets for installation.
 preinstall: all
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/preinstall
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/preinstall
 .PHONY : preinstall
 
 # Prepare targets for installation.
 preinstall/fast:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/preinstall
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/preinstall
 .PHONY : preinstall/fast
 
 # clear depends
 depend:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 1
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 1
 .PHONY : depend
 
 # Convenience name for target.
 src/stream/CMakeFiles/stream.dir/rule:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/CMakeFiles/stream.dir/rule
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/CMakeFiles/stream.dir/rule
 .PHONY : src/stream/CMakeFiles/stream.dir/rule
 
 # Convenience name for target.
@@ -182,7 +182,7 @@ stream: src/stream/CMakeFiles/stream.dir/rule
 
 # fast build rule for target.
 stream/fast:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/build
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/build
 .PHONY : stream/fast
 
 bam_reader.o: bam_reader.cpp.o
@@ -190,7 +190,7 @@ bam_reader.o: bam_reader.cpp.o
 
 # target to build an object file
 bam_reader.cpp.o:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/bam_reader.cpp.o
 .PHONY : bam_reader.cpp.o
 
 bam_reader.i: bam_reader.cpp.i
@@ -198,7 +198,7 @@ bam_reader.i: bam_reader.cpp.i
 
 # target to preprocess a source file
 bam_reader.cpp.i:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/bam_reader.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/bam_reader.cpp.i
 .PHONY : bam_reader.cpp.i
 
 bam_reader.s: bam_reader.cpp.s
@@ -206,15 +206,39 @@ bam_reader.s: bam_reader.cpp.s
 
 # target to generate assembly for a file
 bam_reader.cpp.s:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/bam_reader.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/bam_reader.cpp.s
 .PHONY : bam_reader.cpp.s
+
+stream_processor.o: stream_processor.cpp.o
+.PHONY : stream_processor.o
+
+# target to build an object file
+stream_processor.cpp.o:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/stream_processor.cpp.o
+.PHONY : stream_processor.cpp.o
+
+stream_processor.i: stream_processor.cpp.i
+.PHONY : stream_processor.i
+
+# target to preprocess a source file
+stream_processor.cpp.i:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/stream_processor.cpp.i
+.PHONY : stream_processor.cpp.i
+
+stream_processor.s: stream_processor.cpp.s
+.PHONY : stream_processor.s
+
+# target to generate assembly for a file
+stream_processor.cpp.s:
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/stream_processor.cpp.s
+.PHONY : stream_processor.cpp.s
 
 task_queue.o: task_queue.cpp.o
 .PHONY : task_queue.o
 
 # target to build an object file
 task_queue.cpp.o:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/task_queue.cpp.o
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/task_queue.cpp.o
 .PHONY : task_queue.cpp.o
 
 task_queue.i: task_queue.cpp.i
@@ -222,7 +246,7 @@ task_queue.i: task_queue.cpp.i
 
 # target to preprocess a source file
 task_queue.cpp.i:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/task_queue.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/task_queue.cpp.i
 .PHONY : task_queue.cpp.i
 
 task_queue.s: task_queue.cpp.s
@@ -230,7 +254,7 @@ task_queue.s: task_queue.cpp.s
 
 # target to generate assembly for a file
 task_queue.cpp.s:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/task_queue.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/task_queue.cpp.s
 .PHONY : task_queue.cpp.s
 
 trigger.o: trigger.cpp.o
@@ -238,7 +262,7 @@ trigger.o: trigger.cpp.o
 
 # target to build an object file
 trigger.cpp.o:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/trigger.cpp.o
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/trigger.cpp.o
 .PHONY : trigger.cpp.o
 
 trigger.i: trigger.cpp.i
@@ -246,7 +270,7 @@ trigger.i: trigger.cpp.i
 
 # target to preprocess a source file
 trigger.cpp.i:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/trigger.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/trigger.cpp.i
 .PHONY : trigger.cpp.i
 
 trigger.s: trigger.cpp.s
@@ -254,7 +278,7 @@ trigger.s: trigger.cpp.s
 
 # target to generate assembly for a file
 trigger.cpp.s:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/trigger.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/trigger.cpp.s
 .PHONY : trigger.cpp.s
 
 window_buffer.o: window_buffer.cpp.o
@@ -262,7 +286,7 @@ window_buffer.o: window_buffer.cpp.o
 
 # target to build an object file
 window_buffer.cpp.o:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/window_buffer.cpp.o
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/window_buffer.cpp.o
 .PHONY : window_buffer.cpp.o
 
 window_buffer.i: window_buffer.cpp.i
@@ -270,7 +294,7 @@ window_buffer.i: window_buffer.cpp.i
 
 # target to preprocess a source file
 window_buffer.cpp.i:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/window_buffer.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/window_buffer.cpp.i
 .PHONY : window_buffer.cpp.i
 
 window_buffer.s: window_buffer.cpp.s
@@ -278,7 +302,7 @@ window_buffer.s: window_buffer.cpp.s
 
 # target to generate assembly for a file
 window_buffer.cpp.s:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/window_buffer.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/window_buffer.cpp.s
 .PHONY : window_buffer.cpp.s
 
 # Help Target
@@ -298,6 +322,9 @@ help:
 	@echo "... bam_reader.o"
 	@echo "... bam_reader.i"
 	@echo "... bam_reader.s"
+	@echo "... stream_processor.o"
+	@echo "... stream_processor.i"
+	@echo "... stream_processor.s"
 	@echo "... task_queue.o"
 	@echo "... task_queue.i"
 	@echo "... task_queue.s"
@@ -318,6 +345,6 @@ help:
 # No rule that depends on this can have commands that come from listfiles
 # because they might be regenerated.
 cmake_check_build_system:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 0
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 0
 .PHONY : cmake_check_build_system
 

@@ -74,6 +74,14 @@ BamReader& BamReader::operator=(BamReader&& other) noexcept {
 }
 
 int64_t BamReader::stream(const ReadCallback& callback) {
+    return stream_with_progress(callback, nullptr, 0);
+}
+
+int64_t BamReader::stream_with_progress(
+    const ReadCallback& callback,
+    StreamProgressCallback progress_callback,
+    int64_t progress_interval) {
+
     if (!valid_) {
         std::cerr << "[Error] BamReader is not valid, cannot stream" << std::endl;
         return -1;
@@ -86,6 +94,10 @@ int64_t BamReader::stream(const ReadCallback& callback) {
     ReadSketch sketch;
     sketch.sequence.reserve(20000);  // Typical long-read length
     sketch.cigar_ops.reserve(100);
+
+    // Progress tracking
+    int64_t last_progress_reported = 0;
+    int32_t current_tid = -1;
 
     while ((ret = sam_read1(hts_file_, header_, aln_)) >= 0) {
         // Filter: only process primary alignments
@@ -100,8 +112,10 @@ int64_t BamReader::stream(const ReadCallback& callback) {
             continue;
         }
 
-        // Optional: filter very low quality reads
-        // if (aln_->core.qual < 5) continue;
+        // Track current chromosome
+        if (aln_->core.tid != current_tid) {
+            current_tid = aln_->core.tid;
+        }
 
         // Clear previous data, keeping allocated capacity
         sketch.cigar_ops.clear();
@@ -111,13 +125,36 @@ int64_t BamReader::stream(const ReadCallback& callback) {
         extract_readsketch_fast(aln_, sketch);
         callback(sketch);
         total_records_++;
+
+        // Progress reporting
+        if (progress_interval > 0 && progress_callback) {
+            if (total_records_ - last_progress_reported >= progress_interval) {
+                if (!progress_callback(total_records_, current_tid)) {
+                    // Callback requested abort
+                    break;
+                }
+                last_progress_reported = total_records_;
+            }
+        }
     }
 
     if (ret < -1) {
         std::cerr << "[Error] BAM read error at record " << total_records_ << std::endl;
     }
 
+    // Final progress report
+    if (progress_callback) {
+        progress_callback(total_records_, current_tid);
+    }
+
     return total_records_;
+}
+
+std::string BamReader::get_chrom_name(int32_t tid) const {
+    if (!header_ || tid < 0 || tid >= header_->n_targets) {
+        return "";
+    }
+    return std::string(header_->target_name[tid]);
 }
 
 void BamReader::extract_readsketch_fast(const bam1_t* aln, ReadSketch& sketch) {

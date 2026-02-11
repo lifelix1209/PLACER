@@ -5,6 +5,7 @@ add_library(stream STATIC
     window_buffer.cpp
     trigger.cpp
     task_queue.cpp
+    stream_processor.cpp
 )
 
 target_include_directories(stream PUBLIC

@@ -1,0 +1,1 @@
+/usr/bin/cc  -Wall -march=native -O3 -DNDEBUG -rdynamic CMakeFiles/abpoa_bin.dir/src/abpoa.c.o -o bin/abpoa  -Wl,-rpath,:::::::::::::: lib/libabpoa.a -lz -lpthread -lm 

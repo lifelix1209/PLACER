@@ -1,8 +1,8 @@
 src/gate1/CMakeFiles/gate1.dir/gate1.cpp.o: \
- /mnt/home1/miska/hl725/projects/PLACER/src/gate1/gate1.cpp \
+ /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/gate1/gate1.cpp \
  /usr/include/stdc-predef.h \
- /mnt/home1/miska/hl725/projects/PLACER/include/gate1.h \
- /mnt/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
+ /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/gate1.h \
+ /mnt/beegfs6/home1/miska/hl725/projects/PLACER/include/bam_reader.h \
  /usr/include/c++/11/string \
  /usr/include/x86_64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/x86_64-linux-gnu/c++/11/bits/os_defines.h \

@@ -578,534 +578,22 @@ void POAArena::topological_sort() {
 // POA Engine
 // ============================================================================
 
-POAEngine::POAEngine(const AssemblyConfig& config) : config_(config) {}
+POAEngine::POAEngine(const AssemblyConfig& config)
+    : config_(config), abpoa_(AbPOAWrapper::Config{}) {}
 
-void POAEngine::reset() {}
-
-// ============================================================================
-// Graph Smith-Waterman with Banded DP
-// [修正] 正确使用 predecessor、traceback 与 band offset 一致
-// ============================================================================
-
-int POAEngine::graph_smith_waterman(
-    POAArena& arena,
-    const std::vector<uint32_t>& topo_order,
-    SeqSpan sequence,
-    std::vector<uint8_t>& traceback,
-    int& best_j) {
-
-    const int n = static_cast<int>(sequence.length);
-    const int m = static_cast<int>(topo_order.size());
-
-    if (n == 0 || m == 0) return -1;
-
-    best_j = 0;
-
-    // 对于图对齐，使用全 DP（不做 banded）以保证正确性
-    // 内存: O(n * m) — 对于 POA 规模（通常 < 10k）可接受
-    // 如果需要 banded，应基于预对齐 seed 确定 band 中心线
-
-    const int INF_NEG = INT_MIN / 4;
-
-    // DP 矩阵: dp[i][j] = 将 query[0..i-1] 对齐到图 topo[0..j-1] 的最优分数
-    // 使用滚动数组优化内存: 只保留 (i-1) 和 (i) 两行
-    std::vector<int32_t> prev_M(m + 1, INF_NEG);
-    std::vector<int32_t> prev_X(m + 1, INF_NEG);
-    std::vector<int32_t> prev_Y(m + 1, INF_NEG);
-    std::vector<int32_t> curr_M(m + 1, INF_NEG);
-    std::vector<int32_t> curr_X(m + 1, INF_NEG);
-    std::vector<int32_t> curr_Y(m + 1, INF_NEG);
-
-    // traceback: 存储完整的 n x m 矩阵
-    traceback.assign(static_cast<size_t>(n) * m, 0);
-
-    // 构建 topo_order 的反向映射: node_idx → topo position
-    std::vector<int> node_to_topo(arena.size(), -1);
-    for (int j = 0; j < m; ++j) {
-        node_to_topo[topo_order[j]] = j;
-    }
-
-    // 初始化第 0 行（空 query 对齐到图前缀）
-    prev_M[0] = 0;
-    for (int j = 1; j <= m; ++j) {
-        prev_X[j] = config_.gap_open + j * config_.gap_extend;
-        prev_M[j] = prev_X[j];
-    }
-
-    int best_score = 0;
-    int best_i = 0;
-    best_j = 0;
-
-    // 主 DP
-    for (int i = 1; i <= n; ++i) {
-        char qc = sequence[i - 1];
-
-        curr_M[0] = config_.gap_open + i * config_.gap_extend;
-        curr_X[0] = INF_NEG;
-        curr_Y[0] = curr_M[0];
-
-        for (int j = 1; j <= m; ++j) {
-            uint32_t node_idx = topo_order[j - 1];
-            const POANode* node = arena.get_node(node_idx);
-            if (!node) {
-                curr_M[j] = INF_NEG;
-                curr_X[j] = INF_NEG;
-                curr_Y[j] = INF_NEG;
-                continue;
-            }
-
-            char gc = node->base;
-            int8_t score = (qc == gc) ? config_.match : config_.mismatch;
-
-            // === Match/Mismatch: 来自图前驱 ===
-            int32_t max_diag = INF_NEG;
-
-            // 遍历所有前驱节点
-            for (uint8_t k = 0; k < node->predecessors.inline_count; ++k) {
-                uint32_t pred_node = node->predecessors.inline_preds[k];
-                if (pred_node < arena.size()) {
-                    int pred_topo = node_to_topo[pred_node];
-                    if (pred_topo >= 0 && pred_topo < m) {
-                        max_diag = std::max(max_diag, prev_M[pred_topo + 1]);
-                    }
-                }
-            }
-
-            // 如果没有前驱（起始节点），从 prev_M[0] 转移
-            if (node->predecessors.inline_count == 0) {
-                max_diag = std::max(max_diag, prev_M[0]);
-            }
-
-            int match_score = (max_diag > INF_NEG) ? max_diag + score : INF_NEG;
-
-            // === Gap in graph (X): query 消耗，图不动 ===
-            int gap_q = std::max(
-                prev_Y[j] + config_.gap_extend,
-                prev_M[j] + config_.gap_open + config_.gap_extend
-            );
-
-            // === Gap in query (Y): 图消耗，query 不动 ===
-            // 需要从图前驱的同一行转移
-            int gap_g = INF_NEG;
-            for (uint8_t k = 0; k < node->predecessors.inline_count; ++k) {
-                uint32_t pred_node = node->predecessors.inline_preds[k];
-                if (pred_node < arena.size()) {
-                    int pred_topo = node_to_topo[pred_node];
-                    if (pred_topo >= 0 && pred_topo < m) {
-                        gap_g = std::max(gap_g, std::max(
-                            curr_X[pred_topo + 1] + config_.gap_extend,
-                            curr_M[pred_topo + 1] + config_.gap_open + config_.gap_extend
-                        ));
-                    }
-                }
-            }
-            if (node->predecessors.inline_count == 0) {
-                gap_g = std::max(gap_g,
-                    curr_M[0] + config_.gap_open + config_.gap_extend);
-            }
-
-            // 选择最优
-            int best = match_score;
-            uint8_t trace = 0;  // 0=match/mismatch
-
-            if (gap_g > best) {
-                best = gap_g;
-                trace = 1;  // gap in query (graph advances)
-            }
-            if (gap_q > best) {
-                best = gap_q;
-                trace = 2;  // gap in graph (query advances)
-            }
-
-            curr_M[j] = best;
-            curr_X[j] = gap_g;
-            curr_Y[j] = gap_q;
-
-            // 存储 traceback
-            traceback[static_cast<size_t>(i - 1) * m + (j - 1)] = trace;
-
-            // 跟踪全局最优（半全局对齐：query 全部消耗）
-            if (i == n && best > best_score) {
-                best_score = best;
-                best_i = i;
-                best_j = j;
-            }
-        }
-
-        std::swap(prev_M, curr_M);
-        std::swap(prev_X, curr_X);
-        std::swap(prev_Y, curr_Y);
-
-        // 重置 curr
-        std::fill(curr_M.begin(), curr_M.end(), INF_NEG);
-        std::fill(curr_X.begin(), curr_X.end(), INF_NEG);
-        std::fill(curr_Y.begin(), curr_Y.end(), INF_NEG);
-    }
-
-    // 如果没找到正分数的对齐，尝试找最后一行的最大值
-    if (best_score <= 0) {
-        // 全局搜索
-        // 注意：prev_M 现在是最后一行（因为 swap 了）
-        for (int j = 1; j <= m; ++j) {
-            if (prev_M[j] > best_score) {
-                best_score = prev_M[j];
-                best_i = n;
-                best_j = j;
-            }
-        }
-    }
-
-    return best_i;
+void POAEngine::reset() {
+    last_score_ = 0;
 }
 
-// ============================================================================
-// Build POA Graph
-// [修正] 使用成员 arena_，正确传递 traceback，维护 count
-// ============================================================================
+std::string POAEngine::build_consensus(const std::vector<std::string>& sequences) {
+    if (sequences.empty()) return "";
+    if (sequences.size() == 1) return sequences[0];
 
-uint32_t POAEngine::build_graph(POAArena& arena,
-                                 const std::vector<SeqSpan>& sequences) {
-    if (sequences.empty()) return UINT32_MAX;
-
-    arena.reset();
-
-    // 第一条序列：直接构建线性图
-    const auto& first = sequences[0];
-    if (first.length == 0) return UINT32_MAX;
-
-    uint32_t start = UINT32_MAX;
-    uint32_t prev_idx = UINT32_MAX;
-
-    for (size_t i = 0; i < first.length; ++i) {
-        uint32_t idx = arena.allocate_node(first[i]);
-        if (i == 0) start = idx;
-        if (prev_idx != UINT32_MAX) {
-            arena.add_edge(prev_idx, idx);
-        }
-        prev_idx = idx;
-    }
-
-    // 更新拓扑序
-    arena.topological_sort();
-
-    // 后续序列：对齐到图上，然后合并
-    for (size_t seq_idx = 1; seq_idx < sequences.size(); ++seq_idx) {
-        const auto& seq = sequences[seq_idx];
-        if (seq.length == 0) continue;
-
-        std::vector<uint8_t> traceback;
-        int best_j = 0;
-        std::vector<uint32_t> topo_order = arena.get_topo_order();
-
-        int best_i = graph_smith_waterman(arena, topo_order, seq, traceback, best_j);
-
-        if (best_i > 0 && best_j > 0) {
-            add_aligned_sequence(arena, topo_order, seq, traceback,
-                                best_i, best_j);
-            // 重新计算拓扑序（图结构可能变了）
-            arena.topological_sort();
-        }
-    }
-
-    return start;
+    auto result = abpoa_.align(sequences);
+    last_score_ = result.best_score;
+    return result.consensus;
 }
 
-// ============================================================================
-// Align to Graph（包装函数）
-// ============================================================================
-
-int POAEngine::align_to_graph(
-    POAArena& arena,
-    uint32_t graph_start,
-    SeqSpan sequence) {
-
-    if (graph_start == UINT32_MAX || sequence.length == 0) return -1;
-
-    std::vector<uint32_t> topo_order = arena.get_topo_order();
-    std::vector<uint8_t> traceback;
-    int best_j = 0;
-
-    return graph_smith_waterman(arena, topo_order, sequence, traceback, best_j);
-}
-
-// ============================================================================
-// Add Aligned Sequence
-// [修正] 正确回溯 traceback，匹配时合并到已有节点或创建新节点
-// ============================================================================
-
-void POAEngine::add_aligned_sequence(
-    POAArena& arena,
-    const std::vector<uint32_t>& topo_order,
-    SeqSpan sequence,
-    const std::vector<uint8_t>& traceback,
-    int best_i,
-    int best_j) {
-
-    if (best_i <= 0 || best_j <= 0) return;
-
-    const int m = static_cast<int>(topo_order.size());
-
-    // 回溯对齐路径
-    struct AlignOp {
-        enum Type { MATCH, INS_QUERY, INS_GRAPH } type;
-        int query_pos;   // -1 if gap in query
-        int graph_pos;   // -1 if gap in graph (topo index)
-    };
-
-    std::vector<AlignOp> alignment;
-    alignment.reserve(best_i + best_j);
-
-    int i = best_i;
-    int j = best_j;
-
-    static constexpr int MAX_TRACEBACK = 2000000;
-    int iter = 0;
-
-    while (i > 0 && j > 0 && iter++ < MAX_TRACEBACK) {
-        uint8_t trace = traceback[static_cast<size_t>(i - 1) * m + (j - 1)];
-
-        if (trace == 0) {
-            // Match/Mismatch: query[i-1] aligns to graph[j-1]
-            alignment.push_back({AlignOp::MATCH, i - 1, j - 1});
-
-            // 找前驱来确定 j 的前一个位置
-            uint32_t node_idx = topo_order[j - 1];
-            const POANode* node = arena.get_node(node_idx);
-
-            // 找到最优前驱
-            int best_pred_topo = -1;
-            int32_t best_pred_score = INT_MIN;
-
-            if (node) {
-                // 构建反向映射
-                std::vector<int> node_to_topo(arena.size(), -1);
-                for (int jj = 0; jj < m; ++jj) {
-                    node_to_topo[topo_order[jj]] = jj;
-                }
-
-                for (uint8_t k = 0; k < node->predecessors.inline_count; ++k) {
-                    uint32_t pred = node->predecessors.inline_preds[k];
-                    if (pred < arena.size()) {
-                        int pt = node_to_topo[pred];
-                        if (pt >= 0 && pt + 1 <= m) {
-                            // 这里简化：选择 topo 序最大的前驱
-                            if (pt > best_pred_topo) {
-                                best_pred_topo = pt;
-                            }
-                        }
-                    }
-                }
-            }
-
-            j = (best_pred_topo >= 0) ? best_pred_topo + 1 : j - 1;
-            i--;
-        } else if (trace == 1) {
-            // Gap in query: graph advances
-            alignment.push_back({AlignOp::INS_GRAPH, -1, j - 1});
-
-            // 同样找前驱
-            uint32_t node_idx = topo_order[j - 1];
-            const POANode* node = arena.get_node(node_idx);
-            int best_pred_topo = -1;
-
-            if (node) {
-                std::vector<int> node_to_topo(arena.size(), -1);
-                for (int jj = 0; jj < m; ++jj) {
-                    node_to_topo[topo_order[jj]] = jj;
-                }
-                for (uint8_t k = 0; k < node->predecessors.inline_count; ++k) {
-                    uint32_t pred = node->predecessors.inline_preds[k];
-                    if (pred < arena.size()) {
-                        int pt = node_to_topo[pred];
-                        if (pt > best_pred_topo) best_pred_topo = pt;
-                    }
-                }
-            }
-            j = (best_pred_topo >= 0) ? best_pred_topo + 1 : j - 1;
-        } else {
-            // Gap in graph: query advances
-            alignment.push_back({AlignOp::INS_QUERY, i - 1, -1});
-            i--;
-        }
-    }
-
-    std::reverse(alignment.begin(), alignment.end());
-
-    // 将对齐结果合并到图中
-    uint32_t last_new_node = UINT32_MAX;
-
-    for (const auto& op : alignment) {
-        if (op.type == AlignOp::MATCH) {
-            // query base 对齐到图节点
-            uint32_t graph_node = topo_order[op.graph_pos];
-            POANode* node = arena.get_node(graph_node);
-
-            if (node && node->base == sequence[op.query_pos]) {
-                // 碱基匹配：增加计数
-                node->count++;
-                if (last_new_node != UINT32_MAX) {
-                    arena.add_edge(last_new_node, graph_node);
-                }
-                last_new_node = graph_node;
-            } else {
-                // 碱基不匹配：创建新节点（分支）
-                uint32_t new_node = arena.allocate_node(sequence[op.query_pos]);
-                if (last_new_node != UINT32_MAX) {
-                    arena.add_edge(last_new_node, new_node);
-                }
-                // 新节点需要连接到图节点的后继
-                // （在下一步对齐操作中自然处理）
-                last_new_node = new_node;
-            }
-        } else if (op.type == AlignOp::INS_QUERY) {
-            // query 有碱基，图没有 → 插入新节点
-            uint32_t new_node = arena.allocate_node(sequence[op.query_pos]);
-            if (last_new_node != UINT32_MAX) {
-                arena.add_edge(last_new_node, new_node);
-            }
-            last_new_node = new_node;
-        } else {
-            // 图有节点，query 没有 → 跳过（gap in query）
-            // 不创建新节点，但更新 last_new_node 以保持连接
-            uint32_t graph_node = topo_order[op.graph_pos];
-            if (last_new_node != UINT32_MAX) {
-                arena.add_edge(last_new_node, graph_node);
-            }
-            last_new_node = graph_node;
-        }
-    }
-}
-
-// ============================================================================
-// Extract Consensus（基于拓扑序 DP 的最重路径）
-// ============================================================================
-
-std::string POAEngine::extract_consensus(POAArena& arena, uint32_t graph_start) {
-    std::string consensus;
-    if (graph_start == UINT32_MAX) return consensus;
-
-    arena.topological_sort();
-    std::vector<uint32_t> topo_order = arena.get_topo_order();
-    int n = static_cast<int>(topo_order.size());
-    if (n == 0) return consensus;
-
-    // DP: 找从任意起点到任意终点的最重路径
-    std::vector<int> dp_weight(n, 0);
-    std::vector<int> dp_prev(n, -1);
-
-    // 初始化：每个节点的初始权重 = count
-    for (int i = 0; i < n; ++i) {
-        const POANode* node = arena.get_node(topo_order[i]);
-        dp_weight[i] = node ? node->count : 0;
-    }
-
-    // 构建邻接表
-    std::vector<std::vector<uint32_t>> adj(arena.size());
-    for (const auto& e : arena.get_edges()) {
-        adj[e.from].push_back(e.to);
-    }
-
-    // 构建 node_idx → topo_pos 映射
-    std::vector<int> node_to_topo(arena.size(), -1);
-    for (int i = 0; i < n; ++i) {
-        node_to_topo[topo_order[i]] = i;
-    }
-
-    // 拓扑序 DP
-    for (int i = 0; i < n; ++i) {
-        uint32_t u = topo_order[i];
-        for (uint32_t v : adj[u]) {
-            int j = node_to_topo[v];
-            if (j < 0) continue;
-
-            const POANode* v_node = arena.get_node(v);
-            int v_weight = v_node ? v_node->count : 0;
-
-            if (dp_weight[i] + v_weight > dp_weight[j]) {
-                dp_weight[j] = dp_weight[i] + v_weight;
-                dp_prev[j] = i;
-            }
-        }
-    }
-
-    // 找终点
-    int max_weight = 0;
-    int end_idx = -1;
-    for (int i = 0; i < n; ++i) {
-        if (dp_weight[i] > max_weight) {
-            max_weight = dp_weight[i];
-            end_idx = i;
-        }
-    }
-
-    if (end_idx < 0) return consensus;
-
-    // 回溯
-    std::vector<int> path;
-    int cur = end_idx;
-    while (cur >= 0) {
-        path.push_back(cur);
-        cur = dp_prev[cur];
-    }
-    std::reverse(path.begin(), path.end());
-
-    for (int idx : path) {
-        const POANode* node = arena.get_node(topo_order[idx]);
-        if (node) consensus.push_back(node->base);
-    }
-
-    return consensus;
-}
-
-// ============================================================================
-// Extract Paths（DFS 枚举路径）
-// [修正] 使用邻接表而非 first_out/next_sibling
-// ============================================================================
-
-std::vector<std::string> POAEngine::extract_paths(
-    POAArena& arena,
-    uint32_t graph_start,
-    int max_paths) {
-
-    std::vector<std::string> results;
-    if (graph_start == UINT32_MAX || max_paths <= 0) return results;
-
-    // 构建邻接表
-    std::vector<std::vector<uint32_t>> adj(arena.size());
-    for (const auto& e : arena.get_edges()) {
-        adj[e.from].push_back(e.to);
-    }
-
-    std::unordered_set<uint32_t> visited;
-    std::string current_path;
-
-    std::function<void(uint32_t)> dfs = [&](uint32_t node_idx) {
-        if (static_cast<int>(results.size()) >= max_paths) return;
-        if (visited.count(node_idx)) return;
-
-        const POANode* node = arena.get_node(node_idx);
-        if (!node) return;
-
-        visited.insert(node_idx);
-        current_path.push_back(node->base);
-
-        if (adj[node_idx].empty() ||
-            current_path.size() > static_cast<size_t>(config_.max_path_length)) {
-            results.push_back(current_path);
-        } else {
-            for (uint32_t child : adj[node_idx]) {
-                if (static_cast<int>(results.size()) >= max_paths) break;
-                dfs(child);
-            }
-        }
-
-        current_path.pop_back();
-        visited.erase(node_idx);
-    };
-
-    dfs(graph_start);
-    return results;
-}
 
 // ============================================================================
 // Heaviest Bundle Extractor
@@ -1460,15 +948,156 @@ bool detect_circular_dna(
 AssemblyEngine::AssemblyEngine(AssemblyConfig config)
     : config_(std::move(config)) {}
 
-std::array<std::vector<std::string>, 3> AssemblyEngine::extract_segments(
+// ============================================================================
+// Breakpoint Detection from CIGAR
+// ============================================================================
+
+/**
+ * Detect read-level breakpoint from CIGAR operations
+ * Returns: {read_pos, type, is_valid}
+ * - read_pos: position in read coordinate (0-based, where clip/break occurs)
+ * - type: type of breakpoint signal
+ * - is_valid: true if this read has a clear breakpoint signal
+ */
+ReadBreakpoint detect_breakpoint_from_cigar(const std::vector<std::pair<char, int>>& cigar_ops) {
+    ReadBreakpoint bp;
+
+    int32_t read_pos = 0;  // Current position in read sequence
+    int32_t ref_pos = 0;   // Current position in reference
+
+    // Track soft-clip boundaries
+    int32_t clip_5p_pos = -1;  // Position after 5' clip (clip end in read)
+    int32_t clip_3p_start = -1; // Position where 3' clip starts in read
+
+    // Track insertion boundaries
+    int32_t ins_start_read = -1;
+
+    for (const auto& [op, len] : cigar_ops) {
+        switch (op) {
+            case 'M':  // Match/mismatch
+                read_pos += len;
+                ref_pos += len;
+                break;
+            case 'I':  // Insertion to reference (deletion from read perspective)
+                if (bp.read_pos < 0) {
+                    bp.read_pos = read_pos;
+                    bp.type = ReadBreakpoint::INSERTION;
+                    bp.is_valid = true;
+                }
+                read_pos += len;
+                break;
+            case 'D':  // Deletion from reference
+                ref_pos += len;
+                break;
+            case 'N':  // Skipped region (splice junction)
+                if (bp.read_pos < 0) {
+                    bp.read_pos = read_pos;
+                    bp.type = ReadBreakpoint::SPLIT;
+                    bp.is_valid = true;
+                }
+                ref_pos += len;
+                break;
+            case 'S':  // Soft clip
+                if (len >= 10) {  // Only significant clips
+                    if (clip_5p_pos < 0) {
+                        // 5' soft clip
+                        clip_5p_pos = len;  // Clip ends at position len
+                    } else {
+                        // 3' soft clip (after alignment)
+                        clip_3p_start = read_pos;
+                    }
+                }
+                read_pos += len;
+                break;
+            case 'H':  // Hard clip (not in sequence)
+                break;
+            case '=':  // Sequence match
+                read_pos += len;
+                ref_pos += len;
+                break;
+            case 'X':  // Sequence mismatch
+                read_pos += len;
+                ref_pos += len;
+                break;
+        }
+    }
+
+    // Determine best breakpoint from clip information
+    // Priority: SPLIT > INSERTION > SOFT_CLIP
+
+    // If we have a split/insertion, use it
+    if (bp.read_pos >= 0) {
+        bp.ref_pos = ref_pos;  // Approximate ref position
+        return bp;
+    }
+
+    // Otherwise, use clip boundaries
+    if (clip_5p_pos > 0 && clip_3p_start > 0) {
+        // Both clips present - use the one with more evidence
+        // For TE insertions, 3' clip is often more informative
+        if (clip_3p_start >= static_cast<int32_t>(bp.read_pos)) {
+            bp.read_pos = clip_3p_start;
+            bp.type = ReadBreakpoint::SOFT_CLIP_3P;
+            bp.is_valid = true;
+        } else {
+            bp.read_pos = clip_5p_pos;
+            bp.type = ReadBreakpoint::SOFT_CLIP_5P;
+            bp.is_valid = true;
+        }
+    } else if (clip_5p_pos > 0) {
+        bp.read_pos = clip_5p_pos;
+        bp.type = ReadBreakpoint::SOFT_CLIP_5P;
+        bp.is_valid = true;
+    } else if (clip_3p_start > 0) {
+        bp.read_pos = clip_3p_start;
+        bp.type = ReadBreakpoint::SOFT_CLIP_3P;
+        bp.is_valid = true;
+    }
+
+    return bp;
+}
+
+/**
+ * Check if read has evidence of breakpoint (clip, split, or large insertion)
+ */
+bool has_breakpoint_evidence(const ReadSketch& read) {
+    // Check explicit breakpoint field first
+    if (read.breakpoint.is_valid) {
+        return true;
+    }
+
+    // Check CIGAR for signals
+    if (!read.cigar_ops.empty()) {
+        auto bp = detect_breakpoint_from_cigar(read.cigar_ops);
+        if (bp.is_valid) {
+            return true;
+        }
+    }
+
+    // Check for split alignment evidence
+    if (read.has_sa && !read.sa_targets.empty()) {
+        return true;
+    }
+
+    // Check for significant clipping
+    if (read.total_clip_len >= 20) {  // Lower threshold than Gate1
+        return true;
+    }
+
+    return false;
+}
+
+std::vector<ReadSegments> AssemblyEngine::extract_segments(
     const Component& component,
     const std::vector<ReadSketch>& reads,
     const GenomeAccessor& genome) {
 
-    std::array<std::vector<std::string>, 3> segments;
-    // segments[0] = upstream flanks
-    // segments[1] = insertion sequences
-    // segments[2] = downstream flanks
+    std::vector<ReadSegments> result;
+
+    // ================================================================
+    // Breakpoint-centered extraction: return per-read aligned segments
+    // Each ReadSegments contains up, ins, down for the SAME read
+    // ================================================================
 
     auto sampled = stratified_sample(component, reads, config_.max_reads_for_poa);
 
@@ -1477,39 +1106,65 @@ std::array<std::vector<std::string>, 3> AssemblyEngine::extract_segments(
         const auto& read = reads[idx];
         if (read.sequence.empty()) continue;
 
-        int32_t read_start = read.pos;
-        int32_t read_end = read.end_pos;
+        // Skip reads without breakpoint evidence
+        if (!has_breakpoint_evidence(read)) {
+            continue;
+        }
 
-        // 上游侧翼
-        if (read_start < component.start) {
-            int32_t flank_end = std::min(read_end, component.start);
-            int32_t offset = component.start - read_start;
-            if (offset > 0 && offset <= static_cast<int32_t>(read.sequence.size())) {
-                segments[0].push_back(read.sequence.substr(0, offset));
+        // Detect breakpoint from CIGAR if not already set
+        ReadBreakpoint bp = read.breakpoint;
+        if (!bp.is_valid && !read.cigar_ops.empty()) {
+            bp = detect_breakpoint_from_cigar(read.cigar_ops);
+        }
+
+        if (!bp.is_valid) {
+            continue;
+        }
+
+        ReadSegments seg;
+        seg.read_idx = idx;
+
+        int32_t bp_pos = bp.read_pos;  // Position in read sequence
+
+        // UP: last N bp before breakpoint
+        int32_t up_start = bp_pos - config_.breakpoint_upstream;
+        if (up_start < 0) up_start = 0;
+        int32_t up_len = bp_pos - up_start;
+        if (up_len > 0 && static_cast<int32_t>(read.sequence.size()) > up_start) {
+            up_len = std::min(up_len, static_cast<int32_t>(read.sequence.size()) - up_start);
+            seg.up = read.sequence.substr(up_start, up_len);
+        }
+
+        // INS/CLIP: from breakpoint forward
+        // Cap length to prevent extremely long insertions from dominating
+        int32_t ins_len = config_.breakpoint_downstream;
+        int32_t ins_max = std::min(static_cast<int32_t>(1000), config_.breakpoint_downstream * 3);
+        ins_len = std::min(ins_len, ins_max);
+        if (bp_pos + ins_len > static_cast<int32_t>(read.sequence.size())) {
+            ins_len = static_cast<int32_t>(read.sequence.size()) - bp_pos;
+        }
+        if (ins_len > 0) {
+            seg.ins = read.sequence.substr(bp_pos, ins_len);
+        }
+
+        // DOWN: first N bp after breakpoint (after INS)
+        int32_t down_start = bp_pos + seg.ins.length();
+        if (down_start < static_cast<int32_t>(read.sequence.size())) {
+            int32_t down_len = std::min(config_.breakpoint_downstream,
+                static_cast<int32_t>(read.sequence.size()) - down_start);
+            if (down_len > 0) {
+                seg.down = read.sequence.substr(down_start, down_len);
             }
         }
 
-        // 插入序列
-        if (read_start <= component.start && read_end >= component.end) {
-            int32_t ins_start = component.start - read_start;
-            int32_t ins_end = component.end - read_start;
-            if (ins_start >= 0 && ins_end <= static_cast<int32_t>(read.sequence.size()) &&
-                ins_start < ins_end) {
-                segments[1].push_back(read.sequence.substr(ins_start, ins_end - ins_start));
-            }
-        }
-
-        // 下游侧翼
-        if (read_end > component.end) {
-            int32_t flank_start = std::max(read_start, component.end);
-            int32_t offset = flank_start - read_start;
-            if (offset >= 0 && offset < static_cast<int32_t>(read.sequence.size())) {
-                segments[2].push_back(read.sequence.substr(offset));
-            }
+        // Only include reads with minimum evidence
+        if (seg.up.length() >= static_cast<size_t>(config_.breakpoint_upstream * 0.6) &&
+            seg.ins.length() >= static_cast<size_t>(config_.ins_min_length)) {
+            result.push_back(std::move(seg));
         }
     }
 
-    return segments;
+    return result;
 }
 
 std::vector<size_t> AssemblyEngine::stratified_sample(
@@ -1584,7 +1239,7 @@ StructuralFingerprint AssemblyEngine::build_fingerprint(const Contig& contig) co
 }
 
 // ============================================================================
-// Assemble Component（使用完整 POA 流程）
+// Assemble Component（使用断点居中窗口 + Minimizer Jaccard 分桶）
 // ============================================================================
 
 std::vector<Contig> AssemblyEngine::assemble_component(
@@ -1598,98 +1253,265 @@ std::vector<Contig> AssemblyEngine::assemble_component(
         return contigs;
     }
 
-    auto sampled = stratified_sample(component, reads, config_.max_reads_for_poa);
-    if (sampled.empty()) return contigs;
+    // Reset POA context for new assembly
+    poa_ctx_.reset();
 
-    std::vector<SeqSpan> sequences;
-    sequences.reserve(sampled.size());
+    // ================================================================
+    // Step 1: Extract per-read breakpoint-centered segments
+    // Returns: std::vector<ReadSegments> with up, ins, down for each read
+    // ================================================================
+    auto read_segments = extract_segments(component, reads, genome);
 
-    for (size_t idx : sampled) {
-        if (idx < reads.size() && !reads[idx].sequence.empty()) {
-            sequences.emplace_back(reads[idx].sequence.c_str(),
-                                   reads[idx].sequence.length());
+    if (read_segments.empty() || read_segments.size() < 2) {
+        return contigs;
+    }
+
+    // ================================================================
+    // Step 2: Construct cross-breakpoint analysis windows
+    // Window = UP (last N bp) + INS/CLIP + DOWN (first N bp)
+    // ================================================================
+    std::vector<std::string> analysis_windows;
+    std::vector<size_t> segment_indices;  // Maps window idx -> read_segments idx
+
+    analysis_windows.reserve(read_segments.size());
+    segment_indices.reserve(read_segments.size());
+
+    for (size_t i = 0; i < read_segments.size(); ++i) {
+        const auto& seg = read_segments[i];
+
+        // Minimum requirements for homology comparison
+        const size_t MIN_UP = 30;
+        const size_t MIN_INS = 50;
+        const size_t MIN_DOWN = 30;
+
+        if (seg.up.length() < MIN_UP || seg.ins.length() < MIN_INS) {
+            continue;
+        }
+
+        // Construct analysis window: UP (last N bp) + INS + DOWN (first N bp)
+        std::string window;
+        size_t up_to_use = std::min(seg.up.length(), static_cast<size_t>(config_.breakpoint_upstream));
+        size_t down_to_use = std::min(seg.down.length(), static_cast<size_t>(config_.breakpoint_downstream));
+
+        window.reserve(up_to_use + seg.ins.length() + down_to_use);
+        // Last N bp of UP
+        if (up_to_use > 0) {
+            window.append(seg.up.substr(seg.up.length() - up_to_use));
+        }
+        window += seg.ins;  // Full INS
+        if (down_to_use > 0) {
+            window.append(seg.down.substr(0, down_to_use));  // First N bp of DOWN
+        }
+
+        // Filter by minimum length and minimizer count
+        const size_t MIN_WINDOW_LEN = 100;
+        if (window.length() >= MIN_WINDOW_LEN) {
+            analysis_windows.push_back(std::move(window));
+            segment_indices.push_back(i);
         }
     }
 
-    if (sequences.empty()) return contigs;
+    if (analysis_windows.size() < 4) {
+        // Not enough reads for meaningful analysis
+        // Try single contig with what we have
+        std::vector<std::string> seqs_for_poa;
+        seqs_for_poa.reserve(read_segments.size());
+        for (const auto& seg : read_segments) {
+            seqs_for_poa.push_back(seg.up + seg.ins + seg.down);
+        }
 
-    // 创建 POA 上下文
-    POAArena arena(sequences[0].length * sequences.size() + 100);
-    POAEngine engine(config_);
+        if (seqs_for_poa.size() >= 2) {
+            poa_ctx_.reset();
+            std::string consensus = poa_ctx_.engine.build_consensus(seqs_for_poa);
+            if (!consensus.empty()) {
+                Contig contig;
+                contig.sequence = consensus;
+                contig.ins_seq = consensus;
+                contig.left_breakpoint = component.start;
+                contig.right_breakpoint = component.end;
+                contig.support_reads = static_cast<int32_t>(seqs_for_poa.size());
+                contig.consensus_quality = 0.7;
 
-    uint32_t graph_start = engine.build_graph(arena, sequences);
+                contig.fingerprint = build_fingerprint(contig);
+                int polya = extract_polya_length(contig.sequence);
+                if (polya > 0) contig.trunc_level = 1;
 
-    if (graph_start == UINT32_MAX) return contigs;
-
-    // 方法1: Heaviest Bundle 提取
-    HeaviestBundleExtractor hb_extractor(32);
-    BundlePath bundle = hb_extractor.extract(arena, graph_start);
-
-    // 方法2: 质量加权共识
-    auto qw_consensus = QualityWeightedConsensus::extract(arena, graph_start, config_);
-
-    // 选择更好的共识
-    std::string best_consensus;
-    double best_quality = 0.0;
-
-    if (!bundle.consensus.empty()) {
-        best_consensus = bundle.consensus;
-        best_quality = 0.85;
-    }
-
-    if (!qw_consensus.sequence.empty()) {
-        // 计算平均质量
-        double avg_qual = 0.0;
-        if (!qw_consensus.base_quality.empty()) {
-            for (double q : qw_consensus.base_quality) {
-                avg_qual += q;
+                contigs.push_back(std::move(contig));
             }
-            avg_qual /= qw_consensus.base_quality.size();
+        }
+        return contigs;
+    }
+
+    // ================================================================
+    // Step 3: Minimizer Jaccard Analysis on analysis windows
+    // ================================================================
+    ComponentSimilarityAnalyzer sim_analyzer({
+        .k = 15,
+        .w = 10,
+        .sample_pairs = 200,
+        .median_threshold = 0.75,   // Calibration needed
+        .p10_threshold = 0.60,      // Calibration needed
+        .min_bucket_size = 3,
+        .min_bucket_frac = 0.2
+    });
+
+    JaccardStats sim_stats = sim_analyzer.analyze(analysis_windows);
+
+    // Decide: single group or split?
+    bool should_split = sim_stats.split_triggered &&
+                       analysis_windows.size() >= 6;
+
+    // ================================================================
+    // Step 4: Build contigs (single or split)
+    // ================================================================
+
+    if (should_split) {
+        // split() returns read_idx lists (indices into analysis_windows)
+        auto bucket_result = sim_analyzer.split(analysis_windows, sim_stats);
+
+        if (bucket_result.valid &&
+            bucket_result.bucket_a.size() >= 3 &&
+            bucket_result.bucket_b.size() >= 3) {
+
+            // ========================================================
+            // Bucket A: Build contig from bucket A reads
+            // ========================================================
+            std::vector<std::string> seqs_a;
+            seqs_a.reserve(bucket_result.bucket_a.size());
+
+            for (size_t win_idx : bucket_result.bucket_a) {
+                size_t seg_idx = segment_indices[win_idx];
+                const auto& seg = read_segments[seg_idx];
+                seqs_a.push_back(seg.up + seg.ins + seg.down);
+            }
+
+            poa_ctx_.reset();
+            std::string consensus_a = poa_ctx_.engine.build_consensus(seqs_a);
+
+            if (!consensus_a.empty()) {
+                Contig contig;
+                contig.sequence = consensus_a;
+                contig.ins_seq = consensus_a;
+                contig.left_breakpoint = component.start;
+                contig.right_breakpoint = component.end;
+                contig.support_reads = static_cast<int32_t>(seqs_a.size());
+                contig.consensus_quality = 0.8;
+
+                // Collect UP/DOWN for flanks
+                std::vector<std::string> up_seqs, down_seqs;
+                up_seqs.reserve(bucket_result.bucket_a.size());
+                down_seqs.reserve(bucket_result.bucket_a.size());
+
+                for (size_t win_idx : bucket_result.bucket_a) {
+                    size_t seg_idx = segment_indices[win_idx];
+                    up_seqs.push_back(read_segments[seg_idx].up);
+                    down_seqs.push_back(read_segments[seg_idx].down);
+                }
+
+                contig.up_flank_seq = simple_majority_consensus(up_seqs);
+                contig.down_flank_seq = simple_majority_consensus(down_seqs);
+
+                contig.fingerprint = build_fingerprint(contig);
+                int polya = extract_polya_length(contig.sequence);
+                if (polya > 0) contig.trunc_level = 1;
+
+                contigs.push_back(std::move(contig));
+            }
+
+            // ========================================================
+            // Bucket B: Build contig from bucket B reads
+            // ========================================================
+            std::vector<std::string> seqs_b;
+            seqs_b.reserve(bucket_result.bucket_b.size());
+
+            for (size_t win_idx : bucket_result.bucket_b) {
+                size_t seg_idx = segment_indices[win_idx];
+                const auto& seg = read_segments[seg_idx];
+                seqs_b.push_back(seg.up + seg.ins + seg.down);
+            }
+
+            poa_ctx_.reset();
+            std::string consensus_b = poa_ctx_.engine.build_consensus(seqs_b);
+
+            if (!consensus_b.empty()) {
+                Contig contig;
+                contig.sequence = consensus_b;
+                contig.ins_seq = consensus_b;
+                contig.left_breakpoint = component.start;
+                contig.right_breakpoint = component.end;
+                contig.support_reads = static_cast<int32_t>(seqs_b.size());
+                contig.consensus_quality = 0.8;
+
+                // Collect UP/DOWN for flanks
+                std::vector<std::string> up_seqs, down_seqs;
+                up_seqs.reserve(bucket_result.bucket_b.size());
+                down_seqs.reserve(bucket_result.bucket_b.size());
+
+                for (size_t win_idx : bucket_result.bucket_b) {
+                    size_t seg_idx = segment_indices[win_idx];
+                    up_seqs.push_back(read_segments[seg_idx].up);
+                    down_seqs.push_back(read_segments[seg_idx].down);
+                }
+
+                contig.up_flank_seq = simple_majority_consensus(up_seqs);
+                contig.down_flank_seq = simple_majority_consensus(down_seqs);
+
+                contig.fingerprint = build_fingerprint(contig);
+                int polya = extract_polya_length(contig.sequence);
+                if (polya > 0) contig.trunc_level = 1;
+
+                contigs.push_back(std::move(contig));
+            }
+
+            return contigs;
+        }
+    }
+
+    // ================================================================
+    // Fall back: Single contig from all reads
+    // ================================================================
+    std::vector<std::string> seqs_all;
+    seqs_all.reserve(read_segments.size());
+
+    for (const auto& seg : read_segments) {
+        seqs_all.push_back(seg.up + seg.ins + seg.down);
+    }
+
+    poa_ctx_.reset();
+    std::string consensus = poa_ctx_.engine.build_consensus(seqs_all);
+
+    if (!consensus.empty()) {
+        Contig contig;
+        contig.sequence = consensus;
+        contig.ins_seq = consensus;
+        contig.left_breakpoint = component.start;
+        contig.right_breakpoint = component.end;
+        contig.support_reads = static_cast<int32_t>(seqs_all.size());
+
+        int alignment_score = poa_ctx_.engine.get_score();
+        int seq_len = static_cast<int>(seqs_all[0].size());
+        contig.consensus_quality = std::clamp(
+            static_cast<double>(alignment_score) / (seq_len * 2), 0.0, 1.0);
+
+        // Collect flanks
+        std::vector<std::string> up_seqs, down_seqs;
+        up_seqs.reserve(read_segments.size());
+        down_seqs.reserve(read_segments.size());
+
+        for (const auto& seg : read_segments) {
+            up_seqs.push_back(seg.up);
+            down_seqs.push_back(seg.down);
         }
 
-        // 如果质量加权共识更好，使用它
-        if (avg_qual > best_quality * 40.0 ||  // phred scale
-            best_consensus.empty()) {
-            best_consensus = qw_consensus.sequence;
-            best_quality = avg_qual / 60.0;  // 归一化到 [0,1]
-        }
+        contig.up_flank_seq = simple_majority_consensus(up_seqs);
+        contig.down_flank_seq = simple_majority_consensus(down_seqs);
+
+        contig.fingerprint = build_fingerprint(contig);
+        int polya = extract_polya_length(contig.sequence);
+        if (polya > 0) contig.trunc_level = 1;
+
+        contigs.push_back(std::move(contig));
     }
-
-    if (best_consensus.empty()) return contigs;
-
-    // 构建 Contig
-    Contig contig;
-    contig.sequence = best_consensus;
-    contig.left_breakpoint = component.start;
-    contig.right_breakpoint = component.end;
-    contig.te_family_id = 0;
-    contig.orientation = 0;
-    contig.trunc_level = 0;
-    contig.support_reads = static_cast<int32_t>(sampled.size());
-    contig.consensus_quality = best_quality;
-
-    // 分割序列为侧翼和插入
-    auto segments = extract_segments(component, reads, genome);
-
-    if (!segments[0].empty()) {
-        // 对上游侧翼做简单多数投票共识
-        contig.up_flank_seq = simple_majority_consensus(segments[0]);
-    }
-    if (!segments[2].empty()) {
-        contig.down_flank_seq = simple_majority_consensus(segments[2]);
-    }
-    contig.ins_seq = best_consensus;
-
-    // 构建指纹
-    contig.fingerprint = build_fingerprint(contig);
-
-    // polyA 检测
-    int polya_len = extract_polya_length(contig.sequence);
-    if (polya_len > 0) {
-        contig.trunc_level = 1;  // 标记有 polyA tail
-    }
-
-    contigs.push_back(std::move(contig));
 
     return contigs;
 }
@@ -1752,7 +1574,6 @@ std::string AssemblyEngine::simple_majority_consensus(
 
 // ============================================================================
 // Assemble Batch（并行版本）
-// [修正] 每个线程独立的 arena + engine，避免数据竞争
 // ============================================================================
 
 std::vector<Contig> AssemblyEngine::assemble_batch(
@@ -1767,11 +1588,10 @@ std::vector<Contig> AssemblyEngine::assemble_batch(
     std::vector<size_t> indices(components.size());
     std::iota(indices.begin(), indices.end(), 0);
 
-    // [修正] 使用 thread_local 确保每个线程有独立的 POA 上下文
+    // 并行处理
     std::for_each(std::execution::par, indices.begin(), indices.end(),
         [&](size_t idx) {
             if (idx < components.size()) {
-                // 每次调用都创建独立的上下文，避免 thread_local 状态残留
                 results[idx] = assemble_component(
                     components[idx], reads, genome);
             }
@@ -1791,80 +1611,6 @@ std::vector<Contig> AssemblyEngine::assemble_batch(
     }
 
     return all_contigs;
-}
-
-// [修正] 线程安全版本：接受外部 POAContext
-std::vector<Contig> AssemblyEngine::assemble_component_thread_safe(
-    const Component& component,
-    const std::vector<ReadSketch>& reads,
-    const GenomeAccessor& genome,
-    POAContext& ctx) {
-
-    std::vector<Contig> contigs;
-
-    if (component.read_count < config_.min_reads_for_poa) {
-        return contigs;
-    }
-
-    auto sampled = stratified_sample(component, reads, config_.max_reads_for_poa);
-    if (sampled.empty()) return contigs;
-
-    std::vector<SeqSpan> sequences;
-    sequences.reserve(sampled.size());
-
-    for (size_t idx : sampled) {
-        if (idx < reads.size() && !reads[idx].sequence.empty()) {
-            sequences.emplace_back(reads[idx].sequence.c_str(),
-                                   reads[idx].sequence.length());
-        }
-    }
-
-    if (sequences.empty()) return contigs;
-
-    // 使用传入的上下文
-    ctx.arena.reset();
-    uint32_t graph_start = ctx.engine.build_graph(ctx.arena, sequences);
-    if (graph_start == UINT32_MAX) return contigs;
-
-    // Heaviest Bundle 提取
-    HeaviestBundleExtractor hb_extractor(32);
-    BundlePath bundle = hb_extractor.extract(ctx.arena, graph_start);
-
-    if (bundle.consensus.empty()) return contigs;
-
-    // 质量加权共识
-    auto qw_consensus = QualityWeightedConsensus::extract(
-        ctx.arena, graph_start, config_);
-
-    std::string best_consensus = bundle.consensus;
-    if (!qw_consensus.sequence.empty() &&
-        qw_consensus.sequence.size() >= bundle.consensus.size() * 0.8) {
-        // 如果质量加权版本长度合理，优先使用
-        double avg_q = 0;
-        for (double q : qw_consensus.base_quality) avg_q += q;
-        if (!qw_consensus.base_quality.empty()) {
-            avg_q /= qw_consensus.base_quality.size();
-        }
-        if (avg_q > 20.0) {  // Phred > 20 = 99% 准确率
-            best_consensus = qw_consensus.sequence;
-        }
-    }
-
-    Contig contig;
-    contig.sequence = best_consensus;
-    contig.ins_seq = best_consensus;
-    contig.left_breakpoint = component.start;
-    contig.right_breakpoint = component.end;
-    contig.te_family_id = 0;
-    contig.orientation = 0;
-    contig.trunc_level = 0;
-    contig.support_reads = static_cast<int32_t>(sampled.size());
-    contig.consensus_quality = 0.85;
-    contig.fingerprint = build_fingerprint(contig);
-
-    contigs.push_back(std::move(contig));
-
-    return contigs;
 }
 
 // ============================================================================

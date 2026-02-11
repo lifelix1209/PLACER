@@ -8,8 +8,10 @@ set(CMAKE_DEPENDS_GENERATOR "Unix Makefiles")
 set(CMAKE_MAKEFILE_DEPENDS
   "CMakeCache.txt"
   "../CMakeLists.txt"
+  "CMakeFiles/3.22.1/CMakeCCompiler.cmake"
   "CMakeFiles/3.22.1/CMakeCXXCompiler.cmake"
   "CMakeFiles/3.22.1/CMakeSystem.cmake"
+  "../src/abpoa_wrapper/CMakeLists.txt"
   "../src/assembly/CMakeLists.txt"
   "../src/component/CMakeLists.txt"
   "../src/gate1/CMakeLists.txt"
@@ -19,6 +21,9 @@ set(CMAKE_MAKEFILE_DEPENDS
   "../src/stream/CMakeLists.txt"
   "../src/te_reverse_index/CMakeLists.txt"
   "../tests/CMakeLists.txt"
+  "../third_party/abPOA/CMakeLists.txt"
+  "../third_party/abPOA/abpoa.pc.in"
+  "/usr/share/cmake-3.22/Modules/CMakeCInformation.cmake"
   "/usr/share/cmake-3.22/Modules/CMakeCXXInformation.cmake"
   "/usr/share/cmake-3.22/Modules/CMakeCommonLanguageInclude.cmake"
   "/usr/share/cmake-3.22/Modules/CMakeGenericSystem.cmake"
@@ -27,12 +32,19 @@ set(CMAKE_MAKEFILE_DEPENDS
   "/usr/share/cmake-3.22/Modules/CMakeSystemSpecificInformation.cmake"
   "/usr/share/cmake-3.22/Modules/CMakeSystemSpecificInitialize.cmake"
   "/usr/share/cmake-3.22/Modules/Compiler/CMakeCommonCompilerMacros.cmake"
+  "/usr/share/cmake-3.22/Modules/Compiler/GNU-C.cmake"
   "/usr/share/cmake-3.22/Modules/Compiler/GNU-CXX.cmake"
   "/usr/share/cmake-3.22/Modules/Compiler/GNU.cmake"
+  "/usr/share/cmake-3.22/Modules/FindPackageHandleStandardArgs.cmake"
+  "/usr/share/cmake-3.22/Modules/FindPackageMessage.cmake"
+  "/usr/share/cmake-3.22/Modules/FindZLIB.cmake"
+  "/usr/share/cmake-3.22/Modules/GNUInstallDirs.cmake"
+  "/usr/share/cmake-3.22/Modules/Platform/Linux-GNU-C.cmake"
   "/usr/share/cmake-3.22/Modules/Platform/Linux-GNU-CXX.cmake"
   "/usr/share/cmake-3.22/Modules/Platform/Linux-GNU.cmake"
   "/usr/share/cmake-3.22/Modules/Platform/Linux.cmake"
   "/usr/share/cmake-3.22/Modules/Platform/UnixPaths.cmake"
+  "/usr/share/cmake-3.22/Modules/SelectLibraryConfigurations.cmake"
   )
 
 # The corresponding makefile is:
@@ -44,10 +56,13 @@ set(CMAKE_MAKEFILE_OUTPUTS
 # Byproducts of CMake generate step:
 set(CMAKE_MAKEFILE_PRODUCTS
   "CMakeFiles/CMakeDirectoryInformation.cmake"
+  "third_party/abPOA/abpoa-1.pc"
+  "third_party/abPOA/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/stream/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/gate1/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/component/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/local_realign/CMakeFiles/CMakeDirectoryInformation.cmake"
+  "src/abpoa_wrapper/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/assembly/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/placeability/CMakeFiles/CMakeDirectoryInformation.cmake"
   "src/genotyping/CMakeFiles/CMakeDirectoryInformation.cmake"
@@ -58,10 +73,13 @@ set(CMAKE_MAKEFILE_PRODUCTS
 # Dependency information for all targets:
 set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/placer.dir/DependInfo.cmake"
+  "third_party/abPOA/CMakeFiles/abpoa.dir/DependInfo.cmake"
+  "third_party/abPOA/CMakeFiles/abpoa_bin.dir/DependInfo.cmake"
   "src/stream/CMakeFiles/stream.dir/DependInfo.cmake"
   "src/gate1/CMakeFiles/gate1.dir/DependInfo.cmake"
   "src/component/CMakeFiles/component.dir/DependInfo.cmake"
   "src/local_realign/CMakeFiles/local_realign.dir/DependInfo.cmake"
+  "src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/DependInfo.cmake"
   "src/assembly/CMakeFiles/assembly.dir/DependInfo.cmake"
   "src/placeability/CMakeFiles/placeability.dir/DependInfo.cmake"
   "src/genotyping/CMakeFiles/genotyping.dir/DependInfo.cmake"

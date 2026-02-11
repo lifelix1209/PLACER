@@ -1,4 +1,4 @@
-# Install script for directory: /mnt/home1/miska/hl725/projects/PLACER/src/component
+# Install script for directory: /mnt/beegfs6/home1/miska/hl725/projects/PLACER/src/component
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)

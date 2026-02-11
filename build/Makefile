@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -142,9 +142,9 @@ install/strip/fast: preinstall/fast
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/home1/miska/hl725/projects/PLACER/build//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -183,6 +183,32 @@ placer: cmake_check_build_system
 placer/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer.dir/build.make CMakeFiles/placer.dir/build
 .PHONY : placer/fast
+
+#=============================================================================
+# Target rules for targets named abpoa
+
+# Build rule for target.
+abpoa: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 abpoa
+.PHONY : abpoa
+
+# fast build rule for target.
+abpoa/fast:
+	$(MAKE) $(MAKESILENT) -f third_party/abPOA/CMakeFiles/abpoa.dir/build.make third_party/abPOA/CMakeFiles/abpoa.dir/build
+.PHONY : abpoa/fast
+
+#=============================================================================
+# Target rules for targets named abpoa_bin
+
+# Build rule for target.
+abpoa_bin: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 abpoa_bin
+.PHONY : abpoa_bin
+
+# fast build rule for target.
+abpoa_bin/fast:
+	$(MAKE) $(MAKESILENT) -f third_party/abPOA/CMakeFiles/abpoa_bin.dir/build.make third_party/abPOA/CMakeFiles/abpoa_bin.dir/build
+.PHONY : abpoa_bin/fast
 
 #=============================================================================
 # Target rules for targets named stream
@@ -235,6 +261,19 @@ local_realign: cmake_check_build_system
 local_realign/fast:
 	$(MAKE) $(MAKESILENT) -f src/local_realign/CMakeFiles/local_realign.dir/build.make src/local_realign/CMakeFiles/local_realign.dir/build
 .PHONY : local_realign/fast
+
+#=============================================================================
+# Target rules for targets named abpoa_wrapper
+
+# Build rule for target.
+abpoa_wrapper: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 abpoa_wrapper
+.PHONY : abpoa_wrapper
+
+# fast build rule for target.
+abpoa_wrapper/fast:
+	$(MAKE) $(MAKESILENT) -f src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/build.make src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/build
+.PHONY : abpoa_wrapper/fast
 
 #=============================================================================
 # Target rules for targets named assembly
@@ -429,6 +468,9 @@ help:
 	@echo "... list_install_components"
 	@echo "... rebuild_cache"
 	@echo "... test"
+	@echo "... abpoa"
+	@echo "... abpoa_bin"
+	@echo "... abpoa_wrapper"
 	@echo "... assembly"
 	@echo "... component"
 	@echo "... gate1"

@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
 
 # Include any dependencies generated for this target.
 include tests/CMakeFiles/test_placeability_integration.dir/depend.make
@@ -72,16 +72,16 @@ include tests/CMakeFiles/test_placeability_integration.dir/flags.make
 tests/CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o: tests/CMakeFiles/test_placeability_integration.dir/flags.make
 tests/CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o: ../tests/test_placeability_integration.cpp
 tests/CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o: tests/CMakeFiles/test_placeability_integration.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object tests/CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT tests/CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o -MF CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o.d -o CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o -c /mnt/home1/miska/hl725/projects/PLACER/tests/test_placeability_integration.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object tests/CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o"
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT tests/CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o -MF CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o.d -o CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.o -c /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_placeability_integration.cpp
 
 tests/CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.i"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/home1/miska/hl725/projects/PLACER/tests/test_placeability_integration.cpp > CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.i
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_placeability_integration.cpp > CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.i
 
 tests/CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.s"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/home1/miska/hl725/projects/PLACER/tests/test_placeability_integration.cpp -o CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.s
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests/test_placeability_integration.cpp -o CMakeFiles/test_placeability_integration.dir/test_placeability_integration.cpp.s
 
 # Object files for target test_placeability_integration
 test_placeability_integration_OBJECTS = \
@@ -104,20 +104,22 @@ tests/test_placeability_integration: src/assembly/libassembly.a
 tests/test_placeability_integration: src/component/libcomponent.a
 tests/test_placeability_integration: src/local_realign/liblocal_realign.a
 tests/test_placeability_integration: src/stream/libstream.a
+tests/test_placeability_integration: src/abpoa_wrapper/libabpoa_wrapper.a
+tests/test_placeability_integration: third_party/abPOA/lib/libabpoa.a
 tests/test_placeability_integration: /usr/lib/x86_64-linux-gnu/libhts.so.3
 tests/test_placeability_integration: tests/CMakeFiles/test_placeability_integration.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable test_placeability_integration"
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/test_placeability_integration.dir/link.txt --verbose=$(VERBOSE)
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable test_placeability_integration"
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/test_placeability_integration.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
 tests/CMakeFiles/test_placeability_integration.dir/build: tests/test_placeability_integration
 .PHONY : tests/CMakeFiles/test_placeability_integration.dir/build
 
 tests/CMakeFiles/test_placeability_integration.dir/clean:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build/tests && $(CMAKE_COMMAND) -P CMakeFiles/test_placeability_integration.dir/cmake_clean.cmake
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests && $(CMAKE_COMMAND) -P CMakeFiles/test_placeability_integration.dir/cmake_clean.cmake
 .PHONY : tests/CMakeFiles/test_placeability_integration.dir/clean
 
 tests/CMakeFiles/test_placeability_integration.dir/depend:
-	cd /mnt/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/home1/miska/hl725/projects/PLACER /mnt/home1/miska/hl725/projects/PLACER/tests /mnt/home1/miska/hl725/projects/PLACER/build /mnt/home1/miska/hl725/projects/PLACER/build/tests /mnt/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_placeability_integration.dir/DependInfo.cmake --color=$(COLOR)
+	cd /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/beegfs6/home1/miska/hl725/projects/PLACER /mnt/beegfs6/home1/miska/hl725/projects/PLACER/tests /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/tests/CMakeFiles/test_placeability_integration.dir/DependInfo.cmake --color=$(COLOR)
 .PHONY : tests/CMakeFiles/test_placeability_integration.dir/depend
 

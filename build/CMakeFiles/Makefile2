@@ -54,20 +54,22 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/home1/miska/hl725/projects/PLACER
+CMAKE_SOURCE_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/home1/miska/hl725/projects/PLACER/build
+CMAKE_BINARY_DIR = /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build
 
 #=============================================================================
 # Directory level rules for the build root directory
 
 # The main recursive "all" target.
 all: CMakeFiles/placer.dir/all
+all: third_party/abPOA/all
 all: src/stream/all
 all: src/gate1/all
 all: src/component/all
 all: src/local_realign/all
+all: src/abpoa_wrapper/all
 all: src/assembly/all
 all: src/placeability/all
 all: src/genotyping/all
@@ -76,10 +78,12 @@ all: src/te_reverse_index/all
 .PHONY : all
 
 # The main recursive "preinstall" target.
+preinstall: third_party/abPOA/preinstall
 preinstall: src/stream/preinstall
 preinstall: src/gate1/preinstall
 preinstall: src/component/preinstall
 preinstall: src/local_realign/preinstall
+preinstall: src/abpoa_wrapper/preinstall
 preinstall: src/assembly/preinstall
 preinstall: src/placeability/preinstall
 preinstall: src/genotyping/preinstall
@@ -89,16 +93,33 @@ preinstall: src/te_reverse_index/preinstall
 
 # The main recursive "clean" target.
 clean: CMakeFiles/placer.dir/clean
+clean: third_party/abPOA/clean
 clean: src/stream/clean
 clean: src/gate1/clean
 clean: src/component/clean
 clean: src/local_realign/clean
+clean: src/abpoa_wrapper/clean
 clean: src/assembly/clean
 clean: src/placeability/clean
 clean: src/genotyping/clean
 clean: tests/clean
 clean: src/te_reverse_index/clean
 .PHONY : clean
+
+#=============================================================================
+# Directory level rules for directory src/abpoa_wrapper
+
+# Recursive "all" directory target.
+src/abpoa_wrapper/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
+.PHONY : src/abpoa_wrapper/all
+
+# Recursive "preinstall" directory target.
+src/abpoa_wrapper/preinstall:
+.PHONY : src/abpoa_wrapper/preinstall
+
+# Recursive "clean" directory target.
+src/abpoa_wrapper/clean: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/clean
+.PHONY : src/abpoa_wrapper/clean
 
 #=============================================================================
 # Directory level rules for directory src/assembly
@@ -250,27 +271,46 @@ tests/clean: tests/CMakeFiles/test_te_reverse_index.dir/clean
 .PHONY : tests/clean
 
 #=============================================================================
+# Directory level rules for directory third_party/abPOA
+
+# Recursive "all" directory target.
+third_party/abPOA/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
+third_party/abPOA/all: third_party/abPOA/CMakeFiles/abpoa_bin.dir/all
+.PHONY : third_party/abPOA/all
+
+# Recursive "preinstall" directory target.
+third_party/abPOA/preinstall:
+.PHONY : third_party/abPOA/preinstall
+
+# Recursive "clean" directory target.
+third_party/abPOA/clean: third_party/abPOA/CMakeFiles/abpoa.dir/clean
+third_party/abPOA/clean: third_party/abPOA/CMakeFiles/abpoa_bin.dir/clean
+.PHONY : third_party/abPOA/clean
+
+#=============================================================================
 # Target rules for target CMakeFiles/placer.dir
 
 # All Build rule for target.
+CMakeFiles/placer.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
 CMakeFiles/placer.dir/all: src/stream/CMakeFiles/stream.dir/all
 CMakeFiles/placer.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 CMakeFiles/placer.dir/all: src/component/CMakeFiles/component.dir/all
 CMakeFiles/placer.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+CMakeFiles/placer.dir/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
 CMakeFiles/placer.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 CMakeFiles/placer.dir/all: src/placeability/CMakeFiles/placeability.dir/all
 CMakeFiles/placer.dir/all: src/genotyping/CMakeFiles/genotyping.dir/all
 CMakeFiles/placer.dir/all: src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer.dir/build.make CMakeFiles/placer.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer.dir/build.make CMakeFiles/placer.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=14,15 "Built target placer"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=30,31 "Built target placer"
 .PHONY : CMakeFiles/placer.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/placer.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 22
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 37
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/placer.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : CMakeFiles/placer.dir/rule
 
 # Convenience name for target.
@@ -283,20 +323,72 @@ CMakeFiles/placer.dir/clean:
 .PHONY : CMakeFiles/placer.dir/clean
 
 #=============================================================================
+# Target rules for target third_party/abPOA/CMakeFiles/abpoa.dir
+
+# All Build rule for target.
+third_party/abPOA/CMakeFiles/abpoa.dir/all:
+	$(MAKE) $(MAKESILENT) -f third_party/abPOA/CMakeFiles/abpoa.dir/build.make third_party/abPOA/CMakeFiles/abpoa.dir/depend
+	$(MAKE) $(MAKESILENT) -f third_party/abPOA/CMakeFiles/abpoa.dir/build.make third_party/abPOA/CMakeFiles/abpoa.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10,11,12 "Built target abpoa"
+.PHONY : third_party/abPOA/CMakeFiles/abpoa.dir/all
+
+# Build rule for subdir invocation for target.
+third_party/abPOA/CMakeFiles/abpoa.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 12
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 third_party/abPOA/CMakeFiles/abpoa.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+.PHONY : third_party/abPOA/CMakeFiles/abpoa.dir/rule
+
+# Convenience name for target.
+abpoa: third_party/abPOA/CMakeFiles/abpoa.dir/rule
+.PHONY : abpoa
+
+# clean rule for target.
+third_party/abPOA/CMakeFiles/abpoa.dir/clean:
+	$(MAKE) $(MAKESILENT) -f third_party/abPOA/CMakeFiles/abpoa.dir/build.make third_party/abPOA/CMakeFiles/abpoa.dir/clean
+.PHONY : third_party/abPOA/CMakeFiles/abpoa.dir/clean
+
+#=============================================================================
+# Target rules for target third_party/abPOA/CMakeFiles/abpoa_bin.dir
+
+# All Build rule for target.
+third_party/abPOA/CMakeFiles/abpoa_bin.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
+	$(MAKE) $(MAKESILENT) -f third_party/abPOA/CMakeFiles/abpoa_bin.dir/build.make third_party/abPOA/CMakeFiles/abpoa_bin.dir/depend
+	$(MAKE) $(MAKESILENT) -f third_party/abPOA/CMakeFiles/abpoa_bin.dir/build.make third_party/abPOA/CMakeFiles/abpoa_bin.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=13,14 "Built target abpoa_bin"
+.PHONY : third_party/abPOA/CMakeFiles/abpoa_bin.dir/all
+
+# Build rule for subdir invocation for target.
+third_party/abPOA/CMakeFiles/abpoa_bin.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 14
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 third_party/abPOA/CMakeFiles/abpoa_bin.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+.PHONY : third_party/abPOA/CMakeFiles/abpoa_bin.dir/rule
+
+# Convenience name for target.
+abpoa_bin: third_party/abPOA/CMakeFiles/abpoa_bin.dir/rule
+.PHONY : abpoa_bin
+
+# clean rule for target.
+third_party/abPOA/CMakeFiles/abpoa_bin.dir/clean:
+	$(MAKE) $(MAKESILENT) -f third_party/abPOA/CMakeFiles/abpoa_bin.dir/build.make third_party/abPOA/CMakeFiles/abpoa_bin.dir/clean
+.PHONY : third_party/abPOA/CMakeFiles/abpoa_bin.dir/clean
+
+#=============================================================================
 # Target rules for target src/stream/CMakeFiles/stream.dir
 
 # All Build rule for target.
 src/stream/CMakeFiles/stream.dir/all:
 	$(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/stream/CMakeFiles/stream.dir/build.make src/stream/CMakeFiles/stream.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=16,17,18,19,20 "Built target stream"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=32,33,34,35,36,37 "Built target stream"
 .PHONY : src/stream/CMakeFiles/stream.dir/all
 
 # Build rule for subdir invocation for target.
 src/stream/CMakeFiles/stream.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 5
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 6
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/stream/CMakeFiles/stream.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : src/stream/CMakeFiles/stream.dir/rule
 
 # Convenience name for target.
@@ -315,14 +407,14 @@ src/stream/CMakeFiles/stream.dir/clean:
 src/gate1/CMakeFiles/gate1.dir/all: src/stream/CMakeFiles/stream.dir/all
 	$(MAKE) $(MAKESILENT) -f src/gate1/CMakeFiles/gate1.dir/build.make src/gate1/CMakeFiles/gate1.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/gate1/CMakeFiles/gate1.dir/build.make src/gate1/CMakeFiles/gate1.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=5,6,7 "Built target gate1"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=21,22,23 "Built target gate1"
 .PHONY : src/gate1/CMakeFiles/gate1.dir/all
 
 # Build rule for subdir invocation for target.
 src/gate1/CMakeFiles/gate1.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 8
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 9
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/gate1/CMakeFiles/gate1.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : src/gate1/CMakeFiles/gate1.dir/rule
 
 # Convenience name for target.
@@ -341,14 +433,14 @@ src/gate1/CMakeFiles/gate1.dir/clean:
 src/component/CMakeFiles/component.dir/all: src/stream/CMakeFiles/stream.dir/all
 	$(MAKE) $(MAKESILENT) -f src/component/CMakeFiles/component.dir/build.make src/component/CMakeFiles/component.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/component/CMakeFiles/component.dir/build.make src/component/CMakeFiles/component.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=3,4 "Built target component"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=19,20 "Built target component"
 .PHONY : src/component/CMakeFiles/component.dir/all
 
 # Build rule for subdir invocation for target.
 src/component/CMakeFiles/component.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 7
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 8
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/component/CMakeFiles/component.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : src/component/CMakeFiles/component.dir/rule
 
 # Convenience name for target.
@@ -367,14 +459,14 @@ src/component/CMakeFiles/component.dir/clean:
 src/local_realign/CMakeFiles/local_realign.dir/all: src/stream/CMakeFiles/stream.dir/all
 	$(MAKE) $(MAKESILENT) -f src/local_realign/CMakeFiles/local_realign.dir/build.make src/local_realign/CMakeFiles/local_realign.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/local_realign/CMakeFiles/local_realign.dir/build.make src/local_realign/CMakeFiles/local_realign.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=10,11 "Built target local_realign"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=26,27 "Built target local_realign"
 .PHONY : src/local_realign/CMakeFiles/local_realign.dir/all
 
 # Build rule for subdir invocation for target.
 src/local_realign/CMakeFiles/local_realign.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 7
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 8
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/local_realign/CMakeFiles/local_realign.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : src/local_realign/CMakeFiles/local_realign.dir/rule
 
 # Convenience name for target.
@@ -387,22 +479,50 @@ src/local_realign/CMakeFiles/local_realign.dir/clean:
 .PHONY : src/local_realign/CMakeFiles/local_realign.dir/clean
 
 #=============================================================================
+# Target rules for target src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir
+
+# All Build rule for target.
+src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
+	$(MAKE) $(MAKESILENT) -f src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/build.make src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/depend
+	$(MAKE) $(MAKESILENT) -f src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/build.make src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=15,16 "Built target abpoa_wrapper"
+.PHONY : src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
+
+# Build rule for subdir invocation for target.
+src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 14
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+.PHONY : src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/rule
+
+# Convenience name for target.
+abpoa_wrapper: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/rule
+.PHONY : abpoa_wrapper
+
+# clean rule for target.
+src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/clean:
+	$(MAKE) $(MAKESILENT) -f src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/build.make src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/clean
+.PHONY : src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/clean
+
+#=============================================================================
 # Target rules for target src/assembly/CMakeFiles/assembly.dir
 
 # All Build rule for target.
+src/assembly/CMakeFiles/assembly.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
 src/assembly/CMakeFiles/assembly.dir/all: src/stream/CMakeFiles/stream.dir/all
 src/assembly/CMakeFiles/assembly.dir/all: src/component/CMakeFiles/component.dir/all
 src/assembly/CMakeFiles/assembly.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+src/assembly/CMakeFiles/assembly.dir/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
 	$(MAKE) $(MAKESILENT) -f src/assembly/CMakeFiles/assembly.dir/build.make src/assembly/CMakeFiles/assembly.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/assembly/CMakeFiles/assembly.dir/build.make src/assembly/CMakeFiles/assembly.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=1,2 "Built target assembly"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=17,18 "Built target assembly"
 .PHONY : src/assembly/CMakeFiles/assembly.dir/all
 
 # Build rule for subdir invocation for target.
 src/assembly/CMakeFiles/assembly.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 11
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 26
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/assembly/CMakeFiles/assembly.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : src/assembly/CMakeFiles/assembly.dir/rule
 
 # Convenience name for target.
@@ -418,21 +538,23 @@ src/assembly/CMakeFiles/assembly.dir/clean:
 # Target rules for target src/placeability/CMakeFiles/placeability.dir
 
 # All Build rule for target.
+src/placeability/CMakeFiles/placeability.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
 src/placeability/CMakeFiles/placeability.dir/all: src/stream/CMakeFiles/stream.dir/all
 src/placeability/CMakeFiles/placeability.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 src/placeability/CMakeFiles/placeability.dir/all: src/component/CMakeFiles/component.dir/all
 src/placeability/CMakeFiles/placeability.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+src/placeability/CMakeFiles/placeability.dir/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
 src/placeability/CMakeFiles/placeability.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 	$(MAKE) $(MAKESILENT) -f src/placeability/CMakeFiles/placeability.dir/build.make src/placeability/CMakeFiles/placeability.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/placeability/CMakeFiles/placeability.dir/build.make src/placeability/CMakeFiles/placeability.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=12,13 "Built target placeability"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=28,29 "Built target placeability"
 .PHONY : src/placeability/CMakeFiles/placeability.dir/all
 
 # Build rule for subdir invocation for target.
 src/placeability/CMakeFiles/placeability.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 16
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 31
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/placeability/CMakeFiles/placeability.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : src/placeability/CMakeFiles/placeability.dir/rule
 
 # Convenience name for target.
@@ -448,22 +570,24 @@ src/placeability/CMakeFiles/placeability.dir/clean:
 # Target rules for target src/genotyping/CMakeFiles/genotyping.dir
 
 # All Build rule for target.
+src/genotyping/CMakeFiles/genotyping.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
 src/genotyping/CMakeFiles/genotyping.dir/all: src/stream/CMakeFiles/stream.dir/all
 src/genotyping/CMakeFiles/genotyping.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 src/genotyping/CMakeFiles/genotyping.dir/all: src/component/CMakeFiles/component.dir/all
 src/genotyping/CMakeFiles/genotyping.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+src/genotyping/CMakeFiles/genotyping.dir/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
 src/genotyping/CMakeFiles/genotyping.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 src/genotyping/CMakeFiles/genotyping.dir/all: src/placeability/CMakeFiles/placeability.dir/all
 	$(MAKE) $(MAKESILENT) -f src/genotyping/CMakeFiles/genotyping.dir/build.make src/genotyping/CMakeFiles/genotyping.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/genotyping/CMakeFiles/genotyping.dir/build.make src/genotyping/CMakeFiles/genotyping.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=8,9 "Built target genotyping"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=24,25 "Built target genotyping"
 .PHONY : src/genotyping/CMakeFiles/genotyping.dir/all
 
 # Build rule for subdir invocation for target.
 src/genotyping/CMakeFiles/genotyping.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 18
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 33
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/genotyping/CMakeFiles/genotyping.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : src/genotyping/CMakeFiles/genotyping.dir/rule
 
 # Convenience name for target.
@@ -483,14 +607,14 @@ tests/CMakeFiles/test_stream.dir/all: src/stream/CMakeFiles/stream.dir/all
 tests/CMakeFiles/test_stream.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_stream.dir/build.make tests/CMakeFiles/test_stream.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=35,36 "Built target test_stream"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=52,53 "Built target test_stream"
 .PHONY : tests/CMakeFiles/test_stream.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_stream.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 10
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 11
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_stream.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_stream.dir/rule
 
 # Convenience name for target.
@@ -511,14 +635,14 @@ tests/CMakeFiles/test_component.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 tests/CMakeFiles/test_component.dir/all: src/component/CMakeFiles/component.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_component.dir/build.make tests/CMakeFiles/test_component.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=25,26 "Built target test_component"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=42,43 "Built target test_component"
 .PHONY : tests/CMakeFiles/test_component.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_component.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 12
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 13
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_component.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_component.dir/rule
 
 # Convenience name for target.
@@ -540,14 +664,14 @@ tests/CMakeFiles/test_local_realign.dir/all: src/component/CMakeFiles/component.
 tests/CMakeFiles/test_local_realign.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_local_realign.dir/build.make tests/CMakeFiles/test_local_realign.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=29,30 "Built target test_local_realign"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=46,47 "Built target test_local_realign"
 .PHONY : tests/CMakeFiles/test_local_realign.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_local_realign.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 14
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 15
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_local_realign.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_local_realign.dir/rule
 
 # Convenience name for target.
@@ -563,21 +687,23 @@ tests/CMakeFiles/test_local_realign.dir/clean:
 # Target rules for target tests/CMakeFiles/test_assembly.dir
 
 # All Build rule for target.
+tests/CMakeFiles/test_assembly.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
 tests/CMakeFiles/test_assembly.dir/all: src/stream/CMakeFiles/stream.dir/all
 tests/CMakeFiles/test_assembly.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 tests/CMakeFiles/test_assembly.dir/all: src/component/CMakeFiles/component.dir/all
 tests/CMakeFiles/test_assembly.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+tests/CMakeFiles/test_assembly.dir/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
 tests/CMakeFiles/test_assembly.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_assembly.dir/build.make tests/CMakeFiles/test_assembly.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_assembly.dir/build.make tests/CMakeFiles/test_assembly.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=23,24 "Built target test_assembly"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=40,41 "Built target test_assembly"
 .PHONY : tests/CMakeFiles/test_assembly.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_assembly.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 16
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 31
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_assembly.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_assembly.dir/rule
 
 # Convenience name for target.
@@ -593,22 +719,24 @@ tests/CMakeFiles/test_assembly.dir/clean:
 # Target rules for target tests/CMakeFiles/test_placeability.dir
 
 # All Build rule for target.
+tests/CMakeFiles/test_placeability.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
 tests/CMakeFiles/test_placeability.dir/all: src/stream/CMakeFiles/stream.dir/all
 tests/CMakeFiles/test_placeability.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 tests/CMakeFiles/test_placeability.dir/all: src/component/CMakeFiles/component.dir/all
 tests/CMakeFiles/test_placeability.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+tests/CMakeFiles/test_placeability.dir/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
 tests/CMakeFiles/test_placeability.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 tests/CMakeFiles/test_placeability.dir/all: src/placeability/CMakeFiles/placeability.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability.dir/build.make tests/CMakeFiles/test_placeability.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability.dir/build.make tests/CMakeFiles/test_placeability.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=31,32 "Built target test_placeability"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=48,49 "Built target test_placeability"
 .PHONY : tests/CMakeFiles/test_placeability.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_placeability.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 18
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 33
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_placeability.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_placeability.dir/rule
 
 # Convenience name for target.
@@ -624,22 +752,24 @@ tests/CMakeFiles/test_placeability.dir/clean:
 # Target rules for target tests/CMakeFiles/test_placeability_integration.dir
 
 # All Build rule for target.
+tests/CMakeFiles/test_placeability_integration.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
 tests/CMakeFiles/test_placeability_integration.dir/all: src/stream/CMakeFiles/stream.dir/all
 tests/CMakeFiles/test_placeability_integration.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 tests/CMakeFiles/test_placeability_integration.dir/all: src/component/CMakeFiles/component.dir/all
 tests/CMakeFiles/test_placeability_integration.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+tests/CMakeFiles/test_placeability_integration.dir/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
 tests/CMakeFiles/test_placeability_integration.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 tests/CMakeFiles/test_placeability_integration.dir/all: src/placeability/CMakeFiles/placeability.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability_integration.dir/build.make tests/CMakeFiles/test_placeability_integration.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_placeability_integration.dir/build.make tests/CMakeFiles/test_placeability_integration.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=33,34 "Built target test_placeability_integration"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=50,51 "Built target test_placeability_integration"
 .PHONY : tests/CMakeFiles/test_placeability_integration.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_placeability_integration.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 18
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 33
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_placeability_integration.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_placeability_integration.dir/rule
 
 # Convenience name for target.
@@ -655,23 +785,25 @@ tests/CMakeFiles/test_placeability_integration.dir/clean:
 # Target rules for target tests/CMakeFiles/test_genotyping.dir
 
 # All Build rule for target.
+tests/CMakeFiles/test_genotyping.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
 tests/CMakeFiles/test_genotyping.dir/all: src/stream/CMakeFiles/stream.dir/all
 tests/CMakeFiles/test_genotyping.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 tests/CMakeFiles/test_genotyping.dir/all: src/component/CMakeFiles/component.dir/all
 tests/CMakeFiles/test_genotyping.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+tests/CMakeFiles/test_genotyping.dir/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
 tests/CMakeFiles/test_genotyping.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 tests/CMakeFiles/test_genotyping.dir/all: src/placeability/CMakeFiles/placeability.dir/all
 tests/CMakeFiles/test_genotyping.dir/all: src/genotyping/CMakeFiles/genotyping.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_genotyping.dir/build.make tests/CMakeFiles/test_genotyping.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_genotyping.dir/build.make tests/CMakeFiles/test_genotyping.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=27,28 "Built target test_genotyping"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=44,45 "Built target test_genotyping"
 .PHONY : tests/CMakeFiles/test_genotyping.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_genotyping.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 20
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 35
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_genotyping.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_genotyping.dir/rule
 
 # Convenience name for target.
@@ -687,24 +819,26 @@ tests/CMakeFiles/test_genotyping.dir/clean:
 # Target rules for target tests/CMakeFiles/test_te_reverse_index.dir
 
 # All Build rule for target.
+tests/CMakeFiles/test_te_reverse_index.dir/all: third_party/abPOA/CMakeFiles/abpoa.dir/all
 tests/CMakeFiles/test_te_reverse_index.dir/all: src/stream/CMakeFiles/stream.dir/all
 tests/CMakeFiles/test_te_reverse_index.dir/all: src/gate1/CMakeFiles/gate1.dir/all
 tests/CMakeFiles/test_te_reverse_index.dir/all: src/component/CMakeFiles/component.dir/all
 tests/CMakeFiles/test_te_reverse_index.dir/all: src/local_realign/CMakeFiles/local_realign.dir/all
+tests/CMakeFiles/test_te_reverse_index.dir/all: src/abpoa_wrapper/CMakeFiles/abpoa_wrapper.dir/all
 tests/CMakeFiles/test_te_reverse_index.dir/all: src/assembly/CMakeFiles/assembly.dir/all
 tests/CMakeFiles/test_te_reverse_index.dir/all: src/placeability/CMakeFiles/placeability.dir/all
 tests/CMakeFiles/test_te_reverse_index.dir/all: src/genotyping/CMakeFiles/genotyping.dir/all
 tests/CMakeFiles/test_te_reverse_index.dir/all: src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_te_reverse_index.dir/build.make tests/CMakeFiles/test_te_reverse_index.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=37,38 "Built target test_te_reverse_index"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=54,55 "Built target test_te_reverse_index"
 .PHONY : tests/CMakeFiles/test_te_reverse_index.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_te_reverse_index.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 22
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 37
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_te_reverse_index.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_te_reverse_index.dir/rule
 
 # Convenience name for target.
@@ -725,14 +859,14 @@ src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all: src/gate1/CMakeFiles/g
 src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all: src/component/CMakeFiles/component.dir/all
 	$(MAKE) $(MAKESILENT) -f src/te_reverse_index/CMakeFiles/te_reverse_index.dir/build.make src/te_reverse_index/CMakeFiles/te_reverse_index.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/te_reverse_index/CMakeFiles/te_reverse_index.dir/build.make src/te_reverse_index/CMakeFiles/te_reverse_index.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=21,22 "Built target te_reverse_index"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles --progress-num=38,39 "Built target te_reverse_index"
 .PHONY : src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all
 
 # Build rule for subdir invocation for target.
 src/te_reverse_index/CMakeFiles/te_reverse_index.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 12
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 13
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/te_reverse_index/CMakeFiles/te_reverse_index.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/beegfs6/home1/miska/hl725/projects/PLACER/build/CMakeFiles 0
 .PHONY : src/te_reverse_index/CMakeFiles/te_reverse_index.dir/rule
 
 # Convenience name for target.

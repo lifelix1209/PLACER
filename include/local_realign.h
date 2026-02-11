@@ -120,7 +120,7 @@ public:
     };
 
     explicit GenomeAccessor(std::string_view fasta_path);
-    ~GenomeAccessor() = default;
+    ~GenomeAccessor();
 
     // Move semantics
     GenomeAccessor(GenomeAccessor&&) noexcept;
@@ -129,6 +129,9 @@ public:
     // Delete copy
     GenomeAccessor(const GenomeAccessor&) = delete;
     GenomeAccessor& operator=(const GenomeAccessor&) = delete;
+
+    // Check if file is open
+    bool is_open() const { return file_ != nullptr && file_->is_open(); }
 
     // Get reference sequence as view
     std::optional<SeqView> fetch(int chrom_tid, int32_t start, int32_t end) const;
@@ -139,9 +142,20 @@ public:
     const IndexEntry& get_index(int chrom_tid) const { return index_[chrom_tid]; }
     size_t num_chroms() const { return index_.size(); }
 
+    // [新增] 获取所有染色体名称
+    std::vector<std::string> get_contig_names() const {
+        std::vector<std::string> names;
+        names.reserve(index_.size());
+        for (const auto& entry : index_) {
+            names.push_back(entry.name);
+        }
+        return names;
+    }
+
 private:
     std::string fasta_path_;
     std::vector<IndexEntry> index_;
+    std::ifstream* file_ = nullptr;  // [新增] 持久化文件句柄
 
     bool load_fai(std::string_view fasta_path);
     std::optional<SeqView> fetch_region(int chrom_tid, int32_t start, int32_t end) const;
@@ -233,6 +247,14 @@ struct PlaceabilityReport {
 };
 
 /**
+ * Realignment result: contains both evidence and placeability report
+ */
+struct RealignResult {
+    PlaceabilityReport report;
+    std::vector<LocusEvidence> evidence;
+};
+
+/**
  * Industrial-grade realignment configuration
  */
 struct RealignConfig {
@@ -291,6 +313,24 @@ public:
      * Process single component (thread-safe)
      */
     PlaceabilityReport realign_component(
+        Component& component,
+        const std::vector<ReadSketch>& reads,
+        const GenomeAccessor& genome);
+
+    /**
+     * [新增] 收集 component 的 LocusEvidence
+     * 返回每个 read × 每个 locus 的证据，用于 genotyping
+     */
+    std::vector<LocusEvidence> collect_evidence(
+        Component& component,
+        const std::vector<ReadSketch>& reads,
+        const GenomeAccessor& genome);
+
+    /**
+     * [新增] 真正的 realign + evidence 收集
+     * 返回 RealignResult，包含 evidence 和 placeability report
+     */
+    RealignResult realign_and_collect(
         Component& component,
         const std::vector<ReadSketch>& reads,
         const GenomeAccessor& genome);
@@ -371,6 +411,17 @@ private:
     AlignmentResult dispatch_align_(
         std::string_view query,
         std::string_view target);
+
+    // [新增] 快速 Hamming 距离对齐（短序列）
+    AlignmentResult hamming_align_(
+        std::string_view query,
+        std::string_view target);
+
+    // [新增] 带状对齐（中等序列）
+    AlignmentResult banded_align_(
+        std::string_view query,
+        std::string_view target,
+        int bandwidth);
 
     // SIMD-accelerated path
     AlignmentResult simd_align_(
