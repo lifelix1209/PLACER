@@ -1,2 +1,0 @@
-/usr/bin/ar qc libabpoa_wrapper.a CMakeFiles/abpoa_wrapper.dir/abpoa_wrapper.cpp.o
-/usr/bin/ranlib libabpoa_wrapper.a

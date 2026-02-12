@@ -1,0 +1,3 @@
+chrom	pos	family	event_id
+chrTEST	138000	NA	F1_FP_RANDOM_INS
+chrTEST	166000	NA	F1_FP_POLYA_SOFTCLIP

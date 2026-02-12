@@ -1,2 +1,0 @@
-/usr/bin/ar qc libgenotyping.a CMakeFiles/genotyping.dir/genotyping.cpp.o
-/usr/bin/ranlib libgenotyping.a

@@ -1,0 +1,434 @@
+#ifndef PLACER_PIPELINE_H
+#define PLACER_PIPELINE_H
+
+#include "bam_io.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace placer {
+
+enum CandidateClassMask : uint8_t {
+    kCandidateSoftClip = 1 << 0,
+    kCandidateSplitSaSupplementary = 1 << 1,
+    kCandidateLongInsertion = 1 << 2
+};
+
+struct BreakpointCandidate {
+    std::string chrom;
+    int32_t pos = -1;
+    bool is_reverse = false;
+
+    int32_t anchor_len = 0;
+    int32_t clip_len = 0;
+    int32_t ins_len = 0;
+
+    std::string read_id;
+    size_t read_index = 0;
+    uint8_t class_mask = 0;
+};
+
+struct ComponentCall {
+    std::string chrom;
+    int32_t tid = -1;
+    int32_t bin_start = -1;
+    int32_t bin_end = -1;
+    int32_t anchor_pos = -1;
+
+    std::vector<size_t> read_indices;
+    std::vector<size_t> soft_clip_read_indices;
+    std::vector<size_t> split_sa_read_indices;
+    std::vector<size_t> insertion_read_indices;
+    std::vector<BreakpointCandidate> breakpoint_candidates;
+};
+
+struct LocusEvidence {
+    int32_t tid = -1;
+    int32_t pos = -1;
+    size_t read_index = 0;
+    double normalized_score = 0.0;
+};
+
+struct AssemblyCall {
+    int32_t tid = -1;
+    int32_t pos = -1;
+    std::string consensus;
+};
+
+enum class InsertionFragmentSource : uint8_t {
+    kUnknown = 0,
+    kClipRefLeft = 1,   // soft-clip on reference-left side
+    kClipRefRight = 2,  // soft-clip on reference-right side
+    kCigarInsertion = 3,
+    kSplitSa = 4
+};
+
+struct InsertionFragment {
+    std::string fragment_id;
+    std::string chrom;
+    int32_t anchor_pos = -1;
+
+    std::string read_id;
+    size_t read_index = 0;
+    uint8_t class_mask = 0;
+    bool is_reverse = false;  // BAM_FREVERSE
+
+    InsertionFragmentSource source = InsertionFragmentSource::kUnknown;
+    int32_t start = -1;  // read coordinate (0-based)
+    int32_t length = 0;
+
+    std::string sequence;
+};
+
+struct FragmentTEHit {
+    std::string fragment_id;
+    std::string te_name;
+
+    int32_t fragment_len = 0;
+    int32_t aligned_len_est = 0;
+    double kmer_support = 0.0;  // quick estimate [0,1], not sequence identity
+    double coverage = 0.0;      // quick estimate [0,1]
+
+    int32_t hit_kmers = 0;
+    int32_t total_kmers = 0;
+};
+
+struct ClusterTECall {
+    std::string te_name;
+    double vote_fraction = 0.0;
+    double median_identity = 0.0;  // median fragment k-mer support
+    int32_t fragment_count = 0;
+    bool passed = false;
+};
+
+struct PlaceabilityReport {
+    int32_t tid = -1;
+    int32_t pos = -1;
+    int32_t support_reads = 0;
+    double delta_score = 0.0;
+    int32_t tier = 3;
+};
+
+struct GenotypeCall {
+    int32_t tid = -1;
+    int32_t pos = -1;
+    std::string genotype = "./.";
+    double af = 0.0;
+    int32_t gq = 0;
+};
+
+struct FinalCall {
+    std::string chrom;
+    int32_t tid = -1;
+    int32_t pos = -1;
+
+    int32_t window_start = -1;
+    int32_t window_end = -1;
+
+    std::string te_name;
+    double te_vote_fraction = 0.0;
+    double te_median_identity = 0.0;
+    int32_t te_fragment_count = 0;
+
+    int32_t tier = 3;
+    int32_t support_reads = 0;
+    std::string genotype = "./.";
+    double af = 0.0;
+    int32_t gq = 0;
+};
+
+struct PipelineConfig {
+    std::string bam_path;
+    std::string reference_fasta_path;
+    std::string te_fasta_path;
+
+    int32_t bam_threads = 2;
+    int64_t progress_interval = 100000;
+
+    int32_t window_size = 10000;
+    int32_t bin_size = 10000;
+
+    // Module 2.1: insertion fragment extraction (optional).
+    std::string ins_fragments_fasta_path = "ins_fragments.fasta";
+    int32_t min_soft_clip_for_seq_extract = 50;
+    int32_t min_long_ins_for_seq_extract = 50;
+    int32_t min_sa_aln_len_for_seq_extract = 50;
+    int32_t max_sa_per_read = 3;
+
+    // Module 2.2: quick TE classification (optional, requires te_fasta_path).
+    std::string ins_fragment_hits_tsv_path = "ins_fragment_hits.tsv";
+    int32_t te_kmer_size = 15;
+    double te_vote_fraction_min = 0.60;
+    double te_median_identity_min = 0.60;
+    int32_t te_min_fragments_for_vote = 3;
+
+    bool enable_parallel = false;
+    size_t batch_size = 1000;
+};
+
+struct PipelineResult {
+    int64_t total_reads = 0;
+    int64_t gate1_passed = 0;
+    int64_t processed_bins = 0;
+    int64_t built_components = 0;
+    int64_t evidence_rows = 0;
+    int64_t assembled_calls = 0;
+    int64_t placeability_calls = 0;
+    int64_t genotype_calls = 0;
+
+    std::vector<FinalCall> final_calls;
+};
+
+class IGate1Module {
+public:
+    virtual ~IGate1Module() = default;
+    virtual bool pass_preliminary(const ReadView& read) const = 0;
+};
+
+class IComponentModule {
+public:
+    virtual ~IComponentModule() = default;
+
+    virtual std::vector<ComponentCall> build(
+        const std::vector<BamRecordPtr>& bin_records,
+        const std::string& chrom,
+        int32_t tid,
+        int32_t bin_start,
+        int32_t bin_end) const = 0;
+};
+
+class ILocalRealignModule {
+public:
+    virtual ~ILocalRealignModule() = default;
+
+    virtual std::vector<LocusEvidence> collect(
+        const ComponentCall& component,
+        const std::vector<BamRecordPtr>& bin_records) const = 0;
+};
+
+class IAssemblyModule {
+public:
+    virtual ~IAssemblyModule() = default;
+
+    virtual AssemblyCall assemble(
+        const ComponentCall& component,
+        const std::vector<LocusEvidence>& evidence,
+        const std::vector<BamRecordPtr>& bin_records) const = 0;
+};
+
+class IPlaceabilityModule {
+public:
+    virtual ~IPlaceabilityModule() = default;
+
+    virtual PlaceabilityReport score(
+        const AssemblyCall& assembly,
+        const std::vector<LocusEvidence>& evidence) const = 0;
+};
+
+class IGenotypingModule {
+public:
+    virtual ~IGenotypingModule() = default;
+
+    virtual GenotypeCall genotype(
+        const AssemblyCall& assembly,
+        const PlaceabilityReport& placeability,
+        const std::vector<LocusEvidence>& evidence) const = 0;
+};
+
+class IInsertionFragmentModule {
+public:
+    virtual ~IInsertionFragmentModule() = default;
+
+    virtual std::vector<InsertionFragment> extract(
+        const ComponentCall& component,
+        const std::vector<BamRecordPtr>& bin_records) const = 0;
+};
+
+class ITEQuickClassifierModule {
+public:
+    virtual ~ITEQuickClassifierModule() = default;
+
+    virtual bool is_enabled() const = 0;
+    virtual std::vector<FragmentTEHit> classify(
+        const std::vector<InsertionFragment>& fragments) const = 0;
+    virtual ClusterTECall vote_cluster(
+        const std::vector<FragmentTEHit>& hits) const = 0;
+};
+
+class LinearBinComponentModule final : public IComponentModule {
+public:
+    std::vector<ComponentCall> build(
+        const std::vector<BamRecordPtr>& bin_records,
+        const std::string& chrom,
+        int32_t tid,
+        int32_t bin_start,
+        int32_t bin_end) const override;
+};
+
+class SimpleLocalRealignModule final : public ILocalRealignModule {
+public:
+    std::vector<LocusEvidence> collect(
+        const ComponentCall& component,
+        const std::vector<BamRecordPtr>& bin_records) const override;
+};
+
+class LazyDecodeAssemblyModule final : public IAssemblyModule {
+public:
+    AssemblyCall assemble(
+        const ComponentCall& component,
+        const std::vector<LocusEvidence>& evidence,
+        const std::vector<BamRecordPtr>& bin_records) const override;
+};
+
+class SimplePlaceabilityModule final : public IPlaceabilityModule {
+public:
+    PlaceabilityReport score(
+        const AssemblyCall& assembly,
+        const std::vector<LocusEvidence>& evidence) const override;
+};
+
+class SimpleGenotypingModule final : public IGenotypingModule {
+public:
+    GenotypeCall genotype(
+        const AssemblyCall& assembly,
+        const PlaceabilityReport& placeability,
+        const std::vector<LocusEvidence>& evidence) const override;
+};
+
+class CigarInsertionFragmentModule final : public IInsertionFragmentModule {
+public:
+    explicit CigarInsertionFragmentModule(PipelineConfig config);
+
+    std::vector<InsertionFragment> extract(
+        const ComponentCall& component,
+        const std::vector<BamRecordPtr>& bin_records) const override;
+
+private:
+    PipelineConfig config_;
+};
+
+class SplitSAFragmentModule final : public IInsertionFragmentModule {
+public:
+    explicit SplitSAFragmentModule(PipelineConfig config);
+
+    std::vector<InsertionFragment> extract(
+        const ComponentCall& component,
+        const std::vector<BamRecordPtr>& bin_records) const override;
+
+private:
+    PipelineConfig config_;
+};
+
+class TEKmerQuickClassifierModule final : public ITEQuickClassifierModule {
+public:
+    explicit TEKmerQuickClassifierModule(PipelineConfig config);
+
+    bool is_enabled() const override;
+    std::vector<FragmentTEHit> classify(
+        const std::vector<InsertionFragment>& fragments) const override;
+    ClusterTECall vote_cluster(
+        const std::vector<FragmentTEHit>& hits) const override;
+
+private:
+    PipelineConfig config_;
+    struct Index;
+    std::shared_ptr<const Index> index_;
+};
+
+class Pipeline {
+public:
+    Pipeline(
+        PipelineConfig config,
+        std::unique_ptr<BamStreamReader> bam_reader,
+        std::unique_ptr<IGate1Module> gate1_module,
+        std::unique_ptr<IComponentModule> component_module,
+        std::unique_ptr<ILocalRealignModule> local_realign_module,
+        std::unique_ptr<IAssemblyModule> assembly_module,
+        std::unique_ptr<IPlaceabilityModule> placeability_module,
+        std::unique_ptr<IGenotypingModule> genotyping_module,
+        std::unique_ptr<IInsertionFragmentModule> ins_fragment_module,
+        std::unique_ptr<ITEQuickClassifierModule> te_classifier_module);
+
+    PipelineResult run() const;
+
+private:
+    struct WindowCoord {
+        int32_t tid = -1;
+        int32_t pos = -1;
+    };
+
+    struct StreamingState {
+        std::deque<WindowCoord> active_window;
+        std::vector<BamRecordPtr> current_bin_records;
+        int32_t current_tid = -1;
+        int32_t current_bin_index = -1;
+    };
+
+    PipelineResult run_streaming() const;
+    PipelineResult run_parallel() const;
+
+    void consume_record(
+        BamRecordPtr&& record,
+        StreamingState& state,
+        PipelineResult& result) const;
+
+    void flush_current_bin(
+        StreamingState& state,
+        PipelineResult& result) const;
+
+    void process_bin_records(
+        std::vector<BamRecordPtr>&& bin_records,
+        int32_t tid,
+        int32_t bin_index,
+        PipelineResult& result) const;
+
+    PipelineConfig config_;
+    std::unique_ptr<BamStreamReader> bam_reader_;
+    std::unique_ptr<IGate1Module> gate1_module_;
+    std::unique_ptr<IComponentModule> component_module_;
+    std::unique_ptr<ILocalRealignModule> local_realign_module_;
+    std::unique_ptr<IAssemblyModule> assembly_module_;
+    std::unique_ptr<IPlaceabilityModule> placeability_module_;
+    std::unique_ptr<IGenotypingModule> genotyping_module_;
+    std::unique_ptr<IInsertionFragmentModule> ins_fragment_module_;
+    std::unique_ptr<ITEQuickClassifierModule> te_classifier_module_;
+};
+
+class PipelineBuilder {
+public:
+    explicit PipelineBuilder(PipelineConfig config);
+
+    PipelineBuilder& with_bam_reader(std::unique_ptr<BamStreamReader> reader);
+    PipelineBuilder& with_gate1_module(std::unique_ptr<IGate1Module> module);
+    PipelineBuilder& with_component_module(std::unique_ptr<IComponentModule> module);
+    PipelineBuilder& with_local_realign_module(std::unique_ptr<ILocalRealignModule> module);
+    PipelineBuilder& with_assembly_module(std::unique_ptr<IAssemblyModule> module);
+    PipelineBuilder& with_placeability_module(std::unique_ptr<IPlaceabilityModule> module);
+    PipelineBuilder& with_genotyping_module(std::unique_ptr<IGenotypingModule> module);
+    PipelineBuilder& with_insertion_fragment_module(std::unique_ptr<IInsertionFragmentModule> module);
+    PipelineBuilder& with_te_classifier_module(std::unique_ptr<ITEQuickClassifierModule> module);
+
+    std::unique_ptr<Pipeline> build();
+
+private:
+    PipelineConfig config_;
+    std::unique_ptr<BamStreamReader> bam_reader_;
+    std::unique_ptr<IGate1Module> gate1_module_;
+    std::unique_ptr<IComponentModule> component_module_;
+    std::unique_ptr<ILocalRealignModule> local_realign_module_;
+    std::unique_ptr<IAssemblyModule> assembly_module_;
+    std::unique_ptr<IPlaceabilityModule> placeability_module_;
+    std::unique_ptr<IGenotypingModule> genotyping_module_;
+    std::unique_ptr<IInsertionFragmentModule> ins_fragment_module_;
+    std::unique_ptr<ITEQuickClassifierModule> te_classifier_module_;
+};
+
+std::unique_ptr<Pipeline> build_default_pipeline(const PipelineConfig& config);
+
+}  // namespace placer
+
+#endif  // PLACER_PIPELINE_H

@@ -1,9 +1,1 @@
-StreamTest 33 0.00122544
-ComponentTest 29 0.000590568
-LocalRealignTest 29 0.000235423
-AssemblyTest 26 0.000369724
-PlaceabilityTest 17 0.000320019
-PlaceabilityIntegrationTest 16 0.000427942
-GenotypingTest 15 0.000489465
-TEReverseIndexTest 12 0.000464238
 ---

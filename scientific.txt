@@ -1,0 +1,15 @@
+#PLACER streaming pipeline summary
+total_reads	79
+gate1_passed	35
+processed_bins	4
+components	4
+evidence_rows	35
+assemblies	4
+placeability_calls	4
+genotype_calls	4
+
+#chrom	tid	pos	window_start	window_end	te	te_vote_frac	te_median_ident	te_fragments	tier	support_reads	gt	af	gq
+chrTEST	0	75000	70000	80000	NA	0	0	0	1	11	0/1	0.55	72
+chrTEST	0	85000	80000	90000	NA	0	0	0	1	7	0/1	0.35	87
+chrTEST	0	95000	90000	100000	NA	0	0	0	1	16	1/1	0.8	73
+chrTEST	0	105000	100000	110000	NA	0	0	0	1	1	0/0	0.05	50
