@@ -128,12 +128,27 @@ CMakeFiles/placer_pipeline.dir/src/component/te_quick_classifier.cpp.s: cmake_fo
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/placer_pipeline.dir/src/component/te_quick_classifier.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/src/component/te_quick_classifier.cpp -o CMakeFiles/placer_pipeline.dir/src/component/te_quick_classifier.cpp.s
 
+CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o: CMakeFiles/placer_pipeline.dir/flags.make
+CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o: /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/src/component/te_consensus_module.cpp
+CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o: CMakeFiles/placer_pipeline.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o -MF CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o.d -o CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o -c /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/src/component/te_consensus_module.cpp
+
+CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/src/component/te_consensus_module.cpp > CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.i
+
+CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/src/component/te_consensus_module.cpp -o CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.s
+
 # Object files for target placer_pipeline
 placer_pipeline_OBJECTS = \
 "CMakeFiles/placer_pipeline.dir/src/pipeline/pipeline.cpp.o" \
 "CMakeFiles/placer_pipeline.dir/src/gate1/gate1_module.cpp.o" \
 "CMakeFiles/placer_pipeline.dir/src/component/insert_fragment_module.cpp.o" \
-"CMakeFiles/placer_pipeline.dir/src/component/te_quick_classifier.cpp.o"
+"CMakeFiles/placer_pipeline.dir/src/component/te_quick_classifier.cpp.o" \
+"CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o"
 
 # External object files for target placer_pipeline
 placer_pipeline_EXTERNAL_OBJECTS =
@@ -142,9 +157,10 @@ libplacer_pipeline.a: CMakeFiles/placer_pipeline.dir/src/pipeline/pipeline.cpp.o
 libplacer_pipeline.a: CMakeFiles/placer_pipeline.dir/src/gate1/gate1_module.cpp.o
 libplacer_pipeline.a: CMakeFiles/placer_pipeline.dir/src/component/insert_fragment_module.cpp.o
 libplacer_pipeline.a: CMakeFiles/placer_pipeline.dir/src/component/te_quick_classifier.cpp.o
+libplacer_pipeline.a: CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o
 libplacer_pipeline.a: CMakeFiles/placer_pipeline.dir/build.make
 libplacer_pipeline.a: CMakeFiles/placer_pipeline.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Linking CXX static library libplacer_pipeline.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Linking CXX static library libplacer_pipeline.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/placer_pipeline.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/placer_pipeline.dir/link.txt --verbose=$(VERBOSE)
 

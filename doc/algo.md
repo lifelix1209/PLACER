@@ -1,371 +1,339 @@
-# PLACER 当前算法逻辑说明（基于现有代码）
+# PLACER 项目结构与当前算法逻辑（按现有代码）
 
-> 这份文档只描述“现在代码里真正执行的逻辑”，不写理想化流程。  
-> 入口代码：`src/main.cpp`。
+本文档只描述当前仓库里已经实现并会执行的逻辑，基于以下主干代码：
 
----
-
-## 1. 总览：主流程到底在做什么
-
-当前主程序不是纯 streaming 模式，而是：
-
-1. 先把 BAM 读成内存里的 `std::vector<ReadSketch>`。
-2. 然后按 phase 串行执行：
-   - Phase 2: Gate1 过滤
-   - Phase 3: 组件构建（Component）
-   - Phase 4: 局部重比对（LocusEvidence）
-   - Phase 5: 组装（Contig + 结构折叠）
-   - Phase 8: TE reverse index 召回（可选）
-   - Phase 6: Placeability
-   - Phase 7: Genotyping
-   - Enrichment: TE 注释 + TSD + MAPQ
-   - TE-specific tier 重打分
-   - 写出 `scientific.txt`
-
-主执行顺序在 `PLACERPipeline::run()`，文件：`src/main.cpp`。
+- `src/main.cpp`
+- `src/pipeline/pipeline.cpp`
+- `src/gate1/gate1_module.cpp`
+- `src/component/insert_fragment_module.cpp`
+- `src/component/te_quick_classifier.cpp`
+- `src/stream/bam_io.cpp`
+- `include/pipeline.h`
+- `include/gate1_module.h`
+- `include/bam_io.h`
 
 ---
 
-## 2. 核心数据对象与不变量
+## 1. 项目结构
 
-### 2.1 `ReadSketch`（`include/bam_reader.h`）
-- 是全流程 read 级基础对象。
-- 包含：`tid/pos/end_pos`、`cigar_ops`、`sequence`、`SA`、`mapq`、mate 信息（`mtid/mpos/isize/proper_pair`）等。
-- `breakpoint` 字段类型 `ReadBreakpoint`，默认构造里 `read_pos/ref_pos` 为 `-1`，`is_valid=false`。
+### 1.1 顶层目录
 
-### 2.2 `Component`（`include/component_builder.h`）
-- 一个局部断点簇。
-- 包含 `read_indices`、`start/end/centroid`、`locus_set` 以及锚点统计。
-- 后续 Phase 4/5 都围绕 component 处理。
+- `src/`：核心实现
+- `include/`：对外头文件与跨模块数据结构
+- `doc/`：设计与实现说明
+- `test_data/`：本地样例数据
+- `third_party/abPOA/`：第三方依赖代码（当前主流程未直接调用）
+- `build/`：CMake 构建产物
 
-### 2.3 `LocusEvidence`（`include/local_realign.h`）
-- `read_idx × locus_pos` 级证据。
-- 含 `normalized_score`、`weighted_identity`、`evidence_bits` 等。
+### 1.2 `src/` 模块划分
 
-### 2.4 `Contig` 与 `StructuralRepresentative`（`include/assembly.h`）
-- `Contig` 是 Phase 5 的直接产物，包含：
-  - `sequence`（`up+ins+down` 的 POA 共识）
-  - `ins_seq`（仅插入片段集合的共识）
-  - `up_flank_seq/down_flank_seq`
-- `StructuralRepresentative` 是结构折叠后代表，后续分型、输出都用它。
+- `src/main.cpp`
+  - 参数解析
+  - 从环境变量读取并行开关
+  - 构建并运行 `Pipeline`
+  - 输出 `scientific.txt`
+- `src/stream/bam_io.cpp`
+  - htslib 流式读取 BAM
+  - `ReadView` 提供零拷贝字段访问与按需序列解码
+- `src/gate1/gate1_module.cpp`
+  - Gate1 预筛模块：信号优先 + 三道保险丝
+- `src/pipeline/pipeline.cpp`
+  - 串流/并行调度
+  - 按 `bin` 聚合并驱动各阶段
+  - 组装最终 `FinalCall`
+- `src/component/insert_fragment_module.cpp`
+  - 从组件内 read 提取插入相关片段（clip / I / SA）
+  - 可选写入 `ins_fragments.fasta`
+- `src/component/te_quick_classifier.cpp`
+  - 基于 TE FASTA 构建 unique k-mer 索引
+  - 对片段做快速分类并进行组件级投票
+  - 可选写入 `ins_fragment_hits.tsv`
 
-### 2.5 `LocusCallBundle`（`src/main.cpp`）
-- 主流程内部汇总对象：把 representative / evidence / placeability / genotype / TE注释 / TSD /候选统计绑在一起。
+### 1.3 `include/` 关键接口
+
+- `include/bam_io.h`
+  - `BamStreamReader`、`ReadView`、`BamRecordPtr`
+- `include/pipeline.h`
+  - 核心数据结构：`ComponentCall`、`InsertionFragment`、`FragmentTEHit`、`FinalCall` 等
+  - 模块接口：`IGate1Module` 到 `ITEQuickClassifierModule`
+  - 默认模块类声明与 `PipelineBuilder`
+- `include/gate1_module.h`
+  - `Gate1SignalConfig` 与 `SignalFirstGate1Module`
 
 ---
 
-## 3. 各模块算法细节
+## 2. 端到端执行流程
 
-## 3.1 BAM 读取（Phase 1）
+入口 `main()` 调用 `Pipeline::run()`，主流程如下：
 
-文件：`src/stream/bam_reader.cpp`
+1. 打开 BAM，流式读取每条对齐记录（跳过 unmapped / secondary）。
+2. 对每条记录执行 Gate1 预筛。
+3. 通过 Gate1 的记录按坐标分桶（`bin_size`，默认 10kb）。
+4. 每个 bin 触发一次组件处理（当前实现为“一个 bin 一个 component”）。
+5. 对每个 component 顺序执行：
+   - 插入片段提取（Module 2.1）
+   - TE 快速分类与投票（Module 2.2，可选）
+   - 局部证据收集（SimpleLocalRealign）
+   - 组装（LazyDecodeAssembly）
+   - placeability 打分
+   - 基因分型
+6. 汇总为 `FinalCall` 列表，最后写出 `scientific.txt`。
+
+---
+
+## 3. 调度与数据流细节
+
+### 3.1 两种运行模式
+
+- 串流模式（默认）：`run_streaming()`
+- 并行模式：设置环境变量 `PLACER_PARALLEL=1` 后走 `run_parallel()`
+  - 生产者线程：BAM 读取并按 `batch_size` 入队
+  - 消费者线程：顺序消费 batch，执行同样的 `consume_record()`
+
+并行模式当前是 1 个 worker，不是多 worker fan-out。
+
+### 3.2 `consume_record()` 行为
+
+对每条记录：
+
+1. `gate1_module_->pass_preliminary()` 判断是否保留。
+2. 维护一个 `active_window`（按 `window_size`，默认 10kb，当前主要用于窗口状态维护）。
+3. 计算 `bin_index = pos / bin_size`。
+4. 染色体或 bin 切换时，先 `flush_current_bin()`。
+5. 把记录移动进当前 bin 缓冲。
+
+### 3.3 `process_bin_records()` 行为
+
+1. 生成 `bin_start/bin_end/chrom`。
+2. `component_module_->build(...)` 输出 `ComponentCall` 列表。
+3. 对每个 component：
+   - `ins_fragment_module_->extract(...)`
+   - 若 TE 分类启用：
+     - `te_classifier_module_->classify(...)`
+     - `te_classifier_module_->vote_cluster(...)`
+   - `local_realign_module_->collect(...)`
+   - `assembly_module_->assemble(...)`
+   - `placeability_module_->score(...)`
+   - `genotyping_module_->genotype(...)`
+4. 组装 `FinalCall`：
+   - TE 投票 `passed` 时才写 `te_name`
+   - 其余字段总是写入（tier/support/gt/af/gq 等）
+
+---
+
+## 4. 各阶段算法逻辑
+
+## 4.1 BAM I/O（`src/stream/bam_io.cpp`）
+
+- 使用 htslib：`hts_open + sam_hdr_read + sam_read1`
+- 过滤规则：
+  - 丢弃 `BAM_FUNMAP`
+  - 丢弃 `BAM_FSECONDARY`
+- `ReadView` 提供：
+  - 直接访问 `tid/pos/mapq/flag/cigar/tag`
+  - `decode_subsequence(start,len)` 局部解码
+  - `decode_sequence()` 全长解码（仅在 assembly 占位模块使用）
+
+这是“零拷贝 + 延迟解码”路线。
+
+## 4.2 Gate1（`SignalFirstGate1Module`）
+
+参数默认值见 `Gate1SignalConfig`：
+
+- `min_seq_len = 50`
+- `long_soft_clip_min = 100`
+- `background_mapq_min = 20`
+- `min_anchor_match_bases = 200`
+- `min_clip_flank_match_bases = 120`
+- `max_nm_rate = 0.20`
 
 逻辑：
-- 逐条读 BAM，填充 `ReadSketch`。
-- 解析 CIGAR：
-  - 计算 `end_pos`
-  - 统计 `total_clip_len`
-  - 标记 `has_large_insertion`（`I > 50bp`）
-- 抽取 read 序列、SA/MD tag 信息。
 
-注意：
-- Phase 1 并不做候选筛选，只做数据标准化和轻量特征预提取。
+1. 硬过滤：unmapped / secondary / 序列太短直接拒绝。
+2. 信号判定：满足以下任一即视为有信号：
+   - supplementary flag
+   - SA tag
+   - 长 soft-clip（`max_soft_clip >= 100`）
+3. 无信号时采用背景保留：`MAPQ > 20` 才保留。
+4. 有信号时应用三道保险丝：
+   - Fuse1：`max_match_block >= 200`
+   - Fuse2：长 clip 侧必须有足够邻接匹配锚（`>=120`）
+   - Fuse3：若有 NM tag，`NM / total_match_bases <= 0.20`
 
----
+## 4.3 Component（`LinearBinComponentModule`）
 
-## 3.2 Gate1 过滤（Phase 2）
+当前实现是 MVP：
 
-文件：`src/gate1/gate1.cpp`，调用在 `src/main.cpp` 的 `gate1_filter()`
+- 每个 bin 只产生 1 个 component。
+- `anchor_pos = (bin_start + bin_end) / 2`。
+- `read_indices` 包含该 bin 全部 read 索引。
 
-### 核心方法
-- 从 read 抽 probe：
-  - 两端 probe（默认 `probe_len=200`）
-  - CIGAR 驱动 probe：长 soft-clip、长 insertion 周边
-- probe 用 `HashTEIndex` 做 k-mer 命中统计。
-- 判定通过条件：
-  - 命中满足 `min_hit_count/min_hit_density`，或
-  - 总命中超过 `min_total_hits`。
+同时做三类 read 标记：
 
-### 当前实现特性
-- 有 SA 的 read 直接放行。
-- `filtered_reads` 和 `filtered_probes` 强制索引对齐（后面 reverse index 依赖这个对齐）。
+- split/SA 类：有 SA tag 或 supplementary。
+- soft-clip 类：该 read 的最大 soft-clip `>= 20`。
+- long insertion 类：该 read 的最大 CIGAR `I >= 50`。
 
----
+`breakpoint_candidates` 结构已预留，但当前未填充。
 
-## 3.3 Component 构建（Phase 3）
+## 4.4 插入片段提取（Module 2.1）
 
-文件：`src/component/component_builder.cpp`
+实现：`CigarInsertionFragmentModule + SplitSAFragmentModule`
 
-### Step A: 多源 Anchor 提取
-- 信号来源：
-  - clip 锚点（5'/3'）
-  - 大插入 `I`
-  - 大缺失 `D`
-  - SA 锚点（含跨染色体补充锚点）
+输入：一个 `ComponentCall` + 对应 `bin_records`  
+输出：`std::vector<InsertionFragment>`
 
-### Step B: read 内合并
-- `anchor_merge_distance` 内合并；
-- 优先级 `SA > CLIP > INS > DEL`，位置做均值更新。
+片段来源：
 
-### Step C: 密度聚类 + 递归 breaker
-- 先按 `cluster_gap` 做线性聚类；
-- 簇跨度太大时（`max_cluster_span`）触发递归 breaker：
-  - 优先找“密度谷”，回退最大 gap；
-  - 子簇比例要达 `min_split_ratio`。
+1. soft-clip 片段
+   - 阈值：`min_soft_clip_for_seq_extract`（默认 50）
+   - leading/trailing clip 分别提取
+2. 长插入片段（CIGAR `I`）
+   - 阈值：`min_long_ins_for_seq_extract`（默认 50）
+   - 每条 read 最多保留长度最大的 2 个 `I`
+3. SA 片段（MVP）
+   - 解析 `SA:Z`
+   - 仅主比对记录解析（跳过 supplementary/secondary）
+   - 要求 SA CIGAR 能推断 query 区间且长度满足阈值
+   - 每条 read 最多 `max_sa_per_read`（默认 3）
 
-### Step D: 构建 `Component`
-- 计算 `centroid`、`density`、`read_count`、证据计数与 `evidence_score`。
+输出副作用：
 
----
+- 若 `ins_fragments_fasta_path` 非空（默认 `ins_fragments.fasta`）：
+  - 构造时清空文件
+  - 运行时追加写入 FASTA
+  - 使用互斥锁保证并行下写文件安全
 
-## 3.4 局部重比对（Phase 4）
+## 4.5 TE 快速分类（Module 2.2）
 
-文件：`src/local_realign/local_realign.cpp`
+实现：`TEKmerQuickClassifierModule`
 
-主调用：`realign_and_collect(component, reads, genome)`
+### 索引构建
 
-### Step A: 生成候选 loci
-- 从 component 的 read 集合中收集：
-  - read `pos`
-  - read `end_pos`
-  - SA 位置（同染色体）
-- 在 `merge_distance=50bp` 内合并，按强度排序，限制 top-k。
+- 输入：`te_fasta_path`（为空则模块禁用）
+- k-mer 长度：`te_kmer_size`（默认 15）
+- 对每条 TE 序列及其反向互补都建索引。
+- 仅保留由 `A/C/G/T` 构成的 k-mer。
+- 索引语义：
+  - k-mer 只出现在一个 TE：记录该 TE id
+  - 出现在多个 TE：标记为歧义（`-1`）
 
-### Step B: 证据生成（read × locus）
-- 尝试真实序列比对（局部 affine gap）：
-  - 从参考取 `locus ± flank_length`
-  - 从 read 中取对应片段
-  - 算 `normalized_score`、identity、indel
-- 比对失败则退化为距离分：
-  - `1 - dist/search_window`
+### 片段分类
 
-### Step C: 聚合成 `PlaceabilityReport`
-- 对每个 locus 聚合分数，算 best/second、delta、confidence。
-- 同时输出 strand 统计和 tier 初判（1~5）。
+对每个 `InsertionFragment`：
 
-当前状态：
-- 仍有“无法比对时用距离分回退”的路径，不是纯序列对齐路径。
+1. 扫片段所有有效 k-mer，统计各 TE 命中次数。
+2. 选命中数最多的 TE 作为 best。
+3. 计算：
+   - `hit_kmers`
+   - `total_kmers`
+   - `coverage = hit_kmers / total_kmers`
+   - `kmer_support = coverage`
+   - `aligned_len_est`（best TE 连续命中 run 转换）
 
----
+### component 投票
 
-## 3.5 Assembly（Phase 5）
+- 仅对 `te_name` 非空命中参与投票。
+- `fragment_count < te_min_fragments_for_vote`（默认 3）直接失败。
+- 票数最高 TE 为 `best_te`。
+- `vote_fraction = best_votes / fragment_count`
+- `median_identity = median(kmer_support(best_te_hits))`
+- 通过条件（默认）：
+  - `vote_fraction >= 0.60`
+  - `median_identity >= 0.60`
 
-文件：`src/assembly/assembly.cpp`
+输出副作用：
 
-这是当前候选质量的关键阶段。
+- 若 `ins_fragment_hits_tsv_path` 非空（默认 `ins_fragment_hits.tsv`）：
+  - 构造时清空并写表头
+  - 分类时追加结果
 
-### Step A: 断点识别
-- `detect_breakpoint_from_cigar()` 从 CIGAR 推断：
-  - `INSERTION`（记录 event-time `read_pos/ref_pos/insertion_len`）
-  - `SPLIT`（N 操作）
-  - `SOFT_CLIP_5P/3P`
+## 4.6 局部证据（`SimpleLocalRealignModule`）
 
-### Step B: 按断点抽取 `ReadSegments`
-- 统一得到 `up / ins / down`：
-  - `SOFT_CLIP_5P`: `ins = [0, bp_pos)`
-  - `SOFT_CLIP_3P`: `ins = [bp_pos, read_end)`
-  - `INSERTION`: `ins = [bp_pos, bp_pos+insertion_len)`
-  - `SPLIT`: 当前直接跳过（不抽 ins）
-- 强约束：
-  - `ins_len >= ins_min_length`
-  - 至少一侧 flank 足够长
-- 然后保留“主导断点类型”，避免混合不同语义窗口。
+当前是占位评分，不做真实局部比对：
 
-### Step C: 分桶判定（可选）
-- 先构造 analysis window：`up_tail + ins + down_head`。
-- minimizer Jaccard 统计：
-  - split 触发条件：`median<=0.75 && p10<=0.60 && n>=6`
-- split 后做自检：
-  - `mean_aa >= mean_ab + 0.08`
-  - `mean_bb >= mean_ab + 0.08`
-- 自检不通过则回退单群组装。
+- 以 bin 中心为参考点 `center`。
+- 每条 read 生成一条 `LocusEvidence`。
+- 分数：
+  - `normalized_score = max(0, 1 - |read.pos - center| / 10000)`
 
-### Step D: 共识构建
-- 对每个桶（或全体）做 POA。
-- 输出两个层面的序列：
-  - `contig.sequence`：`up+ins+down` 的共识
-  - `contig.ins_seq`：只用 `ins` 片段做共识（后续 TE-only 更依赖这个）
-- `ins_seq` 为空时直接丢弃该 contig（严格路径）。
+## 4.7 Assembly（`LazyDecodeAssemblyModule`）
 
-### Step E: 结构折叠
-- 用 fingerprint + RTree + DSU 合并结构近似 contig。
-- `StructuralFingerprint` 包含 `tid/breakpoint/ins_length_range/family/orientation`。
+当前是占位组装：
 
----
+- 取 component 第一条 read。
+- 解码整条 read 序列（lazy decode，仅此处解码全长）。
+- 截断到 300bp 作为 `consensus`。
+- `pos` 使用 component `anchor_pos`。
 
-## 3.6 TE Reverse Index 召回（Phase 8，可选）
+## 4.8 Placeability（`SimplePlaceabilityModule`）
 
-文件：`src/te_reverse_index/te_reverse_index.cpp`
+- `support_reads = evidence.size()`
+- `delta_score = mean(normalized_score) * 100`
+- tier 划分：
+  - `delta_score >= 30` -> Tier 1
+  - `10 <= delta_score < 30` -> Tier 2
+  - 其他 -> Tier 3
 
-启用条件：
-- 只有传了 TE fasta，main 才会 `te_reverse_enabled=true`。
+## 4.9 Genotyping（`SimpleGenotypingModule`）
 
-逻辑：
-1. 对无 SA 的 read（或传入 probes）做 probe→genome k-mer 查询。
-2. hit 聚类成 `RescuedLocus`（按 `tid+position` 半径聚类）。
-3. 打分 `placeability_score` 并过滤（`min_locus_reads`、`min_hit_density`）。
-4. 与已有 component 近邻整合，补充 evidence / representative。
+当前是经验阈值分型：
+
+- `af = clamp(support_reads / 20.0, 0, 1)`
+- `gq = round(delta_score)`
+- `af >= 0.8` -> `1/1`
+- `0.2 <= af < 0.8` -> `0/1`
+- `af < 0.2` -> `0/0`
 
 ---
 
-## 3.7 Placeability（Phase 6）
+## 5. 关键配置与当前默认值
 
-文件：`src/placeability/placeability.cpp`
+来自 `PipelineConfig`（`include/pipeline.h`）：
 
-在主流程中：
-- 优先使用 Phase 4 已算好的 `PlaceabilityReport`。
-- 仅在缺失时 fallback 到 `PlaceabilityScorer::calculate_full_placeability()`。
-
-`PlaceabilityScorer` 的关键点：
-- 聚合同 read+locus 证据，避免重复计数。
-- 侧翼一致性分两层：
-  - `side_consistent`
-  - `side_consistency_verified`（是否真的有 read 位置信息支撑）
-- `determine_tier()` 对 Tier1 要求 side consistency 已验证。
-
----
-
-## 3.8 Genotyping（Phase 7）
-
-文件：`src/genotyping/genotyping.cpp`
-
-### 两层模型
-1. read-level 三成分混合：ALT / REF / NULL。
-2. genotype-level：根据 `E_alt/E_ref` 计算 `0/0,0/1,1/1` 似然与 GQ。
-
-### EM 关键实现
-- E-step 用标准形式：
-  - `r_ik ∝ pi_k * likelihood_k(x_i) * prior_ik`
-- M-step 更新 `pi_alt/pi_ref/pi_null`。
-- log-likelihood 与 E-step 同公式，避免目标不一致。
-- 输出：
-  - `mix_*`（混合权重）
-  - `e_*_sum`
-  - `AF = E_alt / (E_alt + E_ref)`
-  - LRT 显著性、GQ、GT。
+- `bam_threads = 2`
+- `window_size = 10000`
+- `bin_size = 10000`
+- `enable_parallel = false`
+- `batch_size = 1000`
+- `ins_fragments_fasta_path = "ins_fragments.fasta"`
+- `min_soft_clip_for_seq_extract = 50`
+- `min_long_ins_for_seq_extract = 50`
+- `min_sa_aln_len_for_seq_extract = 50`
+- `max_sa_per_read = 3`
+- `ins_fragment_hits_tsv_path = "ins_fragment_hits.tsv"`
+- `te_kmer_size = 15`
+- `te_vote_fraction_min = 0.60`
+- `te_median_identity_min = 0.60`
+- `te_min_fragments_for_vote = 3`
 
 ---
 
-## 3.9 Enrichment：TE 注释、TSD、读段窗口统计
+## 6. 输出与字段
 
-入口：`annotate_bundles()`，文件：`src/main.cpp`  
-TE 注释引擎：`src/annotation/te_annotator.cpp`
+主程序固定写 `scientific.txt`，包含：
 
-### TE 注释
-- 先从每个候选 read 抽 query（优先 breakpoint 对应片段）。
-- `TEAnnotator::annotate_consensus()`：
-  1. 每条 query 做 TE 对齐（正反向 SW）
-  2. 过滤低质量命中（`aligned_bases>=50 && identity>=70`）
-  3. 选 dominant family + dominant strand
-  4. 按长度分布去离群
-  5. 仅对 TE 对齐区间做 consensus
-- 结果写到 bundle：
-  - `family/subfamily/startTE/endTE/strand`
-  - `te_match/query_coverage/aligned_bases`
-  - `te_consensus`
-
-### TSD 与空位统计
-- 先推断断点区间 `bp_left/bp_right`。
-- 在 `wiggle=200bp` 内统计：
-  - `span_reads_wiggle`
-  - `nonref_reads_wiggle`
-  - `empty_reads_wiggle`
-- TSD 优先级：
-  1. representative flanks
-  2. 窗口读段提取 flank 共识
-  3. 单 read fallback
-- `TSDDetector` 检测失败时再用 flank fallback 匹配。
+- 汇总计数：
+  - `total_reads`
+  - `gate1_passed`
+  - `processed_bins`
+  - `components`
+  - `evidence_rows`
+  - `assemblies`
+  - `placeability_calls`
+  - `genotype_calls`
+- 每条 final call：
+  - `chrom/tid/pos/window_start/window_end`
+  - `te/te_vote_frac/te_median_ident/te_fragments`
+  - `tier/support_reads/gt/af/gq`
 
 ---
 
-## 3.10 TE-specific tier 重打分
+## 7. 当前实现边界（与长期目标的差异）
 
-入口：`apply_te_specific_tier()`，文件：`src/main.cpp`
+1. `reference_fasta_path` 目前在主流程中基本未使用（保留为后续扩展位）。
+2. `Component` 仍是“每 bin 一个组件”，未做真正断点聚类。
+3. `LocalRealign`/`Assembly`/`Genotyping` 目前均为占位或简化模型。
+4. TE 分类是快速 unique k-mer 估计，不是全比对 identity。
 
-机制：
-- 先取 base tier。
-- 基于 TE 命中质量、coverage、aligned_bases、TSD、双侧 anchor、强信号、candidate_confidence、nonref fraction 等累计 `te_points`。
-- 再将 tier 上下调（最多 ±2 级）。
-- 同时生成 `te_quality_flags`（例如 `NoTEAnnotation/NoTSD/LowSupport`）。
-
----
-
-## 3.11 最终输出 TXT 与去重
-
-入口：`write_txt()` + `TXTWriter`，文件：`src/main.cpp`
-
-### 候选硬过滤（写出前）
-- 必须有 representative + evidence + placeability。
-- 最小 evidence read 数、最小 signal read 数、最小 confidence。
-- 要求双侧 anchor 或强 split/indel/discordant 支持。
-
-### 两层去重
-1. 事件级去重（坐标、长度带、family、strand 约束）。
-2. 序列级去重（同事件内 TE 共识相似度，k-mer Jaccard）。
-
-### TE-only 输出策略（当前实现）
-- 若 `has_te_annotation`：
-  - `TE_Consensus` 写 TE 共识；
-  - `LengthIns` 优先取 TE 共识长度。
-- 若无 TE 注释：
-  - `TE_Consensus=NA`
-  - `INS_Extended=NA`
-  - `LengthIns=0`
-
-也就是说，最终主输出优先是 TE-only 语义，不再直接把长窗口序列当最终 TE 共识。
-
----
-
-## 4. 配置默认值（主流程关注）
-
-定义在 `src/main.cpp::PipelineConfig`：
-
-- Assembly:
-  - `assembly_min_reads=3`
-  - `assembly_max_reads=50`
-  - `assembly_ins_min_length=10`（传给 AssemblyConfig 后用于段长约束）
-  - `assembly_soft_clip_core_len=800`
-- Placeability:
-  - `delta_tier1=30`
-  - `delta_tier2=10`
-- Genotyping:
-  - `max_em_iterations=20`
-  - `spatial_lambda=100`
-
-注：某些模块内部还有自己阈值（例如 TEAnnotator 的 `aligned_bases>=50`、`identity>=70`），不完全由 `PipelineConfig` 控制。
-
----
-
-## 5. 现在代码的已知边界（不是猜测，是实现事实）
-
-1. 主程序当前是“先全量读 BAM 再分 phase”，`stream_processor` 没走主路径。
-2. Assembly 中 `SPLIT` 类型目前不产出 `ins` 片段，只作为证据信号。
-3. LocalRealigner 仍保留距离回退路径，不是 100% 序列对齐闭环。
-4. Genotyping 里的 family 特征目前偏弱：`ReadSketch` 没有 read 级 family，`compute_family_features()` 多数情况下是未知态。
-5. TE reverse index 只在给 TE fasta 时启用；不给 TE fasta 时不会做召回。
-
----
-
-## 6. 调试入口（建议）
-
-- `PLACER_DEBUG_ASM=1`：看 assembly 分段、trim、split 统计。
-- `PLACER_DEBUG_ANNOT=1`：看 TE 注释支持数、输出长度、family。
-- 重点日志：
-  - `[AssemblySplitStats] ... mean_aa/mean_bb/mean_ab ...`
-  - `TE annotated loci / TSD-positive loci / te consensus filled`
-
----
-
-## 7. 代码导航索引（按阶段）
-
-- 主流程编排：`src/main.cpp`
-- BAM 读取：`src/stream/bam_reader.cpp`
-- Gate1：`src/gate1/gate1.cpp`
-- Component：`src/component/component_builder.cpp`
-- Local realign：`src/local_realign/local_realign.cpp`
-- Assembly：`src/assembly/assembly.cpp`
-- Reverse index：`src/te_reverse_index/te_reverse_index.cpp`
-- TE 注释：`src/annotation/te_annotator.cpp`
-- Placeability：`src/placeability/placeability.cpp`
-- Genotyping：`src/genotyping/genotyping.cpp`
-
+以上意味着当前代码重点是“流式架构可跑通 + 模块接口清晰”，并非最终科研精度版本。

@@ -28,6 +28,14 @@ int32_t classify_tier(double delta_score) {
     return 3;
 }
 
+const char* theta_tag(InsertionTheta theta) {
+    switch (theta) {
+        case InsertionTheta::kFwd: return "FWD";
+        case InsertionTheta::kRev: return "REV";
+        default: return "NA";
+    }
+}
+
 template <typename T>
 class SafeQueue {
 public:
@@ -232,7 +240,8 @@ Pipeline::Pipeline(
     std::unique_ptr<IPlaceabilityModule> placeability_module,
     std::unique_ptr<IGenotypingModule> genotyping_module,
     std::unique_ptr<IInsertionFragmentModule> ins_fragment_module,
-    std::unique_ptr<ITEQuickClassifierModule> te_classifier_module)
+    std::unique_ptr<ITEQuickClassifierModule> te_classifier_module,
+    std::unique_ptr<IAnchorLockedModule> anchor_locked_module)
     : config_(std::move(config)),
       bam_reader_(std::move(bam_reader)),
       gate1_module_(std::move(gate1_module)),
@@ -242,7 +251,8 @@ Pipeline::Pipeline(
       placeability_module_(std::move(placeability_module)),
       genotyping_module_(std::move(genotyping_module)),
       ins_fragment_module_(std::move(ins_fragment_module)),
-      te_classifier_module_(std::move(te_classifier_module)) {}
+      te_classifier_module_(std::move(te_classifier_module)),
+      anchor_locked_module_(std::move(anchor_locked_module)) {}
 
 PipelineResult Pipeline::run() const {
     if (!bam_reader_ || !bam_reader_->is_valid()) {
@@ -250,7 +260,7 @@ PipelineResult Pipeline::run() const {
     }
     if (!gate1_module_ || !component_module_ || !local_realign_module_ ||
         !assembly_module_ || !placeability_module_ || !genotyping_module_ ||
-        !ins_fragment_module_ || !te_classifier_module_) {
+        !ins_fragment_module_ || !te_classifier_module_ || !anchor_locked_module_) {
         throw std::runtime_error("Pipeline modules are not fully configured");
     }
 
@@ -406,13 +416,22 @@ void Pipeline::process_bin_records(
     result.built_components += static_cast<int64_t>(components.size());
 
     for (const auto& component : components) {
+        std::vector<InsertionFragment> fragments;
+        std::vector<FragmentTEHit> hits;
         ClusterTECall te_call;
-        if (ins_fragment_module_ && te_classifier_module_) {
-            auto fragments = ins_fragment_module_->extract(component, bin_records);
+        AnchorLockedReport anchor_report;
+
+        if (ins_fragment_module_) {
+            fragments = ins_fragment_module_->extract(component, bin_records);
+        }
+        if (te_classifier_module_) {
             if (te_classifier_module_->is_enabled()) {
-                auto hits = te_classifier_module_->classify(fragments);
+                hits = te_classifier_module_->classify(fragments);
                 te_call = te_classifier_module_->vote_cluster(hits);
             }
+        }
+        if (anchor_locked_module_ && anchor_locked_module_->is_enabled()) {
+            anchor_report = anchor_locked_module_->resolve(component, fragments, hits, te_call);
         }
 
         auto evidence = local_realign_module_->collect(component, bin_records);
@@ -436,10 +455,32 @@ void Pipeline::process_bin_records(
 
         if (te_call.passed) {
             call.te_name = te_call.te_name;
+        } else if (anchor_report.has_result && !anchor_report.te_name.empty()) {
+            call.te_name = anchor_report.te_name;
         }
         call.te_vote_fraction = te_call.vote_fraction;
         call.te_median_identity = te_call.median_identity;
         call.te_fragment_count = te_call.fragment_count;
+        call.te_theta = theta_tag(anchor_report.theta0);
+        call.te_mad_fwd = anchor_report.mad_fwd;
+        call.te_mad_rev = anchor_report.mad_rev;
+        call.te_breakpoint_core = anchor_report.te_breakpoint_core;
+        call.te_breakpoint_window_start = anchor_report.te_breakpoint_window_start;
+        call.te_breakpoint_window_end = anchor_report.te_breakpoint_window_end;
+        call.te_core_candidates = anchor_report.core_candidate_count;
+        call.te_core_set = anchor_report.core_set_count;
+        call.te_split_sa_core_frac = anchor_report.split_sa_core_frac;
+        call.te_ref_junc_pos_min = anchor_report.ref_junc_pos_min;
+        call.te_ref_junc_pos_max = anchor_report.ref_junc_pos_max;
+        if (!anchor_report.enabled) {
+            call.te_qc = "DISABLED";
+        } else if (anchor_report.fail_theta_uncertain) {
+            call.te_qc = "FAIL_THETA_UNCERTAIN";
+        } else if (!anchor_report.has_result) {
+            call.te_qc = "NO_CORE_RESULT";
+        } else {
+            call.te_qc = "PASS";
+        }
 
         call.tier = placeability.tier;
         call.support_reads = placeability.support_reads;
@@ -498,6 +539,11 @@ PipelineBuilder& PipelineBuilder::with_te_classifier_module(std::unique_ptr<ITEQ
     return *this;
 }
 
+PipelineBuilder& PipelineBuilder::with_anchor_locked_module(std::unique_ptr<IAnchorLockedModule> module) {
+    anchor_locked_module_ = std::move(module);
+    return *this;
+}
+
 std::unique_ptr<Pipeline> PipelineBuilder::build() {
     if (!bam_reader_) {
         bam_reader_ = make_bam_reader(config_.bam_path, config_.bam_threads);
@@ -526,6 +572,9 @@ std::unique_ptr<Pipeline> PipelineBuilder::build() {
     if (!te_classifier_module_) {
         te_classifier_module_ = std::make_unique<TEKmerQuickClassifierModule>(config_);
     }
+    if (!anchor_locked_module_) {
+        anchor_locked_module_ = std::make_unique<DeterministicAnchorLockedModule>(config_);
+    }
 
     return std::make_unique<Pipeline>(
         config_,
@@ -537,7 +586,8 @@ std::unique_ptr<Pipeline> PipelineBuilder::build() {
         std::move(placeability_module_),
         std::move(genotyping_module_),
         std::move(ins_fragment_module_),
-        std::move(te_classifier_module_));
+        std::move(te_classifier_module_),
+        std::move(anchor_locked_module_));
 }
 
 std::unique_ptr<Pipeline> build_default_pipeline(const PipelineConfig& config) {

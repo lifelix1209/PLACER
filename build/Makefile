@@ -179,6 +179,30 @@ src/component/insert_fragment_module.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer_pipeline.dir/build.make CMakeFiles/placer_pipeline.dir/src/component/insert_fragment_module.cpp.s
 .PHONY : src/component/insert_fragment_module.cpp.s
 
+src/component/te_consensus_module.o: src/component/te_consensus_module.cpp.o
+.PHONY : src/component/te_consensus_module.o
+
+# target to build an object file
+src/component/te_consensus_module.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer_pipeline.dir/build.make CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o
+.PHONY : src/component/te_consensus_module.cpp.o
+
+src/component/te_consensus_module.i: src/component/te_consensus_module.cpp.i
+.PHONY : src/component/te_consensus_module.i
+
+# target to preprocess a source file
+src/component/te_consensus_module.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer_pipeline.dir/build.make CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.i
+.PHONY : src/component/te_consensus_module.cpp.i
+
+src/component/te_consensus_module.s: src/component/te_consensus_module.cpp.s
+.PHONY : src/component/te_consensus_module.s
+
+# target to generate assembly for a file
+src/component/te_consensus_module.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/placer_pipeline.dir/build.make CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.s
+.PHONY : src/component/te_consensus_module.cpp.s
+
 src/component/te_quick_classifier.o: src/component/te_quick_classifier.cpp.o
 .PHONY : src/component/te_quick_classifier.o
 
@@ -313,6 +337,9 @@ help:
 	@echo "... src/component/insert_fragment_module.o"
 	@echo "... src/component/insert_fragment_module.i"
 	@echo "... src/component/insert_fragment_module.s"
+	@echo "... src/component/te_consensus_module.o"
+	@echo "... src/component/te_consensus_module.i"
+	@echo "... src/component/te_consensus_module.s"
 	@echo "... src/component/te_quick_classifier.o"
 	@echo "... src/component/te_quick_classifier.i"
 	@echo "... src/component/te_quick_classifier.s"

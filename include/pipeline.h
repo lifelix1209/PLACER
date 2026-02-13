@@ -67,6 +67,18 @@ enum class InsertionFragmentSource : uint8_t {
     kSplitSa = 4
 };
 
+enum class ReferenceSide : uint8_t {
+    kUnknown = 0,
+    kRefLeft = 1,
+    kRefRight = 2
+};
+
+enum class InsertionTheta : uint8_t {
+    kUnknown = 0,
+    kFwd = 1,
+    kRev = 2
+};
+
 struct InsertionFragment {
     std::string fragment_id;
     std::string chrom;
@@ -80,6 +92,14 @@ struct InsertionFragment {
     InsertionFragmentSource source = InsertionFragmentSource::kUnknown;
     int32_t start = -1;  // read coordinate (0-based)
     int32_t length = 0;
+    int32_t read_len = 0;
+
+    // Anchor/split diagnostics used by TE consensus.
+    int32_t anchor_len = 0;
+    ReferenceSide ref_side = ReferenceSide::kUnknown;
+    int32_t ref_junc_pos = -1;
+    int32_t nm = -1;
+    bool split_sa_reliable = false;
 
     std::string sequence;
 };
@@ -103,6 +123,37 @@ struct ClusterTECall {
     double median_identity = 0.0;  // median fragment k-mer support
     int32_t fragment_count = 0;
     bool passed = false;
+};
+
+struct AnchorLockedReport {
+    bool enabled = false;
+    bool has_result = false;
+
+    std::string te_name;
+    InsertionTheta theta0 = InsertionTheta::kUnknown;
+    bool fail_theta_uncertain = false;
+
+    double mad_fwd = 0.0;
+    double mad_rev = 0.0;
+    double sum_w_fwd = 0.0;
+    double sum_w_rev = 0.0;
+
+    double center_c0 = 0.0;
+    double center_c1 = 0.0;
+    int32_t te_breakpoint_core = -1;
+    int32_t te_breakpoint_window_start = -1;
+    int32_t te_breakpoint_window_end = -1;
+    double core_span = 0.0;
+
+    int32_t total_fragments = 0;
+    int32_t fragments_with_placements = 0;
+    int32_t core_candidate_count = 0;
+    int32_t core_set_count = 0;
+    int32_t split_sa_core_count = 0;
+    double split_sa_core_frac = 0.0;
+
+    int32_t ref_junc_pos_min = -1;
+    int32_t ref_junc_pos_max = -1;
 };
 
 struct PlaceabilityReport {
@@ -133,6 +184,18 @@ struct FinalCall {
     double te_vote_fraction = 0.0;
     double te_median_identity = 0.0;
     int32_t te_fragment_count = 0;
+    std::string te_theta = "NA";
+    double te_mad_fwd = 0.0;
+    double te_mad_rev = 0.0;
+    int32_t te_breakpoint_core = -1;
+    int32_t te_breakpoint_window_start = -1;
+    int32_t te_breakpoint_window_end = -1;
+    int32_t te_core_candidates = 0;
+    int32_t te_core_set = 0;
+    double te_split_sa_core_frac = 0.0;
+    int32_t te_ref_junc_pos_min = -1;
+    int32_t te_ref_junc_pos_max = -1;
+    std::string te_qc = "NA";
 
     int32_t tier = 3;
     int32_t support_reads = 0;
@@ -165,6 +228,26 @@ struct PipelineConfig {
     double te_vote_fraction_min = 0.60;
     double te_median_identity_min = 0.60;
     int32_t te_min_fragments_for_vote = 3;
+
+    // Module 2.3: deterministic TE consensus (anchor-locked + theta).
+    bool te_consensus_enable = true;
+    int32_t te_consensus_seed_k = 13;
+    int32_t te_consensus_max_start_candidates = 5;
+    double te_consensus_delta_tpl_min = 0.05;
+    int32_t te_consensus_anchor_min = 80;
+    double te_consensus_start_span_sqrt_scale = 2.0;
+    double te_consensus_start_span_bias = 6.0;
+    int32_t te_consensus_w_side_max = 300;
+    double te_consensus_temp_t = 0.25;
+    double te_consensus_beta = 0.20;
+    double te_consensus_lambda = 0.35;
+    double te_consensus_mu = 0.10;
+    double te_consensus_w_core_gate = 80.0;
+    double te_consensus_w_min = 25.0;
+    double te_consensus_gamma = 2.0;
+    double te_consensus_eps_theta = 0.05;
+    double te_consensus_rel_sumw_eps = 0.10;
+    int32_t te_consensus_min_core_set = 2;
 
     bool enable_parallel = false;
     size_t batch_size = 1000;
@@ -259,6 +342,18 @@ public:
         const std::vector<FragmentTEHit>& hits) const = 0;
 };
 
+class IAnchorLockedModule {
+public:
+    virtual ~IAnchorLockedModule() = default;
+
+    virtual bool is_enabled() const = 0;
+    virtual AnchorLockedReport resolve(
+        const ComponentCall& component,
+        const std::vector<InsertionFragment>& fragments,
+        const std::vector<FragmentTEHit>& hits,
+        const ClusterTECall& te_call) const = 0;
+};
+
 class LinearBinComponentModule final : public IComponentModule {
 public:
     std::vector<ComponentCall> build(
@@ -339,6 +434,23 @@ private:
     std::shared_ptr<const Index> index_;
 };
 
+class DeterministicAnchorLockedModule final : public IAnchorLockedModule {
+public:
+    explicit DeterministicAnchorLockedModule(PipelineConfig config);
+
+    bool is_enabled() const override;
+    AnchorLockedReport resolve(
+        const ComponentCall& component,
+        const std::vector<InsertionFragment>& fragments,
+        const std::vector<FragmentTEHit>& hits,
+        const ClusterTECall& te_call) const override;
+
+private:
+    PipelineConfig config_;
+    struct TemplateDb;
+    std::shared_ptr<const TemplateDb> template_db_;
+};
+
 class Pipeline {
 public:
     Pipeline(
@@ -351,7 +463,8 @@ public:
         std::unique_ptr<IPlaceabilityModule> placeability_module,
         std::unique_ptr<IGenotypingModule> genotyping_module,
         std::unique_ptr<IInsertionFragmentModule> ins_fragment_module,
-        std::unique_ptr<ITEQuickClassifierModule> te_classifier_module);
+        std::unique_ptr<ITEQuickClassifierModule> te_classifier_module,
+        std::unique_ptr<IAnchorLockedModule> anchor_locked_module);
 
     PipelineResult run() const;
 
@@ -396,6 +509,7 @@ private:
     std::unique_ptr<IGenotypingModule> genotyping_module_;
     std::unique_ptr<IInsertionFragmentModule> ins_fragment_module_;
     std::unique_ptr<ITEQuickClassifierModule> te_classifier_module_;
+    std::unique_ptr<IAnchorLockedModule> anchor_locked_module_;
 };
 
 class PipelineBuilder {
@@ -411,6 +525,7 @@ public:
     PipelineBuilder& with_genotyping_module(std::unique_ptr<IGenotypingModule> module);
     PipelineBuilder& with_insertion_fragment_module(std::unique_ptr<IInsertionFragmentModule> module);
     PipelineBuilder& with_te_classifier_module(std::unique_ptr<ITEQuickClassifierModule> module);
+    PipelineBuilder& with_anchor_locked_module(std::unique_ptr<IAnchorLockedModule> module);
 
     std::unique_ptr<Pipeline> build();
 
@@ -425,6 +540,7 @@ private:
     std::unique_ptr<IGenotypingModule> genotyping_module_;
     std::unique_ptr<IInsertionFragmentModule> ins_fragment_module_;
     std::unique_ptr<ITEQuickClassifierModule> te_classifier_module_;
+    std::unique_ptr<IAnchorLockedModule> anchor_locked_module_;
 };
 
 std::unique_ptr<Pipeline> build_default_pipeline(const PipelineConfig& config);

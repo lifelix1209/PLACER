@@ -35,7 +35,10 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
     out << "placeability_calls\t" << result.placeability_calls << "\n";
     out << "genotype_calls\t" << result.genotype_calls << "\n";
 
-    out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_fragments\ttier\tsupport_reads\tgt\taf\tgq\n";
+    out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_fragments"
+        << "\tte_theta\tte_mad_fwd\tte_mad_rev\tte_bp_core\tte_bp_win_start\tte_bp_win_end"
+        << "\tte_core_candidates\tte_core_set\tsplit_sa_core_frac\tte_ref_junc_min\tte_ref_junc_max\tte_qc"
+        << "\ttier\tsupport_reads\tgt\taf\tgq\n";
     for (const auto& call : result.final_calls) {
         out << call.chrom << "\t"
             << call.tid << "\t"
@@ -46,6 +49,18 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
             << call.te_vote_fraction << "\t"
             << call.te_median_identity << "\t"
             << call.te_fragment_count << "\t"
+            << call.te_theta << "\t"
+            << call.te_mad_fwd << "\t"
+            << call.te_mad_rev << "\t"
+            << call.te_breakpoint_core << "\t"
+            << call.te_breakpoint_window_start << "\t"
+            << call.te_breakpoint_window_end << "\t"
+            << call.te_core_candidates << "\t"
+            << call.te_core_set << "\t"
+            << call.te_split_sa_core_frac << "\t"
+            << call.te_ref_junc_pos_min << "\t"
+            << call.te_ref_junc_pos_max << "\t"
+            << call.te_qc << "\t"
             << call.tier << "\t"
             << call.support_reads << "\t"
             << call.genotype << "\t"
