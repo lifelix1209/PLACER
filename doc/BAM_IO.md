@@ -1,57 +1,69 @@
-# PLACER BAM_IO 模块文档（零拷贝版本）
+# PLACER BAM I/O 技术文档（按当前实现）
 
-本文档描述当前代码中的 BAM I/O 实现与调用方式，基于：
+本文档对应当前代码实现：
+
 - `include/bam_io.h`
 - `src/stream/bam_io.cpp`
-- `include/pipeline.h`
-- `src/pipeline/pipeline.cpp`
+- （调用侧）`src/pipeline/pipeline.cpp`
+
+目标是准确描述 BAM I/O 层当前“已经实现并实际生效”的行为。
 
 ---
 
-## 1. 设计目标
+## 1. 模块职责
 
-当前 BAM_IO 目标是：
-1. **单遍流式读取** BAM。
-2. **零拷贝传递记录**（传递 `bam1_t` 所有权，而不是解码到 `std::string`/`std::vector`）。
-3. 通过 `ReadView` 提供按需访问，避免早期深拷贝。
-4. 让上层 pipeline 在真正需要时（如插入片段提取、assembly）再做序列解码，并尽量只做局部解码。
+BAM I/O 模块负责：
+
+1. 打开 BAM 并读取 header。
+2. 以流式方式逐条输出 `bam1_t` 记录。
+3. 在 I/O 层提前过滤 `unmapped` 和 `secondary`。
+4. 提供 `ReadView` 作为轻量访问包装，支持按需序列解码。
+
+该模块不负责：
+
+- 区域检索（region fetch）。
+- 断点/TE 业务判定。
+- 全量缓存所有 reads。
 
 ---
 
-## 2. 核心类型
+## 2. 核心数据类型
 
-### 2.1 `BamRecordPtr`
+## 2.1 `BamRecordPtr`
+
 定义：
+
 - `using BamRecordPtr = std::unique_ptr<bam1_t, BamRecordDeleter>`
 
-行为：
-- 独占所有权，RAII 自动释放。
-- 删除器调用 `bam_destroy1`。
+语义：
 
-### 2.2 `ReadView`
-`ReadView` 不拥有数据，只包装 `const bam1_t*`：
-- 坐标与质量：`tid()/pos()/mapq()/flag()`
-- read 名称：`qname()`（返回 `std::string_view`，生命周期受 `bam1_t` 约束）
-- 原始序列访问：`seq_encoded()/seq_len()`
-- 原始 CIGAR 访问：`cigar()/n_cigar()`
-- tag 检查：`has_tag()/has_sa_tag()/has_md_tag()`
-- tag 读取：`get_int_tag()`（例如读取 `NM`）
-- 需要时才解码：`decode_sequence()`、`decode_subsequence(start, length)`
+- 独占 `bam1_t` 所有权。
+- 释放时调用 `bam_destroy1`（RAII）。
+- 在 pipeline 中通过 move 传递，避免深拷贝记录。
 
-这意味着：
-- 绝大多数路径可以在压缩/原始表示上决策。
-- 只有少量路径需要调用 `decode_sequence()` / `decode_subsequence()` 触发字符串分配。
+## 2.2 `ReadView`
 
-### 2.3 回调接口
-- `RecordHandler = std::function<void(BamRecordPtr&&)>`
-- `ProgressHandler = std::function<bool(int64_t processed, int32_t current_tid)>`
+`ReadView` 只包装 `const bam1_t*`，不拥有底层内存。
+
+主要接口：
+
+- 坐标/质量：`tid()`、`pos()`、`mapq()`、`flag()`
+- 序列/CIGAR 原始访问：`seq_len()`、`seq_encoded()`、`n_cigar()`、`cigar()`
+- 名称：`qname()`（`std::string_view`）
+- tag 相关：`has_tag()`、`has_sa_tag()`、`has_md_tag()`、`get_int_tag()`、`get_string_tag()`
+- 解码：`decode_subsequence(start, length)`、`decode_sequence()`
+
+生命周期注意：
+
+- `qname()` 返回的是对 `bam1_t` 内部缓冲区的 view。
+- 一旦对应 `bam1_t` 被释放或 move 后失效，view 不能继续使用。
 
 ---
 
-## 3. Reader 抽象与实现
+## 3. Reader 抽象接口
 
-### 3.1 抽象
-`BamStreamReader` 提供：
+`BamStreamReader` 抽象定义：
+
 - `is_valid()`
 - `bam_path()`
 - `chromosome_count()`
@@ -59,143 +71,152 @@
 - `stream(record_handler, progress_handler, progress_interval)`
 
 工厂函数：
+
 - `make_bam_reader(bam_path, decompression_threads)`
 
-### 3.2 `HtslibBamStreamReader`（当前实现）
-构造阶段：
-1. `hts_open`
-2. 可选 `hts_set_threads`
-3. `sam_hdr_read`
+回调类型：
 
-`stream()` 主循环：
-1. 每轮 `bam_init1()` 新建记录对象（用于安全移动所有权）。
-2. `sam_read1` 读入。
-3. 过滤：
-   - 跳过 `BAM_FSECONDARY`
-   - 跳过 `BAM_FUNMAP`
-4. 将 `BamRecordPtr` move 给上层回调。
-5. 按 `progress_interval` 回调进度。
-6. 结束后再触发一次最终进度回调。
+- `RecordHandler = std::function<void(BamRecordPtr&&)>`
+- `ProgressHandler = std::function<bool(int64_t processed, int32_t current_tid)>`
+
+---
+
+## 4. 当前实现：`HtslibBamStreamReader`
+
+## 4.1 构造和销毁
+
+构造函数行为：
+
+1. `hts_open(bam_path, "r")`
+2. 若 `decompression_threads > 1`，调用 `hts_set_threads`
+3. `sam_hdr_read`
+4. 成功后 `valid_ = true`
+
+失败路径：
+
+- 打开 BAM 失败或读取 header 失败时，`valid_ = false`，并输出错误日志。
+
+析构函数：
+
+- 若 `header_ != nullptr`，调用 `bam_hdr_destroy(header_)`
+- 若 `file_ != nullptr`，调用 `hts_close(file_)`
+
+## 4.2 染色体信息接口
+
+- `chromosome_count()` 返回 `header_->n_targets`（无 header 返回 0）。
+- `chromosome_name(tid)` 在 `tid` 越界或 header 不可用时返回空字符串 `""`。
+
+## 4.3 `stream()` 实际语义
+
+前置检查：
+
+- 若 reader 无效或 `record_handler` 为空，直接返回 `-1`。
+
+主循环：
+
+1. 每轮新建一个 `bam1_t`（`bam_init1`）。
+2. 调用 `sam_read1(file_, header_, record.get())`。
+3. 若返回值 `< 0`，结束循环（实现上不区分 EOF 与读错误）。
+4. 过滤：
+   - `BAM_FSECONDARY`：跳过
+   - `BAM_FUNMAP`：跳过
+5. 通过 `record_handler(std::move(record))` 交给上层。
+6. `processed++`（计数的是“交给上层后的记录数”）。
+7. 满足进度条件时触发 `progress_handler`：
+   - 需要 `progress_handler != nullptr`
+   - 需要 `progress_interval > 0`
+   - 需要 `processed - last_progress >= progress_interval`
+   - 若回调返回 `false`，提前停止读取
+
+循环结束后：
+
+- 如果提供了 `progress_handler`，会再调用一次最终回调。
 
 返回值：
-- 成功：返回处理记录数（过滤后二级计数）。
-- reader 无效或 handler 为空：返回 `-1`。
+
+- 正常返回 `processed`。
+- 记录对象分配失败时返回 `-1`。
 
 ---
 
-## 4. `ReadView` 的零拷贝访问细节
+## 5. `ReadView` 解码与边界行为
 
-1. `seq_encoded()` 直接返回 `bam_get_seq(record_)` 指针。
-2. `cigar()` 直接返回 `bam_get_cigar(record_)` 指针。
-3. `decode_sequence()` / `decode_subsequence()` 才进行 4-bit 到字符解码，字符表为 `"=ACMGRSVTWYHKDBN"`。
-4. `qname()` 返回 `bam_get_qname(record_)` 的 `std::string_view`，上层如需跨 record 生命周期持有请显式拷贝为 `std::string`。
+## 5.1 序列字符映射
 
-当前上层实现中：
-- `decode_subsequence()` 主要用于 Module 2.1 的插入片段提取（soft-clip / long insertion）。
-- `decode_sequence()` 只在 assembly 默认模块中调用（占位实现 + lazy decode）。
+解码表使用：
 
----
+- `=ACMGRSVTWYHKDBN`
 
-## 5. 与 Pipeline 的集成模式
+这是 htslib 4-bit 编码到字符的直接映射，保留了非 ACGT 符号。
 
-当前 pipeline 已从“全量加载”改为“滑动窗口流式处理”：
+## 5.2 `decode_subsequence(start, length)`
 
-1. `Pipeline::run()` 按配置选择：
-   - `run_streaming()`
-   - `run_parallel()`（生产者-消费者）
+行为：
 
-2. 记录消费入口：`consume_record(BamRecordPtr&&)`
-   - Gate1 预过滤：基于 `ReadView`，不解码序列。
-   - 维护 `active_window`（`deque<WindowCoord>`）。
-   - 线性 bin 分桶（`bin_index = pos / bin_size`）。
-   - 发生 bin 切换时立即结算上一 bin。
+1. 若 `record_` 为空、`length<=0`、read 长度 `<=0`，返回空串。
+2. `start < 0` 会被夹到 0。
+3. `start >= read_len` 返回空串。
+4. 终点 `end = min(start + length, read_len)`。
+5. 仅解码 `[start, end)`。
 
-3. bin 结算入口：`process_bin_records(...)`
-   - `component -> insertion_fragment(2.1) -> te_quick_classifier(2.2, optional) -> local_realign -> assembly -> placeability -> genotyping`
-   - 只保留轻量结果到 `PipelineResult.final_calls`
-   - 不缓存全量 read
+## 5.3 `decode_sequence()`
 
----
+- 解码整条 read 序列并返回 `std::string`。
+- 若记录为空或 `l_qseq<=0` 返回空串。
 
-## 6. 线性 bin（替代 `std::map`）
+## 5.4 tag 读取
 
-当前实现不再使用 `std::map` 做分桶聚合。
-
-算法：
-1. 维护 `current_tid` 与 `current_bin_index`。
-2. 新 read 到达后计算新 `bin_index`。
-3. 若与当前 bin 不同，则 flush 当前 bin 并开始新 bin。
-4. 同 bin 继续 append。
-
-复杂度：
-- O(N) 单次线性扫描（依赖 BAM 的 coordinate-sorted 特性）。
+- `has_tag` 基于 `bam_aux_get` 判断存在性。
+- `get_int_tag` 使用 `bam_aux2i` 读取整数型值到 `int64_t`。
+- `get_string_tag` 使用 `bam_aux2Z` 读取字符串；不存在或类型不匹配时返回 `false`。
 
 ---
 
-## 7. 并行模式（生产者-消费者）
+## 6. 与 Pipeline 的实际集成
 
-`PipelineConfig.enable_parallel=true` 时启用。
+`Pipeline` 通过 `make_bam_reader` 获取 reader，并在两种模式下使用同一 `stream()`：
 
-模型：
-1. 生产者（reader 线程）读取 BAM，按 `batch_size` 组 batch。
-2. batch 推入线程安全 `SafeQueue<std::vector<BamRecordPtr>>`。
-3. 消费者 worker 线程拉取 batch，执行与 streaming 模式相同的 `consume_record` 和 flush。
+- `run_streaming()`：读取线程内直接处理每条记录。
+- `run_parallel()`：读取线程产出 batch，worker 线程消费 batch。
 
-特点：
-- 解耦 I/O 与业务计算。
-- 保持单 worker 顺序消费，避免跨 batch 重排序问题。
+集成要点：
 
----
-
-## 8. 默认 Gate1 预过滤（当前实现）
-
-当前默认模块：`SignalFirstGate1Module`（`src/gate1/gate1_module.cpp`）。
-
-规则为“信号优先，质量兜底”：
-1. 硬过滤：
-   - `unmapped` 丢弃
-   - `secondary` 丢弃
-   - `seq_len < 50` 丢弃
-2. 信号判定（任一满足即视为有信号）：
-   - `supplementary` flag
-   - `SA` tag
-   - 长 soft-clip（默认 `S >= 100`）
-3. 若有信号：忽略 MapQ，但加三条保险丝：
-   - 保险丝 1：至少一侧参考 anchor 像样（`max_match_block >= 200`）
-   - 保险丝 2：若是长 soft-clip，clip 邻近 flank 需满足最小匹配锚长度（默认 `>=120`）
-   - 保险丝 3：若有 `NM` tag，`NM / total_match_bases` 过高（默认 `>0.20`）则丢弃
-4. 若无信号：仅保留 `MAPQ > 20` 的背景 reads。
-
-该逻辑全部基于 `ReadView` 的零拷贝访问，不会触发序列解码。
-说明：当前 pipeline 的 Module 2.1 会对少量候选片段调用 `decode_subsequence()` 做局部解码；assembly 默认模块仍会对极少量 reads 调用 `decode_sequence()`（占位实现）。
+1. BAM I/O 层已过滤 `unmapped/secondary`。
+2. Gate1 层仍会再次检查这两类 flag（属于上层冗余保护，不影响正确性）。
+3. progress 回调在 pipeline 中用于打印：
+   - `processed`
+   - `current_tid`
 
 ---
 
-## 9. 资源与内存行为
+## 7. 性能与内存特征
 
-1. BAM_IO 层不构造 `ReadSketch` 大对象。
-2. 主路径持有的是 `BamRecordPtr`（原始记录）。
-3. `active_window` 仅存 `(tid,pos)` 轻量坐标。
-4. bin flush 后对应 `BamRecordPtr` 批次释放。
-5. 避免了“全量通过 reads 存入 vector”内存线性增长问题。
-
----
-
-## 10. 当前边界
-
-1. 并行模式当前为单消费者 worker（1 producer + 1 consumer）。
-2. SA 解析未在 BAM_IO 层展开为完整结构，仅通过 `has_sa_tag` 做快速判断。
-3. 默认模块仍是占位实现，重点是数据流与接口架构，不是最终算法质量。
+1. 单遍流式读取，不做全量 reads 缓存。
+2. 记录以 `BamRecordPtr` move 传递，避免对象复制。
+3. 业务层多数逻辑可通过 `ReadView` 访问原始 CIGAR/tag，不必立即解码序列。
+4. 仅在需要序列时调用 `decode_subsequence`/`decode_sequence` 分配字符串。
 
 ---
 
-## 11. 运行方式
+## 8. 当前边界与注意事项
 
-串行流式：
-- `./build/placer <input.bam> <ref.fa> [te.fa]`
+1. `stream()` 对 `sam_read1 < 0` 不区分 EOF 与 I/O 错误。
+2. 当前只实现顺序流式读取；未提供按区域随机访问接口。
+3. `HtslibBamStreamReader` 不是并发读同一实例的线程安全接口（当前调用方式也未这样使用）。
+4. 模块未在 I/O 层解析 SA/MD 语义，只提供 tag 原始访问能力。
 
-并行模式：
-- `PLACER_PARALLEL=1 ./build/placer <input.bam> <ref.fa> [te.fa]`
+---
 
-输出：
-- `scientific.txt`（汇总 + 每个 call 的轻量结果）
+## 9. 运行示例
+
+串行模式（默认）：
+
+```bash
+./build/placer <input.bam> <ref.fa> [te.fa]
+```
+
+并行模式（生产者 + 单 worker）：
+
+```bash
+PLACER_PARALLEL=1 ./build/placer <input.bam> <ref.fa> [te.fa]
+```

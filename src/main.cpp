@@ -19,6 +19,34 @@ bool env_flag_enabled(const char* key) {
     return v == "1" || v == "true" || v == "TRUE" || v == "on" || v == "ON";
 }
 
+bool env_try_double(const char* key, double& out) {
+    const char* value = std::getenv(key);
+    if (!value || !*value) {
+        return false;
+    }
+    char* end = nullptr;
+    const double parsed = std::strtod(value, &end);
+    if (end == value || (end && *end != '\0')) {
+        return false;
+    }
+    out = parsed;
+    return true;
+}
+
+bool env_try_int32(const char* key, int32_t& out) {
+    const char* value = std::getenv(key);
+    if (!value || !*value) {
+        return false;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0')) {
+        return false;
+    }
+    out = static_cast<int32_t>(parsed);
+    return true;
+}
+
 void write_scientific_txt(const PipelineResult& result, const std::string& output_path) {
     std::ofstream out(output_path);
     if (!out.is_open()) {
@@ -86,6 +114,19 @@ int main(int argc, char** argv) {
     }
 
     config.enable_parallel = placer::env_flag_enabled("PLACER_PARALLEL");
+    {
+        double v = 0.0;
+        if (placer::env_try_double("PLACER_TE_MEDIAN_IDENTITY_MIN", v)) {
+            config.te_median_identity_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_VOTE_FRACTION_MIN", v)) {
+            config.te_vote_fraction_min = std::clamp(v, 0.0, 1.0);
+        }
+        int32_t i = 0;
+        if (placer::env_try_int32("PLACER_TE_MIN_FRAGMENTS_FOR_VOTE", i)) {
+            config.te_min_fragments_for_vote = std::max(1, i);
+        }
+    }
 
     try {
         auto pipeline = placer::build_default_pipeline(config);

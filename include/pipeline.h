@@ -2,6 +2,7 @@
 #define PLACER_PIPELINE_H
 
 #include "bam_io.h"
+#include "gate1_module.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -38,6 +39,11 @@ struct ComponentCall {
     int32_t bin_start = -1;
     int32_t bin_end = -1;
     int32_t anchor_pos = -1;
+    double peak_weight = 0.0;
+    double ambiguous_frac = 0.0;
+    int32_t evidence_soft_clip_count = 0;
+    int32_t evidence_indel_count = 0;
+    int32_t evidence_sa_hint_count = 0;
 
     std::vector<size_t> read_indices;
     std::vector<size_t> soft_clip_read_indices;
@@ -226,8 +232,8 @@ struct PipelineConfig {
     std::string ins_fragment_hits_tsv_path = "ins_fragment_hits.tsv";
     int32_t te_kmer_size = 15;
     double te_vote_fraction_min = 0.60;
-    double te_median_identity_min = 0.60;
-    int32_t te_min_fragments_for_vote = 3;
+    double te_median_identity_min = 0.50;
+    int32_t te_min_fragments_for_vote = 2;
 
     // Module 2.3: deterministic TE consensus (anchor-locked + theta).
     bool te_consensus_enable = true;
@@ -266,167 +272,49 @@ struct PipelineResult {
     std::vector<FinalCall> final_calls;
 };
 
-class IGate1Module {
-public:
-    virtual ~IGate1Module() = default;
-    virtual bool pass_preliminary(const ReadView& read) const = 0;
-};
-
-class IComponentModule {
-public:
-    virtual ~IComponentModule() = default;
-
-    virtual std::vector<ComponentCall> build(
-        const std::vector<BamRecordPtr>& bin_records,
-        const std::string& chrom,
-        int32_t tid,
-        int32_t bin_start,
-        int32_t bin_end) const = 0;
-};
-
-class ILocalRealignModule {
-public:
-    virtual ~ILocalRealignModule() = default;
-
-    virtual std::vector<LocusEvidence> collect(
-        const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records) const = 0;
-};
-
-class IAssemblyModule {
-public:
-    virtual ~IAssemblyModule() = default;
-
-    virtual AssemblyCall assemble(
-        const ComponentCall& component,
-        const std::vector<LocusEvidence>& evidence,
-        const std::vector<BamRecordPtr>& bin_records) const = 0;
-};
-
-class IPlaceabilityModule {
-public:
-    virtual ~IPlaceabilityModule() = default;
-
-    virtual PlaceabilityReport score(
-        const AssemblyCall& assembly,
-        const std::vector<LocusEvidence>& evidence) const = 0;
-};
-
-class IGenotypingModule {
-public:
-    virtual ~IGenotypingModule() = default;
-
-    virtual GenotypeCall genotype(
-        const AssemblyCall& assembly,
-        const PlaceabilityReport& placeability,
-        const std::vector<LocusEvidence>& evidence) const = 0;
-};
-
-class IInsertionFragmentModule {
-public:
-    virtual ~IInsertionFragmentModule() = default;
-
-    virtual std::vector<InsertionFragment> extract(
-        const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records) const = 0;
-};
-
-class ITEQuickClassifierModule {
-public:
-    virtual ~ITEQuickClassifierModule() = default;
-
-    virtual bool is_enabled() const = 0;
-    virtual std::vector<FragmentTEHit> classify(
-        const std::vector<InsertionFragment>& fragments) const = 0;
-    virtual ClusterTECall vote_cluster(
-        const std::vector<FragmentTEHit>& hits) const = 0;
-};
-
-class IAnchorLockedModule {
-public:
-    virtual ~IAnchorLockedModule() = default;
-
-    virtual bool is_enabled() const = 0;
-    virtual AnchorLockedReport resolve(
-        const ComponentCall& component,
-        const std::vector<InsertionFragment>& fragments,
-        const std::vector<FragmentTEHit>& hits,
-        const ClusterTECall& te_call) const = 0;
-};
-
-class LinearBinComponentModule final : public IComponentModule {
+class LinearBinComponentModule final {
 public:
     std::vector<ComponentCall> build(
         const std::vector<BamRecordPtr>& bin_records,
         const std::string& chrom,
         int32_t tid,
         int32_t bin_start,
-        int32_t bin_end) const override;
+        int32_t bin_end) const;
 };
 
-class SimpleLocalRealignModule final : public ILocalRealignModule {
-public:
-    std::vector<LocusEvidence> collect(
-        const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records) const override;
-};
-
-class LazyDecodeAssemblyModule final : public IAssemblyModule {
-public:
-    AssemblyCall assemble(
-        const ComponentCall& component,
-        const std::vector<LocusEvidence>& evidence,
-        const std::vector<BamRecordPtr>& bin_records) const override;
-};
-
-class SimplePlaceabilityModule final : public IPlaceabilityModule {
-public:
-    PlaceabilityReport score(
-        const AssemblyCall& assembly,
-        const std::vector<LocusEvidence>& evidence) const override;
-};
-
-class SimpleGenotypingModule final : public IGenotypingModule {
-public:
-    GenotypeCall genotype(
-        const AssemblyCall& assembly,
-        const PlaceabilityReport& placeability,
-        const std::vector<LocusEvidence>& evidence) const override;
-};
-
-class CigarInsertionFragmentModule final : public IInsertionFragmentModule {
+class CigarInsertionFragmentModule final {
 public:
     explicit CigarInsertionFragmentModule(PipelineConfig config);
 
     std::vector<InsertionFragment> extract(
         const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records) const override;
+        const std::vector<BamRecordPtr>& bin_records) const;
 
 private:
     PipelineConfig config_;
 };
 
-class SplitSAFragmentModule final : public IInsertionFragmentModule {
+class SplitSAFragmentModule final {
 public:
     explicit SplitSAFragmentModule(PipelineConfig config);
 
     std::vector<InsertionFragment> extract(
         const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records) const override;
+        const std::vector<BamRecordPtr>& bin_records) const;
 
 private:
     PipelineConfig config_;
 };
 
-class TEKmerQuickClassifierModule final : public ITEQuickClassifierModule {
+class TEKmerQuickClassifierModule final {
 public:
     explicit TEKmerQuickClassifierModule(PipelineConfig config);
 
-    bool is_enabled() const override;
+    bool is_enabled() const;
     std::vector<FragmentTEHit> classify(
-        const std::vector<InsertionFragment>& fragments) const override;
+        const std::vector<InsertionFragment>& fragments) const;
     ClusterTECall vote_cluster(
-        const std::vector<FragmentTEHit>& hits) const override;
+        const std::vector<FragmentTEHit>& hits) const;
 
 private:
     PipelineConfig config_;
@@ -434,16 +322,16 @@ private:
     std::shared_ptr<const Index> index_;
 };
 
-class DeterministicAnchorLockedModule final : public IAnchorLockedModule {
+class DeterministicAnchorLockedModule final {
 public:
     explicit DeterministicAnchorLockedModule(PipelineConfig config);
 
-    bool is_enabled() const override;
+    bool is_enabled() const;
     AnchorLockedReport resolve(
         const ComponentCall& component,
         const std::vector<InsertionFragment>& fragments,
         const std::vector<FragmentTEHit>& hits,
-        const ClusterTECall& te_call) const override;
+        const ClusterTECall& te_call) const;
 
 private:
     PipelineConfig config_;
@@ -453,18 +341,7 @@ private:
 
 class Pipeline {
 public:
-    Pipeline(
-        PipelineConfig config,
-        std::unique_ptr<BamStreamReader> bam_reader,
-        std::unique_ptr<IGate1Module> gate1_module,
-        std::unique_ptr<IComponentModule> component_module,
-        std::unique_ptr<ILocalRealignModule> local_realign_module,
-        std::unique_ptr<IAssemblyModule> assembly_module,
-        std::unique_ptr<IPlaceabilityModule> placeability_module,
-        std::unique_ptr<IGenotypingModule> genotyping_module,
-        std::unique_ptr<IInsertionFragmentModule> ins_fragment_module,
-        std::unique_ptr<ITEQuickClassifierModule> te_classifier_module,
-        std::unique_ptr<IAnchorLockedModule> anchor_locked_module);
+    Pipeline(PipelineConfig config, std::unique_ptr<BamStreamReader> bam_reader);
 
     PipelineResult run() const;
 
@@ -499,48 +376,29 @@ private:
         int32_t bin_index,
         PipelineResult& result) const;
 
+    std::vector<LocusEvidence> collect_evidence(
+        const ComponentCall& component,
+        const std::vector<BamRecordPtr>& bin_records) const;
+
+    AssemblyCall assemble_component(
+        const ComponentCall& component,
+        const std::vector<BamRecordPtr>& bin_records) const;
+
+    PlaceabilityReport score_placeability(
+        const AssemblyCall& assembly,
+        const std::vector<LocusEvidence>& evidence) const;
+
+    GenotypeCall genotype_call(
+        const AssemblyCall& assembly,
+        const PlaceabilityReport& placeability) const;
+
     PipelineConfig config_;
     std::unique_ptr<BamStreamReader> bam_reader_;
-    std::unique_ptr<IGate1Module> gate1_module_;
-    std::unique_ptr<IComponentModule> component_module_;
-    std::unique_ptr<ILocalRealignModule> local_realign_module_;
-    std::unique_ptr<IAssemblyModule> assembly_module_;
-    std::unique_ptr<IPlaceabilityModule> placeability_module_;
-    std::unique_ptr<IGenotypingModule> genotyping_module_;
-    std::unique_ptr<IInsertionFragmentModule> ins_fragment_module_;
-    std::unique_ptr<ITEQuickClassifierModule> te_classifier_module_;
-    std::unique_ptr<IAnchorLockedModule> anchor_locked_module_;
-};
-
-class PipelineBuilder {
-public:
-    explicit PipelineBuilder(PipelineConfig config);
-
-    PipelineBuilder& with_bam_reader(std::unique_ptr<BamStreamReader> reader);
-    PipelineBuilder& with_gate1_module(std::unique_ptr<IGate1Module> module);
-    PipelineBuilder& with_component_module(std::unique_ptr<IComponentModule> module);
-    PipelineBuilder& with_local_realign_module(std::unique_ptr<ILocalRealignModule> module);
-    PipelineBuilder& with_assembly_module(std::unique_ptr<IAssemblyModule> module);
-    PipelineBuilder& with_placeability_module(std::unique_ptr<IPlaceabilityModule> module);
-    PipelineBuilder& with_genotyping_module(std::unique_ptr<IGenotypingModule> module);
-    PipelineBuilder& with_insertion_fragment_module(std::unique_ptr<IInsertionFragmentModule> module);
-    PipelineBuilder& with_te_classifier_module(std::unique_ptr<ITEQuickClassifierModule> module);
-    PipelineBuilder& with_anchor_locked_module(std::unique_ptr<IAnchorLockedModule> module);
-
-    std::unique_ptr<Pipeline> build();
-
-private:
-    PipelineConfig config_;
-    std::unique_ptr<BamStreamReader> bam_reader_;
-    std::unique_ptr<IGate1Module> gate1_module_;
-    std::unique_ptr<IComponentModule> component_module_;
-    std::unique_ptr<ILocalRealignModule> local_realign_module_;
-    std::unique_ptr<IAssemblyModule> assembly_module_;
-    std::unique_ptr<IPlaceabilityModule> placeability_module_;
-    std::unique_ptr<IGenotypingModule> genotyping_module_;
-    std::unique_ptr<IInsertionFragmentModule> ins_fragment_module_;
-    std::unique_ptr<ITEQuickClassifierModule> te_classifier_module_;
-    std::unique_ptr<IAnchorLockedModule> anchor_locked_module_;
+    SignalFirstGate1Module gate1_module_;
+    LinearBinComponentModule component_module_;
+    CigarInsertionFragmentModule ins_fragment_module_;
+    TEKmerQuickClassifierModule te_classifier_module_;
+    DeterministicAnchorLockedModule anchor_locked_module_;
 };
 
 std::unique_ptr<Pipeline> build_default_pipeline(const PipelineConfig& config);

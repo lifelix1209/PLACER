@@ -213,13 +213,13 @@ Long insertion：
 投票输入是该 component 的所有 `FragmentTEHit`：
 
 - 先过滤掉 `te_name` 为空的 hit（表示该片段没有命中任何 TE）
-- 要求 `fragment_count >= PipelineConfig.te_min_fragments_for_vote`（默认 3），否则直接不通过
+- 要求 `fragment_count >= PipelineConfig.te_min_fragments_for_vote`（默认 2），否则直接不通过
 - 统计每个 `te_name` 的票数，选择票数最多的 `best_te`
 - `vote_fraction = best_votes / fragment_count`
 - `median_identity`：对 `best_te` 对应的 hits 的 `kmer_support` 取中位数
 - `passed` 条件（默认）：
   - `vote_fraction >= PipelineConfig.te_vote_fraction_min`（0.60）
-  - 且 `median_identity >= PipelineConfig.te_median_identity_min`（0.60）
+  - 且 `median_identity >= PipelineConfig.te_median_identity_min`（0.50）
 
 ---
 

@@ -1,7 +1,7 @@
 #ifndef PLACER_GATE1_MODULE_H
 #define PLACER_GATE1_MODULE_H
 
-#include "pipeline.h"
+#include "bam_io.h"
 
 #include <cstdint>
 
@@ -27,11 +27,11 @@ struct Gate1SignalConfig {
     double max_nm_rate = 0.20;
 };
 
-class SignalFirstGate1Module final : public IGate1Module {
+class SignalFirstGate1Module final {
 public:
     explicit SignalFirstGate1Module(Gate1SignalConfig config = Gate1SignalConfig{});
 
-    bool pass_preliminary(const ReadView& read) const override;
+    bool pass_preliminary(const ReadView& read) const;
 
 private:
     Gate1SignalConfig config_;

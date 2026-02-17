@@ -1,7 +1,6 @@
 CMakeFiles/placer_pipeline.dir/src/gate1/gate1_module.cpp.o: \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/src/gate1/gate1_module.cpp \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/gate1_module.h \
-  /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/pipeline.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/bam_io.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/cstdint \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__config \
@@ -789,6 +788,4 @@ CMakeFiles/placer_pipeline.dir/src/gate1/gate1_module.cpp.o: \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts_log.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/kstring.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/kroundup.h \
-  /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts_endian.h \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/deque \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/deque.h
+  /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts_endian.h

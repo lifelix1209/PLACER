@@ -820,6 +820,7 @@ CMakeFiles/placer_pipeline.dir/src/component/insert_fragment_module.cpp.o: /User
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stddef.h \
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdint.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/bam_io.h \
+  /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/gate1_module.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/pipeline.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts_defs.h \
@@ -1646,6 +1647,7 @@ CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o: /Users/h
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stddef.h \
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdint.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/bam_io.h \
+  /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/gate1_module.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/pipeline.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts_defs.h \
@@ -2474,6 +2476,7 @@ CMakeFiles/placer_pipeline.dir/src/component/te_quick_classifier.cpp.o: /Users/h
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stddef.h \
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdint.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/bam_io.h \
+  /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/gate1_module.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/pipeline.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts_defs.h \
@@ -2743,7 +2746,6 @@ CMakeFiles/placer_pipeline.dir/src/gate1/gate1_module.cpp.o: /Users/hanzhang/Des
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/bit_reference.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/byte.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/complex.h \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/deque.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/fstream.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/functional.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/ios.h \
@@ -3077,7 +3079,6 @@ CMakeFiles/placer_pipeline.dir/src/gate1/gate1_module.cpp.o: /Users/hanzhang/Des
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/ctype.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/cwchar \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/cwctype \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/deque \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/errno.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/exception \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/functional \
@@ -3268,7 +3269,6 @@ CMakeFiles/placer_pipeline.dir/src/gate1/gate1_module.cpp.o: /Users/hanzhang/Des
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdint.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/bam_io.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/gate1_module.h \
-  /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/pipeline.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts_defs.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts_endian.h \

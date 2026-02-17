@@ -1,1 +1,0 @@
-UUID	Chrom	Start	End	Strand	Family	Subfamily	StartTE	EndTE	LengthIns	Inversion	UnmapCover	MedianMapQ	TEMatch	UsedReads	SpanReads	NumSamples	SampleReads	EmptyReads	EmptyPhase	NonRef	TSD	Consensus	Phasing	Remappable	Filter

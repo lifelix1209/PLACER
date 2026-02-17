@@ -1,22 +1,78 @@
 #include "pipeline.h"
-#include "gate1_module.h"
 
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
-#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <htslib/sam.h>
 
 namespace placer {
 namespace {
+
+constexpr int32_t kSoftClipSignalMin = 20;
+constexpr int32_t kLongInsertionSignalMin = 50;
+constexpr int32_t kLargeIndelEvidenceMin = 40;
+constexpr double kSaHintWeight = 0.35;
+constexpr int32_t kHistBinSize = 20;
+constexpr int32_t kHistPadding = 120;
+constexpr double kPeakMinWeight = 1.2;
+constexpr int32_t kPeakMergeDistance = 120;
+constexpr int32_t kWindowMergeGap = 80;
+constexpr int32_t kWindowMaxExpandBins = 30;
+constexpr double kWindowDropRatio = 0.35;
+constexpr int32_t kMinWindowSpan = 120;
+constexpr double kReadAssignMinScore = 0.8;
+constexpr double kReadAmbiguousRatio = 0.75;
+constexpr double kReadAssignDecayBp = 150.0;
+
+enum class EvidenceKind : uint8_t {
+    kSoftClip = 0,
+    kIndel = 1,
+    kSAHint = 2
+};
+
+struct EvidencePoint {
+    size_t read_index = 0;
+    int32_t pos = -1;
+    double weight = 0.0;
+    EvidenceKind kind = EvidenceKind::kSoftClip;
+    int32_t signal_len = 0;
+    uint8_t class_mask = 0;
+};
+
+struct ReadSignalSummary {
+    std::string read_id;
+    bool is_reverse = false;
+    bool has_sa_or_supp = false;
+    int32_t max_soft_clip = 0;
+    int32_t max_ins = 0;
+    uint8_t class_mask = 0;
+};
+
+struct EvidenceBundle {
+    std::vector<EvidencePoint> points;
+    std::vector<ReadSignalSummary> read_summaries;
+};
+
+struct DensityPeak {
+    int32_t pos = -1;
+    double weight = 0.0;
+};
+
+struct CandidateWindow {
+    int32_t start = -1;
+    int32_t end = -1;
+    int32_t center = -1;
+    double peak_weight = 0.0;
+};
 
 int32_t classify_tier(double delta_score) {
     if (delta_score >= 30.0) {
@@ -73,6 +129,383 @@ private:
     bool finished_ = false;
 };
 
+bool is_match_like(int op) {
+    return op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF;
+}
+
+int find_first_non_hard_clip(const uint32_t* cigar, int32_t n_cigar) {
+    for (int32_t i = 0; i < n_cigar; ++i) {
+        if (bam_cigar_op(cigar[i]) != BAM_CHARD_CLIP) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int find_last_non_hard_clip(const uint32_t* cigar, int32_t n_cigar) {
+    for (int32_t i = n_cigar - 1; i >= 0; --i) {
+        if (bam_cigar_op(cigar[i]) != BAM_CHARD_CLIP) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int32_t weighted_median_position(std::vector<std::pair<int32_t, double>> pos_weights) {
+    pos_weights.erase(
+        std::remove_if(pos_weights.begin(), pos_weights.end(), [](const auto& row) {
+            return row.second <= 0.0;
+        }),
+        pos_weights.end());
+    if (pos_weights.empty()) {
+        return -1;
+    }
+
+    std::sort(pos_weights.begin(), pos_weights.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+
+    double total_weight = 0.0;
+    for (const auto& row : pos_weights) {
+        total_weight += row.second;
+    }
+    if (total_weight <= 0.0) {
+        return pos_weights[pos_weights.size() / 2].first;
+    }
+
+    const double half_weight = 0.5 * total_weight;
+    double acc_weight = 0.0;
+    for (const auto& row : pos_weights) {
+        acc_weight += row.second;
+        if (acc_weight >= half_weight) {
+            return row.first;
+        }
+    }
+    return pos_weights.back().first;
+}
+
+std::vector<double> smooth_histogram(const std::vector<double>& hist) {
+    std::vector<double> smooth(hist.size(), 0.0);
+    for (size_t i = 0; i < hist.size(); ++i) {
+        double value = hist[i];
+        if (i >= 1) {
+            value += 0.60 * hist[i - 1];
+        }
+        if (i + 1 < hist.size()) {
+            value += 0.60 * hist[i + 1];
+        }
+        if (i >= 2) {
+            value += 0.25 * hist[i - 2];
+        }
+        if (i + 2 < hist.size()) {
+            value += 0.25 * hist[i + 2];
+        }
+        smooth[i] = value;
+    }
+    return smooth;
+}
+
+EvidenceBundle extract_evidence_points(
+    const std::vector<BamRecordPtr>& bin_records,
+    int32_t expected_tid) {
+    EvidenceBundle bundle;
+    bundle.read_summaries.resize(bin_records.size());
+
+    for (size_t idx = 0; idx < bin_records.size(); ++idx) {
+        if (!bin_records[idx]) {
+            continue;
+        }
+
+        ReadView view(bin_records[idx].get());
+        if (view.tid() != expected_tid) {
+            continue;
+        }
+
+        ReadSignalSummary summary;
+        summary.read_id = std::string(view.qname());
+        summary.is_reverse = (view.flag() & BAM_FREVERSE) != 0;
+        summary.has_sa_or_supp = view.has_sa_tag() || ((view.flag() & BAM_FSUPPLEMENTARY) != 0);
+
+        const uint32_t* cigar = view.cigar();
+        const int32_t n_cigar = view.n_cigar();
+        if (!cigar || n_cigar <= 0) {
+            if (summary.has_sa_or_supp) {
+                summary.class_mask |= kCandidateSplitSaSupplementary;
+            }
+            bundle.read_summaries[idx] = std::move(summary);
+            continue;
+        }
+
+        int32_t leading_soft = 0;
+        int32_t trailing_soft = 0;
+        const int first = find_first_non_hard_clip(cigar, n_cigar);
+        const int last = find_last_non_hard_clip(cigar, n_cigar);
+        if (first >= 0 && bam_cigar_op(cigar[first]) == BAM_CSOFT_CLIP) {
+            leading_soft = static_cast<int32_t>(bam_cigar_oplen(cigar[first]));
+        }
+        if (last >= 0 && bam_cigar_op(cigar[last]) == BAM_CSOFT_CLIP) {
+            trailing_soft = static_cast<int32_t>(bam_cigar_oplen(cigar[last]));
+        }
+
+        std::vector<EvidencePoint> local_points;
+        local_points.reserve(8);
+
+        int32_t ref_pos = view.pos();
+        for (int32_t ci = 0; ci < n_cigar; ++ci) {
+            const int op = bam_cigar_op(cigar[ci]);
+            const int32_t len = static_cast<int32_t>(bam_cigar_oplen(cigar[ci]));
+
+            if (op == BAM_CSOFT_CLIP) {
+                summary.max_soft_clip = std::max(summary.max_soft_clip, len);
+            } else if (op == BAM_CINS) {
+                summary.max_ins = std::max(summary.max_ins, len);
+            }
+
+            if (op == BAM_CINS && len >= kLargeIndelEvidenceMin) {
+                EvidencePoint point;
+                point.read_index = idx;
+                point.pos = ref_pos;
+                point.weight = 0.80 + (static_cast<double>(std::min(len, 400)) / 200.0);
+                point.kind = EvidenceKind::kIndel;
+                point.signal_len = len;
+                local_points.push_back(point);
+            } else if (op == BAM_CDEL && len >= kLargeIndelEvidenceMin) {
+                const double weight = 0.60 + (static_cast<double>(std::min(len, 400)) / 260.0);
+
+                EvidencePoint left_point;
+                left_point.read_index = idx;
+                left_point.pos = ref_pos;
+                left_point.weight = weight;
+                left_point.kind = EvidenceKind::kIndel;
+                left_point.signal_len = len;
+                local_points.push_back(left_point);
+
+                EvidencePoint right_point = left_point;
+                right_point.pos = ref_pos + len;
+                local_points.push_back(right_point);
+            }
+
+            if ((bam_cigar_type(op) & 2) != 0) {
+                ref_pos += len;
+            }
+        }
+        const int32_t ref_end = ref_pos;
+
+        if (leading_soft >= kSoftClipSignalMin) {
+            EvidencePoint point;
+            point.read_index = idx;
+            point.pos = view.pos();
+            point.weight = 1.00 + (static_cast<double>(std::min(leading_soft, 500)) / 180.0);
+            point.kind = EvidenceKind::kSoftClip;
+            point.signal_len = leading_soft;
+            local_points.push_back(point);
+        }
+        if (trailing_soft >= kSoftClipSignalMin) {
+            EvidencePoint point;
+            point.read_index = idx;
+            point.pos = ref_end;
+            point.weight = 1.00 + (static_cast<double>(std::min(trailing_soft, 500)) / 180.0);
+            point.kind = EvidenceKind::kSoftClip;
+            point.signal_len = trailing_soft;
+            local_points.push_back(point);
+        }
+
+        if (summary.has_sa_or_supp) {
+            EvidencePoint left_hint;
+            left_hint.read_index = idx;
+            left_hint.pos = view.pos();
+            left_hint.weight = kSaHintWeight;
+            left_hint.kind = EvidenceKind::kSAHint;
+            local_points.push_back(left_hint);
+
+            EvidencePoint right_hint = left_hint;
+            right_hint.pos = ref_end;
+            local_points.push_back(right_hint);
+        }
+
+        if (summary.has_sa_or_supp) {
+            summary.class_mask |= kCandidateSplitSaSupplementary;
+        }
+        if (summary.max_soft_clip >= kSoftClipSignalMin) {
+            summary.class_mask |= kCandidateSoftClip;
+        }
+        if (summary.max_ins >= kLongInsertionSignalMin) {
+            summary.class_mask |= kCandidateLongInsertion;
+        }
+
+        for (auto& point : local_points) {
+            point.class_mask = summary.class_mask;
+            bundle.points.push_back(point);
+        }
+        bundle.read_summaries[idx] = std::move(summary);
+    }
+
+    return bundle;
+}
+
+std::vector<CandidateWindow> build_density_windows(
+    const std::vector<EvidencePoint>& evidence,
+    int32_t bin_start,
+    int32_t bin_end) {
+    if (evidence.empty()) {
+        return {};
+    }
+
+    int32_t min_pos = evidence.front().pos;
+    int32_t max_pos = evidence.front().pos;
+    for (const auto& point : evidence) {
+        min_pos = std::min(min_pos, point.pos);
+        max_pos = std::max(max_pos, point.pos);
+    }
+
+    const int32_t hist_start = std::min(min_pos, bin_start) - kHistPadding;
+    const int32_t hist_end = std::max(max_pos, bin_end) + kHistPadding;
+    const int32_t num_bins = std::max(1, ((hist_end - hist_start) / kHistBinSize) + 1);
+
+    std::vector<double> hist(static_cast<size_t>(num_bins), 0.0);
+    for (const auto& point : evidence) {
+        int32_t idx = (point.pos - hist_start) / kHistBinSize;
+        idx = std::max(0, std::min(num_bins - 1, idx));
+        hist[static_cast<size_t>(idx)] += point.weight;
+    }
+    const std::vector<double> smooth = smooth_histogram(hist);
+
+    std::vector<DensityPeak> peaks;
+    for (int32_t i = 0; i < num_bins; ++i) {
+        const double center = smooth[static_cast<size_t>(i)];
+        if (center < kPeakMinWeight) {
+            continue;
+        }
+        const double left = (i > 0) ? smooth[static_cast<size_t>(i - 1)] : center;
+        const double right = (i + 1 < num_bins) ? smooth[static_cast<size_t>(i + 1)] : center;
+        if (center >= left && center >= right) {
+            DensityPeak peak;
+            peak.pos = hist_start + (i * kHistBinSize) + (kHistBinSize / 2);
+            peak.weight = center;
+            peaks.push_back(peak);
+        }
+    }
+
+    if (peaks.empty()) {
+        std::vector<std::pair<int32_t, double>> pos_weights;
+        pos_weights.reserve(evidence.size());
+        for (const auto& point : evidence) {
+            pos_weights.push_back({point.pos, point.weight});
+        }
+        const int32_t fallback_center = weighted_median_position(std::move(pos_weights));
+        if (fallback_center >= 0) {
+            DensityPeak fallback_peak;
+            fallback_peak.pos = fallback_center;
+            fallback_peak.weight = 1.0;
+            peaks.push_back(fallback_peak);
+        }
+    }
+    if (peaks.empty()) {
+        return {};
+    }
+
+    std::sort(peaks.begin(), peaks.end(), [](const DensityPeak& a, const DensityPeak& b) {
+        return a.pos < b.pos;
+    });
+
+    std::vector<DensityPeak> merged_peaks;
+    for (const auto& peak : peaks) {
+        if (merged_peaks.empty() ||
+            (peak.pos - merged_peaks.back().pos) > kPeakMergeDistance) {
+            merged_peaks.push_back(peak);
+            continue;
+        }
+
+        DensityPeak& back = merged_peaks.back();
+        const double total_weight = back.weight + peak.weight;
+        if (total_weight > 0.0) {
+            const double weighted_center =
+                ((back.weight * static_cast<double>(back.pos)) +
+                 (peak.weight * static_cast<double>(peak.pos))) / total_weight;
+            back.pos = static_cast<int32_t>(std::llround(weighted_center));
+        }
+        back.weight = total_weight;
+    }
+
+    std::vector<CandidateWindow> windows;
+    windows.reserve(merged_peaks.size());
+
+    for (const auto& peak : merged_peaks) {
+        int32_t center_idx = (peak.pos - hist_start) / kHistBinSize;
+        center_idx = std::max(0, std::min(num_bins - 1, center_idx));
+        const double center_weight = smooth[static_cast<size_t>(center_idx)];
+        const double expand_threshold = std::max(0.50, center_weight * kWindowDropRatio);
+
+        int32_t left = center_idx;
+        int32_t right = center_idx;
+
+        while (left > 0 &&
+               (center_idx - left) < kWindowMaxExpandBins &&
+               smooth[static_cast<size_t>(left - 1)] >= expand_threshold) {
+            --left;
+        }
+        while ((right + 1) < num_bins &&
+               (right - center_idx) < kWindowMaxExpandBins &&
+               smooth[static_cast<size_t>(right + 1)] >= expand_threshold) {
+            ++right;
+        }
+
+        int32_t start = hist_start + (left * kHistBinSize);
+        int32_t end = hist_start + ((right + 1) * kHistBinSize);
+        if ((end - start) < kMinWindowSpan) {
+            start = peak.pos - (kMinWindowSpan / 2);
+            end = start + kMinWindowSpan;
+        }
+
+        start = std::max(bin_start, start);
+        end = std::min(bin_end, end);
+        if (end <= start) {
+            continue;
+        }
+
+        CandidateWindow window;
+        window.start = start;
+        window.end = end;
+        window.center = std::max(window.start, std::min(window.end - 1, peak.pos));
+        window.peak_weight = std::max(peak.weight, center_weight);
+        windows.push_back(window);
+    }
+
+    if (windows.empty()) {
+        return windows;
+    }
+
+    std::sort(windows.begin(), windows.end(), [](const CandidateWindow& a, const CandidateWindow& b) {
+        if (a.start != b.start) {
+            return a.start < b.start;
+        }
+        return a.end < b.end;
+    });
+
+    std::vector<CandidateWindow> merged_windows;
+    for (const auto& window : windows) {
+        if (merged_windows.empty() ||
+            window.start > (merged_windows.back().end + kWindowMergeGap)) {
+            merged_windows.push_back(window);
+            continue;
+        }
+
+        CandidateWindow& back = merged_windows.back();
+        const double total_weight = back.peak_weight + window.peak_weight;
+        if (total_weight > 0.0) {
+            const double center =
+                ((back.peak_weight * static_cast<double>(back.center)) +
+                 (window.peak_weight * static_cast<double>(window.center))) / total_weight;
+            back.center = static_cast<int32_t>(std::llround(center));
+        }
+        back.start = std::min(back.start, window.start);
+        back.end = std::max(back.end, window.end);
+        back.peak_weight = std::max(back.peak_weight, window.peak_weight);
+    }
+
+    return merged_windows;
+}
+
 }  // namespace
 
 std::vector<ComponentCall> LinearBinComponentModule::build(
@@ -85,183 +518,178 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
         return {};
     }
 
-    ComponentCall call;
-    call.chrom = chrom;
-    call.tid = tid;
-    call.bin_start = bin_start;
-    call.bin_end = bin_end;
-    call.anchor_pos = (bin_start + bin_end) / 2;
+    const EvidenceBundle evidence_bundle = extract_evidence_points(bin_records, tid);
+    const auto windows = build_density_windows(evidence_bundle.points, bin_start, bin_end);
+    if (windows.empty()) {
+        return {};
+    }
 
-    call.read_indices.reserve(bin_records.size());
-    for (size_t i = 0; i < bin_records.size(); ++i) {
-        call.read_indices.push_back(i);
+    std::vector<std::vector<const EvidencePoint*>> evidence_by_read(bin_records.size());
+    for (const auto& point : evidence_bundle.points) {
+        if (point.read_index < evidence_by_read.size()) {
+            evidence_by_read[point.read_index].push_back(&point);
+        }
+    }
 
-        if (!bin_records[i]) {
+    std::vector<int32_t> assigned_window(bin_records.size(), -1);
+    std::vector<int32_t> assigned_count(windows.size(), 0);
+    std::vector<int32_t> ambiguous_count(windows.size(), 0);
+
+    for (size_t read_idx = 0; read_idx < evidence_by_read.size(); ++read_idx) {
+        const auto& read_points = evidence_by_read[read_idx];
+        if (read_points.empty()) {
             continue;
         }
 
-        ReadView view(bin_records[i].get());
-        const uint16_t flag = view.flag();
+        int32_t best_window = -1;
+        double best_score = 0.0;
+        double second_score = 0.0;
 
-        if (view.has_sa_tag() || ((flag & BAM_FSUPPLEMENTARY) != 0)) {
-            call.split_sa_read_indices.push_back(i);
-        }
+        for (size_t wi = 0; wi < windows.size(); ++wi) {
+            const auto& window = windows[wi];
+            double score = 0.0;
+            for (const EvidencePoint* point : read_points) {
+                if (!point) {
+                    continue;
+                }
+                const int32_t dist = std::abs(point->pos - window.center);
+                const double proximity =
+                    (point->pos >= window.start && point->pos <= window.end)
+                    ? 1.0
+                    : std::exp(-static_cast<double>(dist) / kReadAssignDecayBp);
+                score += point->weight * proximity;
+            }
 
-        const uint32_t* cigar = view.cigar();
-        const int32_t n_cigar = view.n_cigar();
-        int32_t max_soft = 0;
-        int32_t max_ins = 0;
-        for (int32_t ci = 0; ci < n_cigar; ++ci) {
-            const int op = bam_cigar_op(cigar[ci]);
-            const int32_t len = static_cast<int32_t>(bam_cigar_oplen(cigar[ci]));
-            if (op == BAM_CSOFT_CLIP) {
-                max_soft = std::max(max_soft, len);
-            } else if (op == BAM_CINS) {
-                max_ins = std::max(max_ins, len);
+            if (score > best_score) {
+                second_score = best_score;
+                best_score = score;
+                best_window = static_cast<int32_t>(wi);
+            } else if (score > second_score) {
+                second_score = score;
             }
         }
 
-        if (max_soft >= 20) {
-            call.soft_clip_read_indices.push_back(i);
+        if (best_window < 0 || best_score < kReadAssignMinScore) {
+            continue;
         }
-        if (max_ins >= 50) {
-            call.insertion_read_indices.push_back(i);
-        }
-    }
-
-    return {std::move(call)};
-}
-
-std::vector<LocusEvidence> SimpleLocalRealignModule::collect(
-    const ComponentCall& component,
-    const std::vector<BamRecordPtr>& bin_records) const {
-    std::vector<LocusEvidence> evidence;
-    evidence.reserve(component.read_indices.size());
-
-    const int32_t center = (component.bin_start + component.bin_end) / 2;
-
-    for (size_t idx : component.read_indices) {
-        if (idx >= bin_records.size() || !bin_records[idx]) {
+        if (second_score >= best_score * kReadAmbiguousRatio) {
+            ambiguous_count[static_cast<size_t>(best_window)] += 1;
             continue;
         }
 
-        ReadView view(bin_records[idx].get());
-        LocusEvidence e;
-        e.tid = view.tid();
-        e.pos = view.pos();
-        e.read_index = idx;
-
-        const int32_t distance = std::abs(view.pos() - center);
-        e.normalized_score = std::max(0.0, 1.0 - static_cast<double>(distance) / 10000.0);
-        evidence.push_back(e);
+        assigned_window[read_idx] = best_window;
+        assigned_count[static_cast<size_t>(best_window)] += 1;
     }
 
-    return evidence;
-}
+    std::vector<ComponentCall> components;
+    components.reserve(windows.size());
 
-AssemblyCall LazyDecodeAssemblyModule::assemble(
-    const ComponentCall& component,
-    const std::vector<LocusEvidence>& evidence,
-    const std::vector<BamRecordPtr>& bin_records) const {
-    (void)evidence;
+    for (size_t wi = 0; wi < windows.size(); ++wi) {
+        if (assigned_count[wi] <= 0) {
+            continue;
+        }
 
-    AssemblyCall call;
-    call.tid = component.tid;
-    call.pos = component.anchor_pos;
+        ComponentCall call;
+        call.chrom = chrom;
+        call.tid = tid;
+        call.bin_start = windows[wi].start;
+        call.bin_end = windows[wi].end;
+        call.anchor_pos = windows[wi].center;
+        call.peak_weight = windows[wi].peak_weight;
 
-    if (!component.read_indices.empty()) {
-        const size_t idx = component.read_indices.front();
-        if (idx < bin_records.size() && bin_records[idx]) {
-            ReadView view(bin_records[idx].get());
-            std::string seq = view.decode_sequence();  // Lazy decode: only here.
-            if (seq.size() > 300) {
-                seq.resize(300);
+        const int32_t denom = assigned_count[wi] + ambiguous_count[wi];
+        if (denom > 0) {
+            call.ambiguous_frac = static_cast<double>(ambiguous_count[wi]) / static_cast<double>(denom);
+        }
+
+        std::vector<std::pair<int32_t, double>> anchor_points;
+        for (size_t read_idx = 0; read_idx < assigned_window.size(); ++read_idx) {
+            if (assigned_window[read_idx] != static_cast<int32_t>(wi)) {
+                continue;
             }
-            call.consensus = std::move(seq);
+
+            call.read_indices.push_back(read_idx);
+            if (read_idx >= evidence_bundle.read_summaries.size()) {
+                continue;
+            }
+
+            const auto& summary = evidence_bundle.read_summaries[read_idx];
+            if (summary.max_soft_clip >= kSoftClipSignalMin) {
+                call.soft_clip_read_indices.push_back(read_idx);
+            }
+            if (summary.has_sa_or_supp) {
+                call.split_sa_read_indices.push_back(read_idx);
+            }
+            if (summary.max_ins >= kLongInsertionSignalMin) {
+                call.insertion_read_indices.push_back(read_idx);
+            }
+        }
+
+        for (const auto& point : evidence_bundle.points) {
+            if (point.read_index >= assigned_window.size() ||
+                assigned_window[point.read_index] != static_cast<int32_t>(wi)) {
+                continue;
+            }
+
+            anchor_points.push_back({point.pos, point.weight});
+            switch (point.kind) {
+                case EvidenceKind::kSoftClip:
+                    call.evidence_soft_clip_count += 1;
+                    break;
+                case EvidenceKind::kIndel:
+                    call.evidence_indel_count += 1;
+                    break;
+                case EvidenceKind::kSAHint:
+                    call.evidence_sa_hint_count += 1;
+                    break;
+            }
+
+            BreakpointCandidate candidate;
+            candidate.chrom = chrom;
+            candidate.pos = point.pos;
+            candidate.read_index = point.read_index;
+            candidate.class_mask = point.class_mask;
+            if (point.read_index < evidence_bundle.read_summaries.size()) {
+                const auto& summary = evidence_bundle.read_summaries[point.read_index];
+                candidate.read_id = summary.read_id;
+                candidate.is_reverse = summary.is_reverse;
+                candidate.anchor_len = summary.max_soft_clip;
+            }
+            if (point.kind == EvidenceKind::kSoftClip) {
+                candidate.clip_len = point.signal_len;
+            } else if (point.kind == EvidenceKind::kIndel) {
+                candidate.ins_len = point.signal_len;
+            }
+            call.breakpoint_candidates.push_back(std::move(candidate));
+        }
+
+        if (!anchor_points.empty()) {
+            const int32_t anchor = weighted_median_position(std::move(anchor_points));
+            if (anchor >= 0) {
+                call.anchor_pos = anchor;
+            }
+        }
+
+        if (!call.read_indices.empty()) {
+            components.push_back(std::move(call));
         }
     }
 
-    return call;
+    return components;
 }
 
-PlaceabilityReport SimplePlaceabilityModule::score(
-    const AssemblyCall& assembly,
-    const std::vector<LocusEvidence>& evidence) const {
-    PlaceabilityReport report;
-    report.tid = assembly.tid;
-    report.pos = assembly.pos;
-    report.support_reads = static_cast<int32_t>(evidence.size());
-
-    double score_sum = 0.0;
-    for (const auto& row : evidence) {
-        score_sum += row.normalized_score;
-    }
-
-    report.delta_score = report.support_reads > 0
-        ? (score_sum / static_cast<double>(report.support_reads)) * 100.0
-        : 0.0;
-    report.tier = classify_tier(report.delta_score);
-
-    return report;
-}
-
-GenotypeCall SimpleGenotypingModule::genotype(
-    const AssemblyCall& assembly,
-    const PlaceabilityReport& placeability,
-    const std::vector<LocusEvidence>& evidence) const {
-    (void)evidence;
-
-    GenotypeCall call;
-    call.tid = assembly.tid;
-    call.pos = assembly.pos;
-
-    const double af = std::clamp(static_cast<double>(placeability.support_reads) / 20.0, 0.0, 1.0);
-    call.af = af;
-    call.gq = static_cast<int32_t>(std::round(placeability.delta_score));
-
-    if (af >= 0.8) {
-        call.genotype = "1/1";
-    } else if (af >= 0.2) {
-        call.genotype = "0/1";
-    } else {
-        call.genotype = "0/0";
-    }
-
-    return call;
-}
-
-Pipeline::Pipeline(
-    PipelineConfig config,
-    std::unique_ptr<BamStreamReader> bam_reader,
-    std::unique_ptr<IGate1Module> gate1_module,
-    std::unique_ptr<IComponentModule> component_module,
-    std::unique_ptr<ILocalRealignModule> local_realign_module,
-    std::unique_ptr<IAssemblyModule> assembly_module,
-    std::unique_ptr<IPlaceabilityModule> placeability_module,
-    std::unique_ptr<IGenotypingModule> genotyping_module,
-    std::unique_ptr<IInsertionFragmentModule> ins_fragment_module,
-    std::unique_ptr<ITEQuickClassifierModule> te_classifier_module,
-    std::unique_ptr<IAnchorLockedModule> anchor_locked_module)
+Pipeline::Pipeline(PipelineConfig config, std::unique_ptr<BamStreamReader> bam_reader)
     : config_(std::move(config)),
       bam_reader_(std::move(bam_reader)),
-      gate1_module_(std::move(gate1_module)),
-      component_module_(std::move(component_module)),
-      local_realign_module_(std::move(local_realign_module)),
-      assembly_module_(std::move(assembly_module)),
-      placeability_module_(std::move(placeability_module)),
-      genotyping_module_(std::move(genotyping_module)),
-      ins_fragment_module_(std::move(ins_fragment_module)),
-      te_classifier_module_(std::move(te_classifier_module)),
-      anchor_locked_module_(std::move(anchor_locked_module)) {}
+      gate1_module_(),
+      component_module_(),
+      ins_fragment_module_(config_),
+      te_classifier_module_(config_),
+      anchor_locked_module_(config_) {}
 
 PipelineResult Pipeline::run() const {
     if (!bam_reader_ || !bam_reader_->is_valid()) {
         throw std::runtime_error("BAM reader is not valid");
-    }
-    if (!gate1_module_ || !component_module_ || !local_realign_module_ ||
-        !assembly_module_ || !placeability_module_ || !genotyping_module_ ||
-        !ins_fragment_module_ || !te_classifier_module_ || !anchor_locked_module_) {
-        throw std::runtime_error("Pipeline modules are not fully configured");
     }
 
     if (config_.enable_parallel) {
@@ -348,7 +776,7 @@ void Pipeline::consume_record(
     }
 
     ReadView view(record.get());
-    if (!gate1_module_->pass_preliminary(view)) {
+    if (!gate1_module_.pass_preliminary(view)) {
         return;
     }
 
@@ -397,6 +825,97 @@ void Pipeline::flush_current_bin(
     state.current_bin_records.clear();
 }
 
+std::vector<LocusEvidence> Pipeline::collect_evidence(
+    const ComponentCall& component,
+    const std::vector<BamRecordPtr>& bin_records) const {
+    std::vector<LocusEvidence> evidence;
+    evidence.reserve(component.read_indices.size());
+
+    const int32_t center = component.anchor_pos;
+
+    for (size_t idx : component.read_indices) {
+        if (idx >= bin_records.size() || !bin_records[idx]) {
+            continue;
+        }
+
+        ReadView view(bin_records[idx].get());
+        LocusEvidence e;
+        e.tid = view.tid();
+        e.pos = view.pos();
+        e.read_index = idx;
+
+        const int32_t distance = std::abs(view.pos() - center);
+        e.normalized_score = std::max(0.0, 1.0 - static_cast<double>(distance) / 10000.0);
+        evidence.push_back(e);
+    }
+
+    return evidence;
+}
+
+AssemblyCall Pipeline::assemble_component(
+    const ComponentCall& component,
+    const std::vector<BamRecordPtr>& bin_records) const {
+    AssemblyCall call;
+    call.tid = component.tid;
+    call.pos = component.anchor_pos;
+
+    if (!component.read_indices.empty()) {
+        const size_t idx = component.read_indices.front();
+        if (idx < bin_records.size() && bin_records[idx]) {
+            ReadView view(bin_records[idx].get());
+            std::string seq = view.decode_sequence();
+            if (seq.size() > 300) {
+                seq.resize(300);
+            }
+            call.consensus = std::move(seq);
+        }
+    }
+
+    return call;
+}
+
+PlaceabilityReport Pipeline::score_placeability(
+    const AssemblyCall& assembly,
+    const std::vector<LocusEvidence>& evidence) const {
+    PlaceabilityReport report;
+    report.tid = assembly.tid;
+    report.pos = assembly.pos;
+    report.support_reads = static_cast<int32_t>(evidence.size());
+
+    double score_sum = 0.0;
+    for (const auto& row : evidence) {
+        score_sum += row.normalized_score;
+    }
+
+    report.delta_score = report.support_reads > 0
+        ? (score_sum / static_cast<double>(report.support_reads)) * 100.0
+        : 0.0;
+    report.tier = classify_tier(report.delta_score);
+    return report;
+}
+
+GenotypeCall Pipeline::genotype_call(
+    const AssemblyCall& assembly,
+    const PlaceabilityReport& placeability) const {
+    GenotypeCall call;
+    call.tid = assembly.tid;
+    call.pos = assembly.pos;
+
+    const double af = std::clamp(static_cast<double>(placeability.support_reads) / 20.0, 0.0, 1.0);
+    call.af = af;
+    call.gq = static_cast<int32_t>(std::round(placeability.delta_score));
+
+    if (af >= 0.8) {
+        call.genotype = "1/1";
+    } else if (af >= 0.2) {
+        call.genotype = "0/1";
+    } else {
+        call.genotype = "0/0";
+    }
+
+    return call;
+}
+
 void Pipeline::process_bin_records(
     std::vector<BamRecordPtr>&& bin_records,
     int32_t tid,
@@ -412,38 +931,38 @@ void Pipeline::process_bin_records(
     const int32_t bin_end = bin_start + config_.bin_size;
     const std::string chrom = bam_reader_->chromosome_name(tid);
 
-    auto components = component_module_->build(bin_records, chrom, tid, bin_start, bin_end);
+    auto components = component_module_.build(bin_records, chrom, tid, bin_start, bin_end);
     result.built_components += static_cast<int64_t>(components.size());
 
     for (const auto& component : components) {
-        std::vector<InsertionFragment> fragments;
+        std::vector<InsertionFragment> fragments = ins_fragment_module_.extract(component, bin_records);
         std::vector<FragmentTEHit> hits;
         ClusterTECall te_call;
+
+        if (te_classifier_module_.is_enabled()) {
+            hits = te_classifier_module_.classify(fragments);
+            te_call = te_classifier_module_.vote_cluster(hits);
+        }
+        // Only emit TE-passing calls.
+        if (!te_call.passed || te_call.te_name.empty()) {
+            continue;
+        }
+
         AnchorLockedReport anchor_report;
-
-        if (ins_fragment_module_) {
-            fragments = ins_fragment_module_->extract(component, bin_records);
-        }
-        if (te_classifier_module_) {
-            if (te_classifier_module_->is_enabled()) {
-                hits = te_classifier_module_->classify(fragments);
-                te_call = te_classifier_module_->vote_cluster(hits);
-            }
-        }
-        if (anchor_locked_module_ && anchor_locked_module_->is_enabled()) {
-            anchor_report = anchor_locked_module_->resolve(component, fragments, hits, te_call);
+        if (anchor_locked_module_.is_enabled()) {
+            anchor_report = anchor_locked_module_.resolve(component, fragments, hits, te_call);
         }
 
-        auto evidence = local_realign_module_->collect(component, bin_records);
+        auto evidence = collect_evidence(component, bin_records);
         result.evidence_rows += static_cast<int64_t>(evidence.size());
 
-        AssemblyCall assembly = assembly_module_->assemble(component, evidence, bin_records);
+        AssemblyCall assembly = assemble_component(component, bin_records);
         result.assembled_calls += 1;
 
-        PlaceabilityReport placeability = placeability_module_->score(assembly, evidence);
+        PlaceabilityReport placeability = score_placeability(assembly, evidence);
         result.placeability_calls += 1;
 
-        GenotypeCall genotype = genotyping_module_->genotype(assembly, placeability, evidence);
+        GenotypeCall genotype = genotype_call(assembly, placeability);
         result.genotype_calls += 1;
 
         FinalCall call;
@@ -452,12 +971,7 @@ void Pipeline::process_bin_records(
         call.pos = assembly.pos;
         call.window_start = component.bin_start;
         call.window_end = component.bin_end;
-
-        if (te_call.passed) {
-            call.te_name = te_call.te_name;
-        } else if (anchor_report.has_result && !anchor_report.te_name.empty()) {
-            call.te_name = anchor_report.te_name;
-        }
+        call.te_name = te_call.te_name;
         call.te_vote_fraction = te_call.vote_fraction;
         call.te_median_identity = te_call.median_identity;
         call.te_fragment_count = te_call.fragment_count;
@@ -491,108 +1005,9 @@ void Pipeline::process_bin_records(
     }
 }
 
-PipelineBuilder::PipelineBuilder(PipelineConfig config)
-    : config_(std::move(config)) {}
-
-PipelineBuilder& PipelineBuilder::with_bam_reader(std::unique_ptr<BamStreamReader> reader) {
-    bam_reader_ = std::move(reader);
-    return *this;
-}
-
-PipelineBuilder& PipelineBuilder::with_gate1_module(std::unique_ptr<IGate1Module> module) {
-    gate1_module_ = std::move(module);
-    return *this;
-}
-
-PipelineBuilder& PipelineBuilder::with_component_module(std::unique_ptr<IComponentModule> module) {
-    component_module_ = std::move(module);
-    return *this;
-}
-
-PipelineBuilder& PipelineBuilder::with_local_realign_module(std::unique_ptr<ILocalRealignModule> module) {
-    local_realign_module_ = std::move(module);
-    return *this;
-}
-
-PipelineBuilder& PipelineBuilder::with_assembly_module(std::unique_ptr<IAssemblyModule> module) {
-    assembly_module_ = std::move(module);
-    return *this;
-}
-
-PipelineBuilder& PipelineBuilder::with_placeability_module(std::unique_ptr<IPlaceabilityModule> module) {
-    placeability_module_ = std::move(module);
-    return *this;
-}
-
-PipelineBuilder& PipelineBuilder::with_genotyping_module(std::unique_ptr<IGenotypingModule> module) {
-    genotyping_module_ = std::move(module);
-    return *this;
-}
-
-PipelineBuilder& PipelineBuilder::with_insertion_fragment_module(std::unique_ptr<IInsertionFragmentModule> module) {
-    ins_fragment_module_ = std::move(module);
-    return *this;
-}
-
-PipelineBuilder& PipelineBuilder::with_te_classifier_module(std::unique_ptr<ITEQuickClassifierModule> module) {
-    te_classifier_module_ = std::move(module);
-    return *this;
-}
-
-PipelineBuilder& PipelineBuilder::with_anchor_locked_module(std::unique_ptr<IAnchorLockedModule> module) {
-    anchor_locked_module_ = std::move(module);
-    return *this;
-}
-
-std::unique_ptr<Pipeline> PipelineBuilder::build() {
-    if (!bam_reader_) {
-        bam_reader_ = make_bam_reader(config_.bam_path, config_.bam_threads);
-    }
-    if (!gate1_module_) {
-        gate1_module_ = std::make_unique<SignalFirstGate1Module>();
-    }
-    if (!component_module_) {
-        component_module_ = std::make_unique<LinearBinComponentModule>();
-    }
-    if (!local_realign_module_) {
-        local_realign_module_ = std::make_unique<SimpleLocalRealignModule>();
-    }
-    if (!assembly_module_) {
-        assembly_module_ = std::make_unique<LazyDecodeAssemblyModule>();
-    }
-    if (!placeability_module_) {
-        placeability_module_ = std::make_unique<SimplePlaceabilityModule>();
-    }
-    if (!genotyping_module_) {
-        genotyping_module_ = std::make_unique<SimpleGenotypingModule>();
-    }
-    if (!ins_fragment_module_) {
-        ins_fragment_module_ = std::make_unique<CigarInsertionFragmentModule>(config_);
-    }
-    if (!te_classifier_module_) {
-        te_classifier_module_ = std::make_unique<TEKmerQuickClassifierModule>(config_);
-    }
-    if (!anchor_locked_module_) {
-        anchor_locked_module_ = std::make_unique<DeterministicAnchorLockedModule>(config_);
-    }
-
-    return std::make_unique<Pipeline>(
-        config_,
-        std::move(bam_reader_),
-        std::move(gate1_module_),
-        std::move(component_module_),
-        std::move(local_realign_module_),
-        std::move(assembly_module_),
-        std::move(placeability_module_),
-        std::move(genotyping_module_),
-        std::move(ins_fragment_module_),
-        std::move(te_classifier_module_),
-        std::move(anchor_locked_module_));
-}
-
 std::unique_ptr<Pipeline> build_default_pipeline(const PipelineConfig& config) {
-    PipelineBuilder builder(config);
-    return builder.build();
+    auto reader = make_bam_reader(config.bam_path, config.bam_threads);
+    return std::make_unique<Pipeline>(config, std::move(reader));
 }
 
 }  // namespace placer

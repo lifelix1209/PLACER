@@ -819,6 +819,7 @@ CMakeFiles/placer.dir/src/main.cpp.o: /Users/hanzhang/Desktop/File/softwares/ope
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stddef.h \
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdint.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/bam_io.h \
+  /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/gate1_module.h \
   /Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/pipeline.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts.h \
   /opt/homebrew/lib/python3.13/site-packages/pysam/include/htslib/htslib/hts_defs.h \
@@ -1702,6 +1703,8 @@ CMakeFiles/placer.dir/src/main.cpp.o: /Users/hanzhang/Desktop/File/softwares/ope
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__iterator/default_sentinel.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__functional/mem_fn.h:
+
+/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/include/gate1_module.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__iterator/access.h:
 
