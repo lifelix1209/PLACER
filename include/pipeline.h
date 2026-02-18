@@ -234,6 +234,11 @@ struct PipelineConfig {
     double te_vote_fraction_min = 0.60;
     double te_median_identity_min = 0.50;
     int32_t te_min_fragments_for_vote = 2;
+    double te_softclip_low_complexity_at_frac_min = 0.90;
+    int32_t te_softclip_low_complexity_homopolymer_min = 80;
+    int32_t te_pure_softclip_min_reads = 10;
+    int32_t te_pure_softclip_min_fragments = 10;
+    double te_pure_softclip_min_identity = 0.90;
 
     // Module 2.3: deterministic TE consensus (anchor-locked + theta).
     bool te_consensus_enable = true;
@@ -257,6 +262,7 @@ struct PipelineConfig {
 
     bool enable_parallel = false;
     size_t batch_size = 1000;
+    int32_t parallel_workers = 0;
 };
 
 struct PipelineResult {

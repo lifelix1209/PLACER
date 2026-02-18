@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/placer.dir/src/main.cpp.o -o placer  -Wl,-rpath,/opt/anaconda3/lib libplacer_pipeline.a libplacer_bam_io.a /opt/anaconda3/lib/libhts.dylib

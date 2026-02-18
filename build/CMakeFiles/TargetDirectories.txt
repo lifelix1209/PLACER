@@ -1,5 +1,0 @@
-/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build/CMakeFiles/placer_bam_io.dir
-/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build/CMakeFiles/placer_pipeline.dir
-/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build/CMakeFiles/placer.dir
-/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build/CMakeFiles/edit_cache.dir
-/Users/hanzhang/Desktop/File/softwares/opensource/PLACER/build/CMakeFiles/rebuild_cache.dir

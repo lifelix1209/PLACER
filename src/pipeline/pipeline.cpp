@@ -129,6 +129,12 @@ private:
     bool finished_ = false;
 };
 
+struct BinTask {
+    std::vector<BamRecordPtr> records;
+    int32_t tid = -1;
+    int32_t bin_index = -1;
+};
+
 bool is_match_like(int op) {
     return op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF;
 }
@@ -720,23 +726,46 @@ PipelineResult Pipeline::run_streaming() const {
 
 PipelineResult Pipeline::run_parallel() const {
     PipelineResult result;
-    SafeQueue<std::vector<BamRecordPtr>> batch_queue;
+    const int32_t worker_count = std::max(
+        1,
+        (config_.parallel_workers > 0) ? config_.parallel_workers : config_.bam_threads);
+    SafeQueue<BinTask> bin_queue;
+    std::vector<PipelineResult> worker_results(static_cast<size_t>(worker_count));
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<size_t>(worker_count));
 
-    PipelineResult worker_result;
-    std::thread worker([this, &batch_queue, &worker_result]() {
-        StreamingState worker_state;
-        std::vector<BamRecordPtr> batch;
-        while (batch_queue.pop(batch)) {
-            for (auto& record : batch) {
-                consume_record(std::move(record), worker_state, worker_result);
+    for (int32_t wi = 0; wi < worker_count; ++wi) {
+        workers.emplace_back([this, wi, &bin_queue, &worker_results]() {
+            BinTask task;
+            while (bin_queue.pop(task)) {
+                process_bin_records(
+                    std::move(task.records),
+                    task.tid,
+                    task.bin_index,
+                    worker_results[static_cast<size_t>(wi)]);
+                task = BinTask();
             }
-            batch.clear();
-        }
-        flush_current_bin(worker_state, worker_result);
-    });
+        });
+    }
 
-    std::vector<BamRecordPtr> current_batch;
-    current_batch.reserve(config_.batch_size);
+    int64_t gate1_passed = 0;
+    int32_t current_tid = -1;
+    int32_t current_bin_index = -1;
+    std::vector<BamRecordPtr> current_bin_records;
+    current_bin_records.reserve(config_.batch_size);
+
+    const auto flush_bin_task = [&]() {
+        if (current_bin_records.empty()) {
+            return;
+        }
+        BinTask task;
+        task.records = std::move(current_bin_records);
+        task.tid = current_tid;
+        task.bin_index = current_bin_index;
+        bin_queue.push(std::move(task));
+        current_bin_records.clear();
+        current_bin_records.reserve(config_.batch_size);
+    };
 
     const auto progress_cb = [this](int64_t processed, int32_t tid) {
         std::cerr << "[Pipeline] processed=" << processed << " current_tid=" << tid << '\n';
@@ -744,26 +773,75 @@ PipelineResult Pipeline::run_parallel() const {
     };
 
     const int64_t total_reads = bam_reader_->stream(
-        [this, &current_batch, &batch_queue](BamRecordPtr&& record) {
-            current_batch.push_back(std::move(record));
-            if (current_batch.size() >= config_.batch_size) {
-                batch_queue.push(std::move(current_batch));
-                current_batch.clear();
-                current_batch.reserve(config_.batch_size);
+        [this, &gate1_passed, &current_tid, &current_bin_index, &current_bin_records, &flush_bin_task](
+            BamRecordPtr&& record) {
+            if (!record) {
+                return;
             }
+
+            ReadView view(record.get());
+            if (!gate1_module_.pass_preliminary(view)) {
+                return;
+            }
+            ++gate1_passed;
+
+            const int32_t bin_index = (config_.bin_size > 0) ? (view.pos() / config_.bin_size) : 0;
+            if (current_tid < 0) {
+                current_tid = view.tid();
+                current_bin_index = bin_index;
+            }
+
+            if (view.tid() != current_tid || bin_index != current_bin_index) {
+                flush_bin_task();
+                current_tid = view.tid();
+                current_bin_index = bin_index;
+            }
+            current_bin_records.push_back(std::move(record));
         },
         progress_cb,
         config_.progress_interval);
 
-    if (!current_batch.empty()) {
-        batch_queue.push(std::move(current_batch));
+    flush_bin_task();
+
+    bin_queue.close();
+    for (auto& worker : workers) {
+        worker.join();
     }
 
-    batch_queue.close();
-    worker.join();
-
-    result = std::move(worker_result);
     result.total_reads = total_reads;
+    result.gate1_passed = gate1_passed;
+
+    for (auto& worker_result : worker_results) {
+        result.processed_bins += worker_result.processed_bins;
+        result.built_components += worker_result.built_components;
+        result.evidence_rows += worker_result.evidence_rows;
+        result.assembled_calls += worker_result.assembled_calls;
+        result.placeability_calls += worker_result.placeability_calls;
+        result.genotype_calls += worker_result.genotype_calls;
+        for (auto& call : worker_result.final_calls) {
+            result.final_calls.push_back(std::move(call));
+        }
+    }
+
+    std::sort(result.final_calls.begin(), result.final_calls.end(), [](const FinalCall& a, const FinalCall& b) {
+        if (a.tid != b.tid) {
+            return a.tid < b.tid;
+        }
+        if (a.pos != b.pos) {
+            return a.pos < b.pos;
+        }
+        if (a.window_start != b.window_start) {
+            return a.window_start < b.window_start;
+        }
+        if (a.window_end != b.window_end) {
+            return a.window_end < b.window_end;
+        }
+        if (a.chrom != b.chrom) {
+            return a.chrom < b.chrom;
+        }
+        return a.te_name < b.te_name;
+    });
+
     return result;
 }
 
@@ -933,6 +1011,9 @@ void Pipeline::process_bin_records(
 
     auto components = component_module_.build(bin_records, chrom, tid, bin_start, bin_end);
     result.built_components += static_cast<int64_t>(components.size());
+    const int32_t pure_softclip_min_reads = std::max(1, config_.te_pure_softclip_min_reads);
+    const int32_t pure_softclip_min_fragments = std::max(1, config_.te_pure_softclip_min_fragments);
+    const double pure_softclip_min_identity = std::clamp(config_.te_pure_softclip_min_identity, 0.0, 1.0);
 
     for (const auto& component : components) {
         std::vector<InsertionFragment> fragments = ins_fragment_module_.extract(component, bin_records);
@@ -946,6 +1027,18 @@ void Pipeline::process_bin_records(
         // Only emit TE-passing calls.
         if (!te_call.passed || te_call.te_name.empty()) {
             continue;
+        }
+        const bool pure_softclip_component =
+            component.split_sa_read_indices.empty() &&
+            component.insertion_read_indices.empty() &&
+            !component.soft_clip_read_indices.empty();
+        if (pure_softclip_component) {
+            const int32_t softclip_support_reads = static_cast<int32_t>(component.soft_clip_read_indices.size());
+            if (softclip_support_reads < pure_softclip_min_reads ||
+                te_call.fragment_count < pure_softclip_min_fragments ||
+                te_call.median_identity < pure_softclip_min_identity) {
+                continue;
+            }
         }
 
         AnchorLockedReport anchor_report;

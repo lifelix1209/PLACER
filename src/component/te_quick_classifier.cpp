@@ -80,6 +80,60 @@ std::string reverse_complement(const std::string& s) {
     return out;
 }
 
+bool is_softclip_source(InsertionFragmentSource source) {
+    return source == InsertionFragmentSource::kClipRefLeft ||
+           source == InsertionFragmentSource::kClipRefRight;
+}
+
+int32_t max_homopolymer_run(const std::string& seq) {
+    if (seq.empty()) {
+        return 0;
+    }
+
+    int32_t best = 1;
+    int32_t run = 1;
+    for (size_t i = 1; i < seq.size(); ++i) {
+        if (seq[i] == seq[i - 1]) {
+            ++run;
+            best = std::max(best, run);
+        } else {
+            run = 1;
+        }
+    }
+    return best;
+}
+
+double at_fraction(const std::string& seq) {
+    int32_t at = 0;
+    int32_t total = 0;
+    for (char c : seq) {
+        if (c != 'A' && c != 'C' && c != 'G' && c != 'T') {
+            continue;
+        }
+        ++total;
+        if (c == 'A' || c == 'T') {
+            ++at;
+        }
+    }
+    if (total <= 0) {
+        return 0.0;
+    }
+    return static_cast<double>(at) / static_cast<double>(total);
+}
+
+bool is_low_complexity_softclip(
+    const InsertionFragment& fragment,
+    const std::string& seq,
+    double at_fraction_min,
+    int32_t homopolymer_run_min) {
+    if (!is_softclip_source(fragment.source) || seq.empty()) {
+        return false;
+    }
+
+    return at_fraction(seq) >= at_fraction_min ||
+           max_homopolymer_run(seq) >= homopolymer_run_min;
+}
+
 std::mutex g_fragment_hits_tsv_mutex;
 
 }  // namespace
@@ -211,6 +265,10 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
     }
 
     const bool write_tsv = !config_.ins_fragment_hits_tsv_path.empty();
+    const double low_complexity_at_fraction_min =
+        std::clamp(config_.te_softclip_low_complexity_at_frac_min, 0.0, 1.0);
+    const int32_t low_complexity_homopolymer_min =
+        std::max(1, config_.te_softclip_low_complexity_homopolymer_min);
     std::ostringstream tsv_buffer;
 
     for (const auto& frag : fragments) {
@@ -219,6 +277,20 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
         hit.fragment_len = static_cast<int32_t>(frag.sequence.size());
 
         const std::string seq = upper_acgt(frag.sequence);
+        if (is_low_complexity_softclip(
+                frag,
+                seq,
+                low_complexity_at_fraction_min,
+                low_complexity_homopolymer_min)) {
+            if (write_tsv) {
+                tsv_buffer << hit.fragment_id << "\t" << hit.te_name << "\t" << hit.fragment_len << "\t"
+                           << hit.hit_kmers << "\t" << hit.total_kmers << "\t"
+                           << hit.coverage << "\t" << hit.aligned_len_est << "\t" << hit.kmer_support << "\n";
+            }
+            hits.push_back(std::move(hit));
+            continue;
+        }
+
         const int32_t k = index_->k;
         if (static_cast<int32_t>(seq.size()) < k) {
             hits.push_back(hit);

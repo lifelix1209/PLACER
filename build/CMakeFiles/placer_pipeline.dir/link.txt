@@ -1,2 +1,0 @@
-/usr/bin/ar qc libplacer_pipeline.a CMakeFiles/placer_pipeline.dir/src/pipeline/pipeline.cpp.o CMakeFiles/placer_pipeline.dir/src/gate1/gate1_module.cpp.o CMakeFiles/placer_pipeline.dir/src/component/insert_fragment_module.cpp.o CMakeFiles/placer_pipeline.dir/src/component/te_quick_classifier.cpp.o CMakeFiles/placer_pipeline.dir/src/component/te_consensus_module.cpp.o
-/usr/bin/ranlib libplacer_pipeline.a

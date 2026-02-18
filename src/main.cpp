@@ -123,8 +123,30 @@ int main(int argc, char** argv) {
             config.te_vote_fraction_min = std::clamp(v, 0.0, 1.0);
         }
         int32_t i = 0;
+        if (placer::env_try_int32("PLACER_BAM_THREADS", i)) {
+            config.bam_threads = std::max(1, i);
+        }
         if (placer::env_try_int32("PLACER_TE_MIN_FRAGMENTS_FOR_VOTE", i)) {
             config.te_min_fragments_for_vote = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_PARALLEL_WORKERS", i)) {
+            config.parallel_workers = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_SOFTCLIP_LOW_COMPLEXITY_HOMOPOLYMER_MIN", i)) {
+            config.te_softclip_low_complexity_homopolymer_min = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_PURE_SOFTCLIP_MIN_READS", i)) {
+            config.te_pure_softclip_min_reads = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_PURE_SOFTCLIP_MIN_FRAGMENTS", i)) {
+            config.te_pure_softclip_min_fragments = std::max(1, i);
+        }
+
+        if (placer::env_try_double("PLACER_TE_SOFTCLIP_LOW_COMPLEXITY_AT_FRAC_MIN", v)) {
+            config.te_softclip_low_complexity_at_frac_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_PURE_SOFTCLIP_MIN_IDENTITY", v)) {
+            config.te_pure_softclip_min_identity = std::clamp(v, 0.0, 1.0);
         }
     }
 

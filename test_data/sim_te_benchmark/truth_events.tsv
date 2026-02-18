@@ -1,9 +1,9 @@
 event_id	chrom	pos	family	truth_label	challenge_type	expected_call	scenario	support_reads	note
-TP_L1_INS_STRONG	chrTEST	32000	L1	POS	BASELINE	YES	large_insertion_I	12	Canonical large-I insertion support
-TP_ALU_INS_STRONG	chrTEST	76000	Alu	POS	BASELINE	YES	large_insertion_I	10	Canonical Alu insertion support
-TP_L1_SPLIT_CLIP	chrTEST	108000	L1	POS	BASELINE	YES	split_plus_softclip	6	Primary + supplementary split-read support
-F1_FP_RANDOM_INS	chrTEST	138000	NA	NEG	F1_FP	NO	non_te_large_insertion	10	Large insertion but sequence is non-TE random DNA
-F1_FP_POLYA_SOFTCLIP	chrTEST	166000	NA	NEG	F1_FP	NO	polyA_softclip_only	8	PolyA-rich soft-clip that can mimic TE tails
-F2_FN_LOW_SUPPORT_L1	chrTEST	184000	L1	POS	F2_FN	NO	te_insertion_low_support	2	Real TE insertion but support < candidate threshold
-F2_FN_SHORT_INS_ALU	chrTEST	193000	Alu	POS	F2_FN	NO	te_insertion_short_I	7	Insertion < min_ins_len (50bp) should be hard to detect
-F2_FN_LOWMAPQ_ERVL	chrTEST	52000	ERVL	POS	F2_FN	NO	te_insertion_low_mapq	7	MapQ below ComponentBuilder threshold (20)
+TP_L1_INS_STRONG	chrTEST	32000	L1	POS	BASELINE	YES	long_insertion_I_2000bp	12	Canonical long L1 insertion support
+TP_ALU_INS_STRONG	chrTEST	76000	Alu	POS	BASELINE	YES	long_insertion_I_310bp	10	Canonical AluYa5 insertion support
+TP_L1_SPLIT_CLIP	chrTEST	108000	L1	POS	BASELINE	YES	split_plus_long_softclip_500bp	6	Primary + supplementary split-read support
+F1_FP_RANDOM_INS	chrTEST	138000	NA	NEG	F1_FP	NO	non_te_long_insertion_900bp	10	Large insertion but sequence is non-TE random DNA
+F1_FP_POLYA_SOFTCLIP	chrTEST	166000	NA	NEG	F1_FP	NO	polyA_softclip_only_350bp	8	PolyA-rich soft-clip that can mimic TE tails
+F2_FN_LOW_SUPPORT_L1	chrTEST	184000	L1	POS	F2_FN	NO	te_insertion_low_support_1600bp	2	Real TE insertion but support below target threshold
+F2_FN_SHORT_INS_ALU	chrTEST	193000	Alu	POS	F2_FN	NO	te_insertion_low_end_300bp	7	Lower-end long insertion (300bp) to test boundary behavior
+TP_L1_INS_SECONDARY	chrTEST	68000	L1	POS	BASELINE	YES	long_insertion_I_2000bp_locus2	12	Second long L1 insertion in an alternate locus

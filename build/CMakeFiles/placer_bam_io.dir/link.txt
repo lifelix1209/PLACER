@@ -1,2 +1,0 @@
-/usr/bin/ar qc libplacer_bam_io.a CMakeFiles/placer_bam_io.dir/src/stream/bam_io.cpp.o
-/usr/bin/ranlib libplacer_bam_io.a
