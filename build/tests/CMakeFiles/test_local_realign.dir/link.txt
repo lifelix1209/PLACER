@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_local_realign.dir/test_local_realign.cpp.o -o test_local_realign  ../src/stream/libstream.a ../src/gate1/libgate1.a ../src/component/libcomponent.a ../src/local_realign/liblocal_realign.a /usr/lib/x86_64-linux-gnu/libhts.so.3 ../src/stream/libstream.a /usr/lib/x86_64-linux-gnu/libhts.so.3 

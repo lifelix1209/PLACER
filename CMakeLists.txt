@@ -1,33 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
-project(PLACER VERSION 0.1.0 LANGUAGES C CXX)
+project(PLACER VERSION 0.0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# abPOA backend compatibility:
-# - x86_64: enabled by default
-# - arm64/aarch64: disabled by default (can be overridden via -DPLACER_ENABLE_ABPOA=ON)
-set(_PLACER_ABPOA_DEFAULT ON)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
-    set(_PLACER_ABPOA_DEFAULT OFF)
-endif()
-option(PLACER_ENABLE_ABPOA "Build with bundled abPOA backend" ${_PLACER_ABPOA_DEFAULT})
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$" AND PLACER_ENABLE_ABPOA)
-    message(WARNING
-        "Bundled abPOA backend is currently x86-SIMD oriented and may fail on arm64.\n"
-        "Falling back to PLACER built-in consensus backend."
-    )
-    set(PLACER_ENABLE_ABPOA OFF)
-endif()
-
 # ============================================================================
-# htslib (cross-platform auto detection)
-# Supports Linux/macOS and manual overrides:
-#   -DHTSLIB_ROOT=<prefix>
-#   -DHTSLIB_INCLUDE_DIR=<path containing htslib/sam.h>
-#   -DHTSLIB_LIBRARY=<full path to libhts>
+# htslib discovery
 # ============================================================================
 set(HTSLIB_ROOT "" CACHE PATH "Root directory of htslib installation")
 set(HTSLIB_INCLUDE_DIR "" CACHE PATH "Directory containing htslib/sam.h")
@@ -104,44 +84,38 @@ set_target_properties(hts::htslib PROPERTIES
 )
 
 # ============================================================================
-# abPOA Library (third_party)
+# PLACER modules
 # ============================================================================
-if(PLACER_ENABLE_ABPOA)
-    add_subdirectory(third_party/abPOA)
-    message(STATUS "abPOA backend: enabled")
-else()
-    message(STATUS "abPOA backend: disabled (using fallback consensus backend)")
-endif()
-
-# Main executable
-add_executable(placer src/main.cpp)
-
-target_include_directories(placer PRIVATE ${HTSLIB_INCLUDE_DIR})
-target_link_libraries(placer PRIVATE
-    hts::htslib
-    stream
-    gate1
-    component
-    local_realign
-    assembly
-    placeability
-    genotyping
-    te_reverse_index
+add_library(placer_bam_io
+    src/stream/bam_io.cpp
 )
+target_include_directories(placer_bam_io
+    PUBLIC
+        include
+        ${HTSLIB_INCLUDE_DIR}
+)
+target_link_libraries(placer_bam_io PUBLIC hts::htslib)
 
-# Add subdirectories
-add_subdirectory(src/stream)
-add_subdirectory(src/gate1)
-add_subdirectory(src/component)
-add_subdirectory(src/local_realign)
-add_subdirectory(src/abpoa_wrapper)
-add_subdirectory(src/assembly)
-add_subdirectory(src/placeability)
-add_subdirectory(src/genotyping)
+add_library(placer_pipeline
+    src/pipeline/pipeline.cpp
+    src/gate1/gate1_module.cpp
+    src/component/insert_fragment_module.cpp
+    src/component/te_quick_classifier.cpp
+    src/component/te_consensus_module.cpp
+)
+target_include_directories(placer_pipeline PUBLIC include)
+target_link_libraries(placer_pipeline PUBLIC placer_bam_io)
 
-# Test configuration
-enable_testing()
-add_subdirectory(tests)
+add_subdirectory(third_party/abPOA)
+# Ensure abPOA builds consistently across platforms from top-level config.
+target_include_directories(abpoa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/abPOA/include)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+    target_compile_definitions(abpoa PUBLIC USE_SIMDE SIMDE_ENABLE_NATIVE_ALIASES __AVX2__)
+endif()
+target_link_libraries(placer_pipeline PUBLIC abpoa)
 
-# Add TE Reverse Index module (Phase 8)
-add_subdirectory(src/te_reverse_index)
+add_executable(placer
+    src/main.cpp
+)
+target_include_directories(placer PRIVATE include)
+target_link_libraries(placer PRIVATE placer_pipeline)

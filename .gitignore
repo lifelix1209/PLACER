@@ -1,0 +1,35 @@
+# Build artifacts
+build/
+build_release/
+build_*/
+cmake-build-*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Compiler / test outputs
+*.o
+*.o.d
+*.a
+*.so
+*.dylib
+*.out
+*.err
+*.log
+
+# Runtime outputs
+scientific.txt
+ins_fragments.fasta
+ins_fragment_hits.tsv
+tuning_results.tsv
+*.cluster.msa.fa.progress.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

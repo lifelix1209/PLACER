@@ -1,2 +1,0 @@
-/usr/bin/ar qc libassembly.a CMakeFiles/assembly.dir/assembly.cpp.o
-/usr/bin/ranlib libassembly.a
