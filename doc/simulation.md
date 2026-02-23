@@ -132,7 +132,7 @@ Recommended checks after regeneration:
    - https://www.repeatmasker.org/dev/RepeatModeler/
    - L1HS split-model note in repeat browser: https://www.repeatbrowser.org/?dfam=DF000000226
 4. Human polymorphic non-reference TE classes (L1/Alu/SVA):
-   - Ewing AD et al. *Cell Genomics* (2023): https://pmc.ncbi.nlm.nih.gov/articles/PMC9910659/
+   - Ewing AD et al. _Cell Genomics_ (2023): https://pmc.ncbi.nlm.nih.gov/articles/PMC9910659/
 5. Hallmarks of LINE1-mediated insertions (polyA/TSD/5' truncation):
-   - Raiz J et al. *Nucleic Acids Research* (2012): https://pmc.ncbi.nlm.nih.gov/articles/PMC3439880/
-   - Occurrence frequencies in long-read validated insertions: *Mobile DNA* (2025): https://pubmed.ncbi.nlm.nih.gov/40187185/
+   - Raiz J et al. _Nucleic Acids Research_ (2012): https://pmc.ncbi.nlm.nih.gov/articles/PMC3439880/
+   - Occurrence frequencies in long-read validated insertions: _Mobile DNA_ (2025): https://pubmed.ncbi.nlm.nih.gov/40187185/

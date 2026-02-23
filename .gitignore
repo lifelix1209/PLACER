@@ -1,6 +1,7 @@
 # Build artifacts
 build/
 build_release/
+build_*/
 cmake-build-*/
 
 # CMake generated files
@@ -23,6 +24,7 @@ Makefile
 scientific.txt
 ins_fragments.fasta
 ins_fragment_hits.tsv
+tuning_results.tsv
 *.cluster.msa.fa.progress.log
 
 # Python cache

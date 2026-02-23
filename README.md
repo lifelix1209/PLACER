@@ -1,31 +1,53 @@
-# What is PLACER
+# PLACER
 
-PLACER detects non-reference transposable element (TE) insertions from long-read BAM alignments (ONT/PacBio). It is designed for real WGS BAMs: repetitive genomes, imperfect alignments, missing secondary records, and high background TE signal.
+Current release: `0.0.1`
 
-PLACER stands for:
+PLACER detects non-reference transposable element (TE) insertions from long-read BAM alignments (ONT/PacBio). The current pipeline includes evidence scoring, abPOA-only local assembly, and likelihood-based genotyping.
 
-Placeability-Aware Long-read Collapsed-Event Reconstruction for Transposable Element insertions (BAM input)
+## Clone
 
-# What problem it solves
+abPOA is required and tracked as a git submodule.
 
-TE insertion scalling breaks in repetitive regions because:
+```bash
+git clone --recursive <your-repo-url>
+cd PLACER
+```
 
-mapping is ambiguous (multiple equally good loci)
+If you already cloned without submodules:
 
-aligners may “linearize” TE sequence (hide split/clip)
+```bash
+git submodule update --init --recursive
+```
 
-naive local assembly mixes nearby loci / haplotypes
+## Build
 
-genotyping fails when REF support is ill-defined in repeats
+```bash
+python3 -m pip install -r requirements.txt
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
 
-# PLACER addresses this by:
+## Test
 
-explicitly modeling placeability (unique vs ambiguous placement)
+```bash
+ctest --test-dir build --output-on-failure
+```
 
-using single-pass streaming over BAM (I/O is the bottleneck)
+`0.0.1` currently has no registered CTest cases, so `ctest` may report `No tests were found`.
 
-extracting short probe fragments for cheap TE screening (Gate 1)
+## Run
 
-reconstructing candidate insertion sequences only where warranted
+```bash
+./build/placer <input.bam> <ref.fa> [te.fa]
+```
 
-genotyping with an ALT/REF/NULL mixture model plus spatial priors
+Default outputs are written to repository root:
+
+- `scientific.txt`
+- `ins_fragments.fasta`
+- `ins_fragment_hits.tsv`
+
+## Notes
+
+- On Apple Silicon, abPOA builds through the top-level CMake SIMDE definitions.
+- Tuned benchmark helper: `scripts/tune_sim_benchmark.sh`.
