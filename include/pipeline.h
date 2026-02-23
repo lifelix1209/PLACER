@@ -271,15 +271,17 @@ struct PipelineConfig {
 
     // Module 2.2: quick TE classification (optional, requires te_fasta_path).
     std::string ins_fragment_hits_tsv_path = "ins_fragment_hits.tsv";
-    int32_t te_kmer_size = 15;
-    double te_vote_fraction_min = 0.60;
-    double te_median_identity_min = 0.50;
+    int32_t te_kmer_size = 13;
+    double te_vote_fraction_min = 0.40;
+    double te_median_identity_min = 0.30;
     int32_t te_min_fragments_for_vote = 2;
+    double te_rescue_vote_fraction_min = 0.25;
+    double te_rescue_median_identity_min = 0.20;
     double te_softclip_low_complexity_at_frac_min = 0.90;
     int32_t te_softclip_low_complexity_homopolymer_min = 80;
-    int32_t te_pure_softclip_min_reads = 10;
-    int32_t te_pure_softclip_min_fragments = 10;
-    double te_pure_softclip_min_identity = 0.90;
+    int32_t te_pure_softclip_min_reads = 6;
+    int32_t te_pure_softclip_min_fragments = 6;
+    double te_pure_softclip_min_identity = 0.35;
 
     // Module 2.3: deterministic TE consensus (anchor-locked + theta).
     bool te_consensus_enable = true;

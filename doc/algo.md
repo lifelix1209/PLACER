@@ -119,8 +119,9 @@ PLACER 的目标是从长读长 BAM（ONT/PacBio）里检测非参考 TE 插入�
 
 TE 名称写入规则：
 
-- 若 `te_call.passed`，使用投票结果 `te_call.te_name`。
-- 否则若 `anchor_report.has_result` 且有 `anchor_report.te_name`，回退使用共识模块给的 TE 名称。
+- 先用 `te_classifier_module_.vote_cluster(...)` 产生 `te_call`。
+- Stage-A 证据阶段只做弱 TE 门槛，避免组装前过早丢失低 identity 候选。
+- Stage-B 在组装后做 TE 强判定（标准阈值或 assembly rescue 阈值）。
 
 ---
 
@@ -269,7 +270,7 @@ TE 名称写入规则：
 
 规则：
 
-- k-mer 长度 `te_kmer_size`（默认 15）。
+- k-mer 长度 `te_kmer_size`（默认 13）。
 - 每条 TE 序列使用“正向 + 反向互补”共同建索引。
 - 只接受 `A/C/G/T`。
 - k-mer 仅命中单一 TE 时记该 TE id；命中多个 TE 时标为歧义（`-1`）。
@@ -296,8 +297,24 @@ TE 名称写入规则：
 - `vote_fraction = best_votes / fragment_count`。
 - `median_identity = median(kmer_support of best_te)`。
 - 通过条件（默认）：
-  - `vote_fraction >= 0.60`
-  - `median_identity >= 0.50`
+  - `vote_fraction >= 0.40`
+  - `median_identity >= 0.30`
+
+### 4.5.4 两阶段 TE 判定（当前实现）
+
+- Stage-A（组装前，弱筛选）：
+  - 需要 `te_name` 非空
+  - 且 `fragment_count >= max(1, te_min_fragments_for_vote / 2)`
+- Stage-B（组装后，强判定）：
+  - `PASS_CLASSIC`：满足 `vote_fraction >= te_vote_fraction_min` 且 `median_identity >= te_median_identity_min`
+  - `PASS_ASM_RESCUE`：不满足 classic，但满足
+    - `assembly.identity_est >= assembly_min_identity_est`
+    - `vote_fraction >= te_rescue_vote_fraction_min`
+    - `median_identity >= te_rescue_median_identity_min`
+- pure soft-clip 组件额外约束：
+  - `softclip_support_reads >= te_pure_softclip_min_reads`
+  - `fragment_count >= te_pure_softclip_min_fragments`
+  - `max(median_identity, assembly.identity_est) >= te_pure_softclip_min_identity`
 
 TSV 输出：
 
@@ -460,10 +477,17 @@ TSV 输出：
 
 `te_qc` 取值逻辑：
 
-- `DISABLED`：共识模块未启用
-- `FAIL_THETA_UNCERTAIN`：方向判定不稳定
-- `NO_CORE_RESULT`：未形成有效核心集合
-- `PASS`：核心结果可用
+- 现在为组合标签：`<TE判定>|<ANCHOR判定>`
+- TE 判定示例：
+  - `PASS_CLASSIC`
+  - `PASS_ASM_RESCUE`
+  - `PASS_CLASSIC_PURE_SOFTCLIP`
+  - `PASS_ASM_RESCUE_PURE_SOFTCLIP`
+- ANCHOR 判定示例：
+  - `ANCHOR_PASS`
+  - `ANCHOR_FAIL_THETA_UNCERTAIN`
+  - `ANCHOR_NO_CORE_RESULT`
+  - `ANCHOR_DISABLED`
 
 ---
 
@@ -489,10 +513,15 @@ TSV 输出：
 TE 快速分类：
 
 - `ins_fragment_hits_tsv_path = "ins_fragment_hits.tsv"`
-- `te_kmer_size = 15`
-- `te_vote_fraction_min = 0.60`
-- `te_median_identity_min = 0.50`
+- `te_kmer_size = 13`
+- `te_vote_fraction_min = 0.40`
+- `te_median_identity_min = 0.30`
 - `te_min_fragments_for_vote = 2`
+- `te_rescue_vote_fraction_min = 0.25`
+- `te_rescue_median_identity_min = 0.20`
+- `te_pure_softclip_min_reads = 6`
+- `te_pure_softclip_min_fragments = 6`
+- `te_pure_softclip_min_identity = 0.35`
 
 TE 共识：
 
@@ -528,6 +557,6 @@ TE 共识：
 - Component 仍是“每 bin 一个 component”，未做真实断点聚类。
 - local realign / assembly / placeability / genotyping 仍是轻量可运行版本。
 - `reference_fasta_path` 尚未进入实质计算链路。
-- `third_party/abPOA` 已 vendored，但当前主流程没有直接调用。
+- assembly 主流程已统一为 abPOA POA 共识。
 
 因此，PLACER 当前阶段是“可流式运行并输出可诊断结果”的工程骨架版本；高精度科研模型（真实局部重比对、组装、概率分型）可在现有流程骨架上逐步替换升级。

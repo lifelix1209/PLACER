@@ -129,7 +129,16 @@ int main(int argc, char** argv) {
         if (placer::env_try_double("PLACER_TE_VOTE_FRACTION_MIN", v)) {
             config.te_vote_fraction_min = std::clamp(v, 0.0, 1.0);
         }
+        if (placer::env_try_double("PLACER_TE_RESCUE_VOTE_FRACTION_MIN", v)) {
+            config.te_rescue_vote_fraction_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_RESCUE_MEDIAN_IDENTITY_MIN", v)) {
+            config.te_rescue_median_identity_min = std::clamp(v, 0.0, 1.0);
+        }
         int32_t i = 0;
+        if (placer::env_try_int32("PLACER_TE_KMER_SIZE", i)) {
+            config.te_kmer_size = std::max(7, i);
+        }
         if (placer::env_try_int32("PLACER_BAM_THREADS", i)) {
             config.bam_threads = std::max(1, i);
         }
@@ -203,6 +212,12 @@ int main(int argc, char** argv) {
         if (placer::env_try_double("PLACER_ASSEMBLY_MIN_IDENTITY_EST", v)) {
             config.assembly_min_identity_est = std::clamp(v, 0.0, 1.0);
         }
+        config.te_rescue_vote_fraction_min = std::min(
+            config.te_rescue_vote_fraction_min,
+            config.te_vote_fraction_min);
+        config.te_rescue_median_identity_min = std::min(
+            config.te_rescue_median_identity_min,
+            config.te_median_identity_min);
         config.assembly_poa_min_reads = std::min(
             config.assembly_poa_min_reads,
             config.assembly_poa_max_reads);

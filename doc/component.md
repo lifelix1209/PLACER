@@ -173,7 +173,7 @@ Long insertion：
 参数：
 
 - `PipelineConfig.te_fasta_path`（为空则禁用该模块）
-- `PipelineConfig.te_kmer_size`（默认 15）
+- `PipelineConfig.te_kmer_size`（默认 13）
 
 索引构建规则：
 
@@ -218,8 +218,8 @@ Long insertion：
 - `vote_fraction = best_votes / fragment_count`
 - `median_identity`：对 `best_te` 对应的 hits 的 `kmer_support` 取中位数
 - `passed` 条件（默认）：
-  - `vote_fraction >= PipelineConfig.te_vote_fraction_min`（0.60）
-  - 且 `median_identity >= PipelineConfig.te_median_identity_min`（0.50）
+  - `vote_fraction >= PipelineConfig.te_vote_fraction_min`（0.40）
+  - 且 `median_identity >= PipelineConfig.te_median_identity_min`（0.30）
 
 ---
 
@@ -233,6 +233,14 @@ Long insertion：
    - 若 2.2 启用（存在 TE k-mer index）：
      - `te_classifier_module_->classify(...)`
      - `te_classifier_module_->vote_cluster(...)`
+   - Stage-A 证据阶段仅使用弱 TE 门槛（避免组装前过早过滤）
+     - 需要 `te_name` 非空
+     - 且 `fragment_count >= max(1, te_min_fragments_for_vote / 2)`
+   - 组装：`assemble_component(...)`（abPOA）
+   - Stage-B 组装后 TE 强判定：`evaluate_post_assembly_te_call(...)`
+     - `PASS_CLASSIC`: 满足标准投票阈值
+     - `PASS_ASM_RESCUE`: 标准阈值不满足，但满足 rescue 阈值且 assembly identity 达标
+   - pure soft-clip 组件在 Stage-B 再应用更严格的 read/fragment/identity 条件
    - TE 投票结果写入最终的 `FinalCall.te_*` 字段
 3. 后续继续走 `LocalRealign -> Assembly -> Placeability -> Genotyping`
 

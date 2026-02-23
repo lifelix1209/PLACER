@@ -362,6 +362,101 @@ std::string abpoa_consensus(const std::vector<std::string>& seqs) {
     return consensus;
 }
 
+struct PostAssemblyTeDecision {
+    bool pass = false;
+    std::string qc = "FAIL_TE_CLASSIFICATION";
+};
+
+std::string anchor_qc_tag(const AnchorLockedReport& anchor_report) {
+    if (!anchor_report.enabled) {
+        return "ANCHOR_DISABLED";
+    }
+    if (anchor_report.fail_theta_uncertain) {
+        return "ANCHOR_FAIL_THETA_UNCERTAIN";
+    }
+    if (!anchor_report.has_result) {
+        return "ANCHOR_NO_CORE_RESULT";
+    }
+    return "ANCHOR_PASS";
+}
+
+PostAssemblyTeDecision evaluate_post_assembly_te_call(
+    const ClusterTECall& te_call,
+    const AssemblyCall& assembly,
+    const ComponentCall& component,
+    const PipelineConfig& config) {
+    PostAssemblyTeDecision decision;
+
+    if (te_call.te_name.empty()) {
+        decision.qc = "FAIL_NO_TE_LABEL";
+        return decision;
+    }
+
+    const int32_t min_fragments = std::max(1, config.te_min_fragments_for_vote);
+    if (te_call.fragment_count < min_fragments) {
+        decision.qc = "FAIL_LOW_TE_FRAGMENTS";
+        return decision;
+    }
+
+    const double vote_min = std::clamp(config.te_vote_fraction_min, 0.0, 1.0);
+    const double identity_min = std::clamp(config.te_median_identity_min, 0.0, 1.0);
+    const bool classic_pass =
+        te_call.vote_fraction >= vote_min &&
+        te_call.median_identity >= identity_min;
+    if (classic_pass) {
+        decision.pass = true;
+        decision.qc = "PASS_CLASSIC";
+    } else {
+        const double rescue_vote_min = std::clamp(config.te_rescue_vote_fraction_min, 0.0, vote_min);
+        const double rescue_identity_min = std::clamp(config.te_rescue_median_identity_min, 0.0, identity_min);
+        const bool rescue_pass =
+            assembly.qc_pass &&
+            assembly.identity_est >= std::clamp(config.assembly_min_identity_est, 0.0, 1.0) &&
+            te_call.vote_fraction >= rescue_vote_min &&
+            te_call.median_identity >= rescue_identity_min;
+        if (!rescue_pass) {
+            decision.qc = "FAIL_LOW_TE_SUPPORT";
+            return decision;
+        }
+        decision.pass = true;
+        decision.qc = "PASS_ASM_RESCUE";
+    }
+
+    const bool pure_softclip_component =
+        component.split_sa_read_indices.empty() &&
+        component.insertion_read_indices.empty() &&
+        !component.soft_clip_read_indices.empty();
+    if (!pure_softclip_component) {
+        return decision;
+    }
+
+    const int32_t softclip_support_reads = static_cast<int32_t>(component.soft_clip_read_indices.size());
+    if (softclip_support_reads < std::max(1, config.te_pure_softclip_min_reads)) {
+        decision.pass = false;
+        decision.qc = "FAIL_PURE_SOFTCLIP_LOW_READS";
+        return decision;
+    }
+    if (te_call.fragment_count < std::max(1, config.te_pure_softclip_min_fragments)) {
+        decision.pass = false;
+        decision.qc = "FAIL_PURE_SOFTCLIP_LOW_FRAGMENTS";
+        return decision;
+    }
+
+    const double pure_identity_min = std::clamp(config.te_pure_softclip_min_identity, 0.0, 1.0);
+    if (std::max(te_call.median_identity, assembly.identity_est) < pure_identity_min) {
+        decision.pass = false;
+        decision.qc = "FAIL_PURE_SOFTCLIP_LOW_IDENTITY";
+        return decision;
+    }
+
+    if (decision.qc == "PASS_CLASSIC") {
+        decision.qc = "PASS_CLASSIC_PURE_SOFTCLIP";
+    } else if (decision.qc == "PASS_ASM_RESCUE") {
+        decision.qc = "PASS_ASM_RESCUE_PURE_SOFTCLIP";
+    }
+    return decision;
+}
+
 template <typename T>
 class SafeQueue {
 public:
@@ -1346,9 +1441,11 @@ EvidenceFeatures Pipeline::collect_evidence(
     features.pass_breakpoint_mad = features.breakpoint_mad <= std::max(0.0, config_.evidence_breakpoint_mad_max);
     features.pass_low_complexity = features.low_complex_softclip_frac <=
         std::clamp(config_.evidence_low_complex_softclip_frac_max, 0.0, 1.0);
+    // Stage-A weak TE gate: keep low-identity ONT candidates for assembly-stage validation.
+    const int32_t weak_min_fragments = std::max(1, config_.te_min_fragments_for_vote / 2);
     features.pass_te_consistency =
-        te_call.vote_fraction >= config_.te_vote_fraction_min &&
-        te_call.median_identity >= config_.te_median_identity_min;
+        !te_call.te_name.empty() &&
+        te_call.fragment_count >= weak_min_fragments;
     features.hard_filtered =
         !(features.pass_min_support &&
           features.pass_breakpoint_mad &&
@@ -1582,9 +1679,6 @@ void Pipeline::process_bin_records(
 
     auto components = component_module_.build(bin_records, chrom, tid, bin_start, bin_end);
     result.built_components += static_cast<int64_t>(components.size());
-    const int32_t pure_softclip_min_reads = std::max(1, config_.te_pure_softclip_min_reads);
-    const int32_t pure_softclip_min_fragments = std::max(1, config_.te_pure_softclip_min_fragments);
-    const double pure_softclip_min_identity = std::clamp(config_.te_pure_softclip_min_identity, 0.0, 1.0);
 
     for (const auto& component : components) {
         std::vector<InsertionFragment> fragments = ins_fragment_module_.extract(component, bin_records);
@@ -1594,22 +1688,6 @@ void Pipeline::process_bin_records(
         if (te_classifier_module_.is_enabled()) {
             hits = te_classifier_module_.classify(fragments);
             te_call = te_classifier_module_.vote_cluster(hits);
-        }
-        // Only emit TE-passing calls.
-        if (!te_call.passed || te_call.te_name.empty()) {
-            continue;
-        }
-        const bool pure_softclip_component =
-            component.split_sa_read_indices.empty() &&
-            component.insertion_read_indices.empty() &&
-            !component.soft_clip_read_indices.empty();
-        if (pure_softclip_component) {
-            const int32_t softclip_support_reads = static_cast<int32_t>(component.soft_clip_read_indices.size());
-            if (softclip_support_reads < pure_softclip_min_reads ||
-                te_call.fragment_count < pure_softclip_min_fragments ||
-                te_call.median_identity < pure_softclip_min_identity) {
-                continue;
-            }
         }
 
         AnchorLockedReport anchor_report;
@@ -1626,6 +1704,12 @@ void Pipeline::process_bin_records(
         AssemblyCall assembly = assemble_component(component, fragments, hits, te_call);
         result.assembled_calls += 1;
         if (!assembly.qc_pass) {
+            continue;
+        }
+
+        const PostAssemblyTeDecision te_decision =
+            evaluate_post_assembly_te_call(te_call, assembly, component, config_);
+        if (!te_decision.pass) {
             continue;
         }
 
@@ -1656,15 +1740,7 @@ void Pipeline::process_bin_records(
         call.te_split_sa_core_frac = anchor_report.split_sa_core_frac;
         call.te_ref_junc_pos_min = anchor_report.ref_junc_pos_min;
         call.te_ref_junc_pos_max = anchor_report.ref_junc_pos_max;
-        if (!anchor_report.enabled) {
-            call.te_qc = "DISABLED";
-        } else if (anchor_report.fail_theta_uncertain) {
-            call.te_qc = "FAIL_THETA_UNCERTAIN";
-        } else if (!anchor_report.has_result) {
-            call.te_qc = "NO_CORE_RESULT";
-        } else {
-            call.te_qc = "PASS";
-        }
+        call.te_qc = te_decision.qc + "|" + anchor_qc_tag(anchor_report);
 
         call.tier = placeability.tier;
         call.support_reads = placeability.support_reads;
