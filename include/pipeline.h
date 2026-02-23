@@ -52,17 +52,44 @@ struct ComponentCall {
     std::vector<BreakpointCandidate> breakpoint_candidates;
 };
 
-struct LocusEvidence {
+struct EvidenceFeatures {
     int32_t tid = -1;
     int32_t pos = -1;
-    size_t read_index = 0;
-    double normalized_score = 0.0;
+
+    int32_t global_cov_reads = 0;
+    int32_t local_cov_reads = 0;
+    int32_t depth_reads = 0;
+    int32_t alt_support_reads = 0;
+    int32_t ref_support_reads = 0;
+    double effective_alt_support = 0.0;
+    int32_t evidence_point_count = 0;
+
+    double breakpoint_mad = 0.0;
+    double te_vote_fraction = 0.0;
+    double te_median_identity = 0.0;
+    double ambiguous_frac = 0.0;
+    double low_complex_softclip_frac = 0.0;
+    bool anchor_consensus_ok = false;
+
+    int32_t min_support_required = 0;
+    bool pass_min_support = true;
+    bool pass_breakpoint_mad = true;
+    bool pass_low_complexity = true;
+    bool pass_te_consistency = true;
+    bool hard_filtered = false;
 };
 
 struct AssemblyCall {
     int32_t tid = -1;
     int32_t pos = -1;
     std::string consensus;
+    std::string assembly_mode = "NONE";
+    int32_t input_fragments = 0;
+    int32_t used_fragments = 0;
+    int32_t consensus_len = 0;
+    double identity_est = 0.0;
+    bool qc_pass = false;
+    std::string qc = "NO_ASSEMBLY";
 };
 
 enum class InsertionFragmentSource : uint8_t {
@@ -165,8 +192,16 @@ struct AnchorLockedReport {
 struct PlaceabilityReport {
     int32_t tid = -1;
     int32_t pos = -1;
+    int32_t depth_reads = 0;
     int32_t support_reads = 0;
+    int32_t ref_support_reads = 0;
     double delta_score = 0.0;
+    double evidence_p = 0.0;
+    double evidence_q = 0.0;
+    int32_t min_support_required = 0;
+    double breakpoint_mad = 0.0;
+    double low_complex_softclip_frac = 0.0;
+    bool hard_filtered = false;
     int32_t tier = 3;
 };
 
@@ -208,6 +243,12 @@ struct FinalCall {
     std::string genotype = "./.";
     double af = 0.0;
     int32_t gq = 0;
+    std::string asm_mode = "NONE";
+    int32_t asm_input_fragments = 0;
+    int32_t asm_used_fragments = 0;
+    int32_t asm_consensus_len = 0;
+    double asm_identity_est = 0.0;
+    std::string asm_qc = "NO_ASSEMBLY";
 };
 
 struct PipelineConfig {
@@ -259,6 +300,27 @@ struct PipelineConfig {
     double te_consensus_eps_theta = 0.05;
     double te_consensus_rel_sumw_eps = 0.10;
     int32_t te_consensus_min_core_set = 2;
+
+    // Evidence scoring and hard filters.
+    double evidence_min_support_alpha = 0.08;
+    double evidence_min_support_lambda = 0.75;
+    double evidence_breakpoint_mad_max = 80.0;
+    double evidence_low_complex_softclip_frac_max = 0.80;
+    double evidence_tier1_prob = 0.90;
+    double evidence_tier2_prob = 0.60;
+    double evidence_logit_bias = 3.0;
+
+    // Genotype likelihood model.
+    int32_t genotype_min_depth = 3;
+    double genotype_error_rate = 0.02;
+
+    // M2: local assembly (abPOA only).
+    int32_t assembly_poa_min_reads = 2;
+    int32_t assembly_poa_max_reads = 48;
+    int32_t assembly_min_fragment_len = 80;
+    int32_t assembly_min_consensus_len = 80;
+    double assembly_min_identity_est = 0.55;
+    int32_t assembly_kmer_size = 11;
 
     bool enable_parallel = false;
     size_t batch_size = 1000;
@@ -382,17 +444,22 @@ private:
         int32_t bin_index,
         PipelineResult& result) const;
 
-    std::vector<LocusEvidence> collect_evidence(
+    EvidenceFeatures collect_evidence(
         const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records) const;
+        const std::vector<BamRecordPtr>& bin_records,
+        const std::vector<InsertionFragment>& fragments,
+        const ClusterTECall& te_call,
+        const AnchorLockedReport& anchor_report) const;
 
     AssemblyCall assemble_component(
         const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records) const;
+        const std::vector<InsertionFragment>& fragments,
+        const std::vector<FragmentTEHit>& hits,
+        const ClusterTECall& te_call) const;
 
     PlaceabilityReport score_placeability(
         const AssemblyCall& assembly,
-        const std::vector<LocusEvidence>& evidence) const;
+        const EvidenceFeatures& evidence) const;
 
     GenotypeCall genotype_call(
         const AssemblyCall& assembly,

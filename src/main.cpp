@@ -66,7 +66,8 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
     out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_fragments"
         << "\tte_theta\tte_mad_fwd\tte_mad_rev\tte_bp_core\tte_bp_win_start\tte_bp_win_end"
         << "\tte_core_candidates\tte_core_set\tsplit_sa_core_frac\tte_ref_junc_min\tte_ref_junc_max\tte_qc"
-        << "\ttier\tsupport_reads\tgt\taf\tgq\n";
+        << "\ttier\tsupport_reads\tgt\taf\tgq\tasm_mode\tasm_input_fragments\tasm_used_fragments"
+        << "\tasm_consensus_len\tasm_identity_est\tasm_qc\n";
     for (const auto& call : result.final_calls) {
         out << call.chrom << "\t"
             << call.tid << "\t"
@@ -93,7 +94,13 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
             << call.support_reads << "\t"
             << call.genotype << "\t"
             << call.af << "\t"
-            << call.gq << "\n";
+            << call.gq << "\t"
+            << call.asm_mode << "\t"
+            << call.asm_input_fragments << "\t"
+            << call.asm_used_fragments << "\t"
+            << call.asm_consensus_len << "\t"
+            << call.asm_identity_est << "\t"
+            << call.asm_qc << "\n";
     }
 }
 
@@ -148,6 +155,57 @@ int main(int argc, char** argv) {
         if (placer::env_try_double("PLACER_PURE_SOFTCLIP_MIN_IDENTITY", v)) {
             config.te_pure_softclip_min_identity = std::clamp(v, 0.0, 1.0);
         }
+        if (placer::env_try_double("PLACER_EVIDENCE_MIN_SUPPORT_ALPHA", v)) {
+            config.evidence_min_support_alpha = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_EVIDENCE_MIN_SUPPORT_LAMBDA", v)) {
+            config.evidence_min_support_lambda = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_EVIDENCE_BREAKPOINT_MAD_MAX", v)) {
+            config.evidence_breakpoint_mad_max = std::max(0.0, v);
+        }
+        if (placer::env_try_double("PLACER_EVIDENCE_LOW_COMPLEX_SOFTCLIP_FRAC_MAX", v)) {
+            config.evidence_low_complex_softclip_frac_max = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_EVIDENCE_TIER1_PROB", v)) {
+            config.evidence_tier1_prob = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_EVIDENCE_TIER2_PROB", v)) {
+            config.evidence_tier2_prob = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_EVIDENCE_LOGIT_BIAS", v)) {
+            config.evidence_logit_bias = std::max(0.0, v);
+        }
+        if (config.evidence_tier2_prob > config.evidence_tier1_prob) {
+            config.evidence_tier2_prob = config.evidence_tier1_prob;
+        }
+        if (placer::env_try_int32("PLACER_GENOTYPE_MIN_DEPTH", i)) {
+            config.genotype_min_depth = std::max(1, i);
+        }
+        if (placer::env_try_double("PLACER_GENOTYPE_ERROR_RATE", v)) {
+            config.genotype_error_rate = std::clamp(v, 1e-4, 0.25);
+        }
+        if (placer::env_try_int32("PLACER_ASSEMBLY_POA_MIN_READS", i)) {
+            config.assembly_poa_min_reads = std::max(2, i);
+        }
+        if (placer::env_try_int32("PLACER_ASSEMBLY_POA_MAX_READS", i)) {
+            config.assembly_poa_max_reads = std::max(2, i);
+        }
+        if (placer::env_try_int32("PLACER_ASSEMBLY_MIN_FRAGMENT_LEN", i)) {
+            config.assembly_min_fragment_len = std::max(20, i);
+        }
+        if (placer::env_try_int32("PLACER_ASSEMBLY_MIN_CONSENSUS_LEN", i)) {
+            config.assembly_min_consensus_len = std::max(20, i);
+        }
+        if (placer::env_try_int32("PLACER_ASSEMBLY_KMER_SIZE", i)) {
+            config.assembly_kmer_size = std::max(5, i);
+        }
+        if (placer::env_try_double("PLACER_ASSEMBLY_MIN_IDENTITY_EST", v)) {
+            config.assembly_min_identity_est = std::clamp(v, 0.0, 1.0);
+        }
+        config.assembly_poa_min_reads = std::min(
+            config.assembly_poa_min_reads,
+            config.assembly_poa_max_reads);
     }
 
     try {
