@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PLACER VERSION 0.1.0 LANGUAGES C CXX)
+project(PLACER VERSION 0.0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -105,6 +105,14 @@ add_library(placer_pipeline
 )
 target_include_directories(placer_pipeline PUBLIC include)
 target_link_libraries(placer_pipeline PUBLIC placer_bam_io)
+
+add_subdirectory(third_party/abPOA)
+# Ensure abPOA builds consistently across platforms from top-level config.
+target_include_directories(abpoa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/abPOA/include)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+    target_compile_definitions(abpoa PUBLIC USE_SIMDE SIMDE_ENABLE_NATIVE_ALIASES __AVX2__)
+endif()
+target_link_libraries(placer_pipeline PUBLIC abpoa)
 
 add_executable(placer
     src/main.cpp
