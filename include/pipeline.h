@@ -293,6 +293,10 @@ struct PipelineConfig {
     int32_t te_pure_softclip_min_reads = 6;
     int32_t te_pure_softclip_min_fragments = 6;
     double te_pure_softclip_min_identity = 0.35;
+    // Open-set TE status gating using consensus proxy posterior.
+    double te_proxy_posterior_top1_min = 0.90;
+    double te_proxy_posterior_margin_min = 0.50;
+    double te_proxy_identity_min = 0.60;
 
     // Module 2.3: deterministic TE consensus (anchor-locked + theta).
     bool te_consensus_enable = true;
@@ -349,6 +353,9 @@ struct PipelineResult {
     int64_t assembled_calls = 0;
     int64_t placeability_calls = 0;
     int64_t genotype_calls = 0;
+    int64_t final_te_certain = 0;
+    int64_t final_te_uncertain = 0;
+    int64_t final_non_te = 0;
 
     std::vector<FinalCall> final_calls;
 };

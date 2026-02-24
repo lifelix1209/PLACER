@@ -62,6 +62,9 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
     out << "assemblies\t" << result.assembled_calls << "\n";
     out << "placeability_calls\t" << result.placeability_calls << "\n";
     out << "genotype_calls\t" << result.genotype_calls << "\n";
+    out << "final_te_certain\t" << result.final_te_certain << "\n";
+    out << "final_te_uncertain\t" << result.final_te_uncertain << "\n";
+    out << "final_non_te\t" << result.final_non_te << "\n";
 
     out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_fragments"
         << "\tte_theta\tte_mad_fwd\tte_mad_rev\tte_bp_core\tte_bp_win_start\tte_bp_win_end"
@@ -171,6 +174,15 @@ int main(int argc, char** argv) {
         if (placer::env_try_double("PLACER_PURE_SOFTCLIP_MIN_IDENTITY", v)) {
             config.te_pure_softclip_min_identity = std::clamp(v, 0.0, 1.0);
         }
+        if (placer::env_try_double("PLACER_TE_PROXY_POST_TOP1_MIN", v)) {
+            config.te_proxy_posterior_top1_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_PROXY_POST_MARGIN_MIN", v)) {
+            config.te_proxy_posterior_margin_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_PROXY_MIN_IDENTITY", v)) {
+            config.te_proxy_identity_min = std::clamp(v, 0.0, 1.0);
+        }
         if (placer::env_try_double("PLACER_EVIDENCE_MIN_SUPPORT_ALPHA", v)) {
             config.evidence_min_support_alpha = std::clamp(v, 0.0, 1.0);
         }
@@ -241,7 +253,10 @@ int main(int argc, char** argv) {
                   << "  processed_bins=" << result.processed_bins << "\n"
                   << "  components=" << result.built_components << "\n"
                   << "  assemblies=" << result.assembled_calls << "\n"
-                  << "  genotype_calls=" << result.genotype_calls << std::endl;
+                  << "  genotype_calls=" << result.genotype_calls << "\n"
+                  << "  final_te_certain=" << result.final_te_certain << "\n"
+                  << "  final_te_uncertain=" << result.final_te_uncertain << "\n"
+                  << "  final_non_te=" << result.final_non_te << std::endl;
 
         placer::write_scientific_txt(result, "scientific.txt");
         return 0;

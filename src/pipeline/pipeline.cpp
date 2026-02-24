@@ -384,6 +384,27 @@ bool has_prefix(const std::string& value, const char* prefix) {
     return value.rfind(prefix, 0) == 0;
 }
 
+bool is_consensus_proxy_te_certain(
+    const ClusterTECall& te_call,
+    const AssemblyCall& assembly,
+    const PipelineConfig& config) {
+    if (!assembly.qc_pass) {
+        return false;
+    }
+    if (te_call.top1_te_name.empty()) {
+        return false;
+    }
+    const double p1_min = std::clamp(config.te_proxy_posterior_top1_min, 0.0, 1.0);
+    const double margin_min = std::clamp(config.te_proxy_posterior_margin_min, 0.0, 1.0);
+    const double identity_min = std::clamp(
+        std::max(config.assembly_min_identity_est, config.te_proxy_identity_min),
+        0.0,
+        1.0);
+    return te_call.posterior_top1 >= p1_min &&
+           te_call.posterior_margin >= margin_min &&
+           assembly.identity_est >= identity_min;
+}
+
 ClusterTECall enrich_te_call_with_consensus_proxy(
     ClusterTECall base_call,
     const TEKmerQuickClassifierModule& te_classifier_module,
@@ -1257,6 +1278,9 @@ PipelineResult Pipeline::run_parallel() const {
         result.assembled_calls += worker_result.assembled_calls;
         result.placeability_calls += worker_result.placeability_calls;
         result.genotype_calls += worker_result.genotype_calls;
+        result.final_te_certain += worker_result.final_te_certain;
+        result.final_te_uncertain += worker_result.final_te_uncertain;
+        result.final_non_te += worker_result.final_non_te;
         for (auto& call : worker_result.final_calls) {
             result.final_calls.push_back(std::move(call));
         }
@@ -1793,10 +1817,23 @@ void Pipeline::process_bin_records(
         call.te_ref_junc_pos_min = anchor_report.ref_junc_pos_min;
         call.te_ref_junc_pos_max = anchor_report.ref_junc_pos_max;
         call.te_qc = te_decision.qc + "|" + anchor_qc_tag(anchor_report);
+        const bool has_proxy_signal =
+            !call.te_top1_name.empty() &&
+            call.te_posterior_top1 > 0.0;
+        const bool proxy_certain =
+            is_consensus_proxy_te_certain(te_call_eval, assembly, config_);
         if (has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN")) {
-            call.te_status = (call.te_top1_name.empty() || call.te_posterior_top1 <= 0.0)
-                ? "NON_TE"
-                : "TE_UNCERTAIN";
+            if (proxy_certain) {
+                call.te_status = "TE_CERTAIN";
+                call.te_name = call.te_top1_name;
+                call.te_qc += "|TE_PROXY_CERTAIN";
+            } else if (has_proxy_signal) {
+                call.te_status = "TE_UNCERTAIN";
+                call.te_qc += "|TE_PROXY_WEAK";
+            } else {
+                call.te_status = "NON_TE";
+                call.te_qc += "|TE_PROXY_NONE";
+            }
         } else {
             call.te_status = "TE_CERTAIN";
         }
@@ -1812,6 +1849,13 @@ void Pipeline::process_bin_records(
         call.asm_consensus_len = assembly.consensus_len;
         call.asm_identity_est = assembly.identity_est;
         call.asm_qc = assembly.qc;
+        if (call.te_status == "TE_CERTAIN") {
+            result.final_te_certain += 1;
+        } else if (call.te_status == "TE_UNCERTAIN") {
+            result.final_te_uncertain += 1;
+        } else {
+            result.final_non_te += 1;
+        }
         result.final_calls.push_back(std::move(call));
     }
 }
