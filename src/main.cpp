@@ -66,6 +66,7 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
     out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_fragments"
         << "\tte_theta\tte_mad_fwd\tte_mad_rev\tte_bp_core\tte_bp_win_start\tte_bp_win_end"
         << "\tte_core_candidates\tte_core_set\tsplit_sa_core_frac\tte_ref_junc_min\tte_ref_junc_max\tte_qc"
+        << "\tte_status\tte_top1_name\tte_top2_name\tte_post_top1\tte_post_top2\tte_post_margin"
         << "\ttier\tsupport_reads\tgt\taf\tgq\tasm_mode\tasm_input_fragments\tasm_used_fragments"
         << "\tasm_consensus_len\tasm_identity_est\tasm_qc\n";
     for (const auto& call : result.final_calls) {
@@ -90,6 +91,12 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
             << call.te_ref_junc_pos_min << "\t"
             << call.te_ref_junc_pos_max << "\t"
             << call.te_qc << "\t"
+            << call.te_status << "\t"
+            << (call.te_top1_name.empty() ? "NA" : call.te_top1_name) << "\t"
+            << (call.te_top2_name.empty() ? "NA" : call.te_top2_name) << "\t"
+            << call.te_posterior_top1 << "\t"
+            << call.te_posterior_top2 << "\t"
+            << call.te_posterior_margin << "\t"
             << call.tier << "\t"
             << call.support_reads << "\t"
             << call.genotype << "\t"

@@ -155,6 +155,11 @@ struct ClusterTECall {
     double vote_fraction = 0.0;
     double median_identity = 0.0;  // median fragment k-mer support
     int32_t fragment_count = 0;
+    std::string top1_te_name;
+    std::string top2_te_name;
+    double posterior_top1 = 0.0;    // proxy from vote fractions
+    double posterior_top2 = 0.0;    // proxy from vote fractions
+    double posterior_margin = 0.0;  // posterior_top1 - posterior_top2
     bool passed = false;
 };
 
@@ -237,6 +242,12 @@ struct FinalCall {
     int32_t te_ref_junc_pos_min = -1;
     int32_t te_ref_junc_pos_max = -1;
     std::string te_qc = "NA";
+    std::string te_status = "NON_TE";
+    std::string te_top1_name;
+    std::string te_top2_name;
+    double te_posterior_top1 = 0.0;
+    double te_posterior_top2 = 0.0;
+    double te_posterior_margin = 0.0;
 
     int32_t tier = 3;
     int32_t support_reads = 0;

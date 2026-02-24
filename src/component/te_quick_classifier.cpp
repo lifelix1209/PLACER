@@ -386,7 +386,7 @@ ClusterTECall TEKmerQuickClassifierModule::vote_cluster(
     }
 
     call.fragment_count = static_cast<int32_t>(filtered.size());
-    if (call.fragment_count < config_.te_min_fragments_for_vote) {
+    if (call.fragment_count <= 0) {
         return call;
     }
 
@@ -396,16 +396,35 @@ ClusterTECall TEKmerQuickClassifierModule::vote_cluster(
     }
 
     std::string best_te;
+    std::string second_te;
     int32_t best_votes = 0;
+    int32_t second_votes = 0;
     for (const auto& kv : votes) {
-        if (kv.second > best_votes) {
+        if (kv.second > best_votes ||
+            (kv.second == best_votes && (best_te.empty() || kv.first < best_te))) {
+            second_te = best_te;
+            second_votes = best_votes;
             best_te = kv.first;
             best_votes = kv.second;
+        } else if (kv.second > second_votes ||
+                   (kv.second == second_votes && (second_te.empty() || kv.first < second_te))) {
+            second_te = kv.first;
+            second_votes = kv.second;
         }
     }
 
+    call.top1_te_name = best_te;
+    call.top2_te_name = second_te;
+    call.posterior_top1 = static_cast<double>(best_votes) / static_cast<double>(filtered.size());
+    call.posterior_top2 = static_cast<double>(second_votes) / static_cast<double>(filtered.size());
+    call.posterior_margin = std::max(0.0, call.posterior_top1 - call.posterior_top2);
+
+    if (call.fragment_count < config_.te_min_fragments_for_vote) {
+        return call;
+    }
+
     call.te_name = best_te;
-    call.vote_fraction = static_cast<double>(best_votes) / static_cast<double>(filtered.size());
+    call.vote_fraction = call.posterior_top1;
 
     std::vector<double> supports;
     for (const auto& h : filtered) {
