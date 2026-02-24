@@ -339,6 +339,20 @@ struct PipelineResult {
     int64_t placeability_calls = 0;
     int64_t genotype_calls = 0;
 
+    int64_t reject_evidence_hard = 0;
+    int64_t reject_evidence_min_support = 0;
+    int64_t reject_evidence_breakpoint_mad = 0;
+    int64_t reject_evidence_low_complexity = 0;
+    int64_t reject_evidence_te_consistency = 0;
+
+    int64_t reject_assembly_qc = 0;
+
+    int64_t reject_te_no_label = 0;
+    int64_t reject_te_low_fragments = 0;
+    int64_t reject_te_low_support = 0;
+    int64_t reject_te_pure_softclip = 0;
+    int64_t pass_insertion_te_uncertain = 0;
+
     std::vector<FinalCall> final_calls;
 };
 

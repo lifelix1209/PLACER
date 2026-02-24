@@ -380,6 +380,10 @@ std::string anchor_qc_tag(const AnchorLockedReport& anchor_report) {
     return "ANCHOR_PASS";
 }
 
+bool has_prefix(const std::string& value, const char* prefix) {
+    return value.rfind(prefix, 0) == 0;
+}
+
 PostAssemblyTeDecision evaluate_post_assembly_te_call(
     const ClusterTECall& te_call,
     const AssemblyCall& assembly,
@@ -388,38 +392,57 @@ PostAssemblyTeDecision evaluate_post_assembly_te_call(
     PostAssemblyTeDecision decision;
 
     if (te_call.te_name.empty()) {
-        decision.qc = "FAIL_NO_TE_LABEL";
-        return decision;
-    }
+        std::unordered_set<size_t> non_softclip_support;
+        non_softclip_support.insert(
+            component.split_sa_read_indices.begin(),
+            component.split_sa_read_indices.end());
+        non_softclip_support.insert(
+            component.insertion_read_indices.begin(),
+            component.insertion_read_indices.end());
+        const int32_t non_softclip_reads = static_cast<int32_t>(non_softclip_support.size());
+        const int32_t min_non_softclip_reads = std::max(2, config.te_min_fragments_for_vote);
 
-    const int32_t min_fragments = std::max(1, config.te_min_fragments_for_vote);
-    if (te_call.fragment_count < min_fragments) {
-        decision.qc = "FAIL_LOW_TE_FRAGMENTS";
-        return decision;
-    }
-
-    const double vote_min = std::clamp(config.te_vote_fraction_min, 0.0, 1.0);
-    const double identity_min = std::clamp(config.te_median_identity_min, 0.0, 1.0);
-    const bool classic_pass =
-        te_call.vote_fraction >= vote_min &&
-        te_call.median_identity >= identity_min;
-    if (classic_pass) {
-        decision.pass = true;
-        decision.qc = "PASS_CLASSIC";
-    } else {
-        const double rescue_vote_min = std::clamp(config.te_rescue_vote_fraction_min, 0.0, vote_min);
-        const double rescue_identity_min = std::clamp(config.te_rescue_median_identity_min, 0.0, identity_min);
-        const bool rescue_pass =
-            assembly.qc_pass &&
+        if (assembly.qc_pass &&
             assembly.identity_est >= std::clamp(config.assembly_min_identity_est, 0.0, 1.0) &&
-            te_call.vote_fraction >= rescue_vote_min &&
-            te_call.median_identity >= rescue_identity_min;
-        if (!rescue_pass) {
-            decision.qc = "FAIL_LOW_TE_SUPPORT";
+            non_softclip_reads >= min_non_softclip_reads) {
+            decision.pass = true;
+            decision.qc = "PASS_INSERTION_TE_UNCERTAIN";
+        } else {
+            decision.qc = "FAIL_NO_TE_LABEL";
             return decision;
         }
-        decision.pass = true;
-        decision.qc = "PASS_ASM_RESCUE";
+    }
+
+    if (!te_call.te_name.empty()) {
+        const int32_t min_fragments = std::max(1, config.te_min_fragments_for_vote);
+        if (te_call.fragment_count < min_fragments) {
+            decision.qc = "FAIL_LOW_TE_FRAGMENTS";
+            return decision;
+        }
+
+        const double vote_min = std::clamp(config.te_vote_fraction_min, 0.0, 1.0);
+        const double identity_min = std::clamp(config.te_median_identity_min, 0.0, 1.0);
+        const bool classic_pass =
+            te_call.vote_fraction >= vote_min &&
+            te_call.median_identity >= identity_min;
+        if (classic_pass) {
+            decision.pass = true;
+            decision.qc = "PASS_CLASSIC";
+        } else {
+            const double rescue_vote_min = std::clamp(config.te_rescue_vote_fraction_min, 0.0, vote_min);
+            const double rescue_identity_min = std::clamp(config.te_rescue_median_identity_min, 0.0, identity_min);
+            const bool rescue_pass =
+                assembly.qc_pass &&
+                assembly.identity_est >= std::clamp(config.assembly_min_identity_est, 0.0, 1.0) &&
+                te_call.vote_fraction >= rescue_vote_min &&
+                te_call.median_identity >= rescue_identity_min;
+            if (!rescue_pass) {
+                decision.qc = "FAIL_LOW_TE_SUPPORT";
+                return decision;
+            }
+            decision.pass = true;
+            decision.qc = "PASS_ASM_RESCUE";
+        }
     }
 
     const bool pure_softclip_component =
@@ -1200,6 +1223,17 @@ PipelineResult Pipeline::run_parallel() const {
         result.assembled_calls += worker_result.assembled_calls;
         result.placeability_calls += worker_result.placeability_calls;
         result.genotype_calls += worker_result.genotype_calls;
+        result.reject_evidence_hard += worker_result.reject_evidence_hard;
+        result.reject_evidence_min_support += worker_result.reject_evidence_min_support;
+        result.reject_evidence_breakpoint_mad += worker_result.reject_evidence_breakpoint_mad;
+        result.reject_evidence_low_complexity += worker_result.reject_evidence_low_complexity;
+        result.reject_evidence_te_consistency += worker_result.reject_evidence_te_consistency;
+        result.reject_assembly_qc += worker_result.reject_assembly_qc;
+        result.reject_te_no_label += worker_result.reject_te_no_label;
+        result.reject_te_low_fragments += worker_result.reject_te_low_fragments;
+        result.reject_te_low_support += worker_result.reject_te_low_support;
+        result.reject_te_pure_softclip += worker_result.reject_te_pure_softclip;
+        result.pass_insertion_te_uncertain += worker_result.pass_insertion_te_uncertain;
         for (auto& call : worker_result.final_calls) {
             result.final_calls.push_back(std::move(call));
         }
@@ -1441,11 +1475,13 @@ EvidenceFeatures Pipeline::collect_evidence(
     features.pass_breakpoint_mad = features.breakpoint_mad <= std::max(0.0, config_.evidence_breakpoint_mad_max);
     features.pass_low_complexity = features.low_complex_softclip_frac <=
         std::clamp(config_.evidence_low_complex_softclip_frac_max, 0.0, 1.0);
-    // Stage-A weak TE gate: keep low-identity ONT candidates for assembly-stage validation.
+    // Stage-A weak gate: do not require TE label; allow insertion evidence to carry candidates.
     const int32_t weak_min_fragments = std::max(1, config_.te_min_fragments_for_vote / 2);
-    features.pass_te_consistency =
-        !te_call.te_name.empty() &&
-        te_call.fragment_count >= weak_min_fragments;
+    const bool te_fragment_support = te_call.fragment_count >= weak_min_fragments;
+    const bool insertion_fragment_support =
+        static_cast<int32_t>(fragments.size()) >= weak_min_fragments ||
+        features.alt_support_reads >= weak_min_fragments;
+    features.pass_te_consistency = te_fragment_support || insertion_fragment_support;
     features.hard_filtered =
         !(features.pass_min_support &&
           features.pass_breakpoint_mad &&
@@ -1465,30 +1501,13 @@ AssemblyCall Pipeline::assemble_component(
     call.pos = component.anchor_pos;
     call.assembly_mode = "NONE";
     call.qc.clear();
-
-    std::unordered_map<std::string, const FragmentTEHit*> hit_by_fragment;
-    hit_by_fragment.reserve(hits.size());
-    for (const auto& hit : hits) {
-        hit_by_fragment[hit.fragment_id] = &hit;
-    }
+    (void)hits;
+    (void)te_call;
 
     std::vector<std::string> candidates;
     candidates.reserve(fragments.size());
     for (const auto& frag : fragments) {
         if (frag.sequence.empty() || frag.length < config_.assembly_min_fragment_len) {
-            continue;
-        }
-
-        bool keep = true;
-        if (!te_call.te_name.empty()) {
-            keep = false;
-            const auto hit_it = hit_by_fragment.find(frag.fragment_id);
-            if (hit_it != hit_by_fragment.end() && hit_it->second &&
-                hit_it->second->te_name == te_call.te_name) {
-                keep = true;
-            }
-        }
-        if (!keep) {
             continue;
         }
 
@@ -1698,18 +1717,44 @@ void Pipeline::process_bin_records(
         auto evidence = collect_evidence(component, bin_records, fragments, te_call, anchor_report);
         result.evidence_rows += static_cast<int64_t>(evidence.evidence_point_count);
         if (evidence.hard_filtered) {
+            result.reject_evidence_hard += 1;
+            if (!evidence.pass_min_support) {
+                result.reject_evidence_min_support += 1;
+            }
+            if (!evidence.pass_breakpoint_mad) {
+                result.reject_evidence_breakpoint_mad += 1;
+            }
+            if (!evidence.pass_low_complexity) {
+                result.reject_evidence_low_complexity += 1;
+            }
+            if (!evidence.pass_te_consistency) {
+                result.reject_evidence_te_consistency += 1;
+            }
             continue;
         }
 
         AssemblyCall assembly = assemble_component(component, fragments, hits, te_call);
         result.assembled_calls += 1;
         if (!assembly.qc_pass) {
+            result.reject_assembly_qc += 1;
             continue;
         }
 
         const PostAssemblyTeDecision te_decision =
             evaluate_post_assembly_te_call(te_call, assembly, component, config_);
+        if (has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN")) {
+            result.pass_insertion_te_uncertain += 1;
+        }
         if (!te_decision.pass) {
+            if (te_decision.qc == "FAIL_NO_TE_LABEL") {
+                result.reject_te_no_label += 1;
+            } else if (te_decision.qc == "FAIL_LOW_TE_FRAGMENTS") {
+                result.reject_te_low_fragments += 1;
+            } else if (te_decision.qc == "FAIL_LOW_TE_SUPPORT") {
+                result.reject_te_low_support += 1;
+            } else if (has_prefix(te_decision.qc, "FAIL_PURE_SOFTCLIP_")) {
+                result.reject_te_pure_softclip += 1;
+            }
             continue;
         }
 
@@ -1725,7 +1770,7 @@ void Pipeline::process_bin_records(
         call.pos = assembly.pos;
         call.window_start = component.bin_start;
         call.window_end = component.bin_end;
-        call.te_name = te_call.te_name;
+        call.te_name = te_call.te_name.empty() ? "UNK" : te_call.te_name;
         call.te_vote_fraction = te_call.vote_fraction;
         call.te_median_identity = te_call.median_identity;
         call.te_fragment_count = te_call.fragment_count;

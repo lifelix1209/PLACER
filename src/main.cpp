@@ -62,6 +62,18 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
     out << "assemblies\t" << result.assembled_calls << "\n";
     out << "placeability_calls\t" << result.placeability_calls << "\n";
     out << "genotype_calls\t" << result.genotype_calls << "\n";
+    out << "reject_evidence_hard\t" << result.reject_evidence_hard << "\n";
+    out << "reject_evidence_min_support\t" << result.reject_evidence_min_support << "\n";
+    out << "reject_evidence_breakpoint_mad\t" << result.reject_evidence_breakpoint_mad << "\n";
+    out << "reject_evidence_low_complexity\t" << result.reject_evidence_low_complexity << "\n";
+    out << "reject_evidence_te_consistency\t" << result.reject_evidence_te_consistency << "\n";
+    out << "reject_assembly_qc\t" << result.reject_assembly_qc << "\n";
+    out << "reject_te_no_label\t" << result.reject_te_no_label << "\n";
+    out << "reject_te_low_fragments\t" << result.reject_te_low_fragments << "\n";
+    out << "reject_te_low_support\t" << result.reject_te_low_support << "\n";
+    out << "reject_te_pure_softclip\t" << result.reject_te_pure_softclip << "\n";
+    out << "pass_insertion_te_uncertain\t" << result.pass_insertion_te_uncertain << "\n";
+    out << "final_calls\t" << result.final_calls.size() << "\n";
 
     out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_fragments"
         << "\tte_theta\tte_mad_fwd\tte_mad_rev\tte_bp_core\tte_bp_win_start\tte_bp_win_end"
@@ -234,7 +246,11 @@ int main(int argc, char** argv) {
                   << "  processed_bins=" << result.processed_bins << "\n"
                   << "  components=" << result.built_components << "\n"
                   << "  assemblies=" << result.assembled_calls << "\n"
-                  << "  genotype_calls=" << result.genotype_calls << std::endl;
+                  << "  genotype_calls=" << result.genotype_calls << "\n"
+                  << "  reject_evidence_hard=" << result.reject_evidence_hard << "\n"
+                  << "  reject_assembly_qc=" << result.reject_assembly_qc << "\n"
+                  << "  reject_te_low_support=" << result.reject_te_low_support << "\n"
+                  << "  pass_insertion_te_uncertain=" << result.pass_insertion_te_uncertain << std::endl;
 
         placer::write_scientific_txt(result, "scientific.txt");
         return 0;
