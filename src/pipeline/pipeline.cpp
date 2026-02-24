@@ -384,6 +384,40 @@ bool has_prefix(const std::string& value, const char* prefix) {
     return value.rfind(prefix, 0) == 0;
 }
 
+ClusterTECall enrich_te_call_with_consensus_proxy(
+    ClusterTECall base_call,
+    const TEKmerQuickClassifierModule& te_classifier_module,
+    const AssemblyCall& assembly) {
+    if (!te_classifier_module.is_enabled()) {
+        return base_call;
+    }
+    if (!assembly.qc_pass || assembly.consensus.empty()) {
+        return base_call;
+    }
+    if (!base_call.top1_te_name.empty() && base_call.posterior_top1 > 0.0) {
+        return base_call;
+    }
+
+    InsertionFragment proxy;
+    proxy.fragment_id = "__asm_consensus_proxy__";
+    proxy.length = assembly.consensus_len;
+    proxy.sequence = assembly.consensus;
+
+    const std::vector<InsertionFragment> proxy_fragments = {proxy};
+    const auto proxy_hits = te_classifier_module.classify(proxy_fragments);
+    const ClusterTECall proxy_call = te_classifier_module.vote_cluster(proxy_hits);
+    if (proxy_call.top1_te_name.empty()) {
+        return base_call;
+    }
+
+    base_call.top1_te_name = proxy_call.top1_te_name;
+    base_call.top2_te_name = proxy_call.top2_te_name;
+    base_call.posterior_top1 = proxy_call.posterior_top1;
+    base_call.posterior_top2 = proxy_call.posterior_top2;
+    base_call.posterior_margin = proxy_call.posterior_margin;
+    return base_call;
+}
+
 PostAssemblyTeDecision evaluate_post_assembly_te_call(
     const ClusterTECall& te_call,
     const AssemblyCall& assembly,
@@ -1716,8 +1750,12 @@ void Pipeline::process_bin_records(
             continue;
         }
 
+        const ClusterTECall te_call_eval = enrich_te_call_with_consensus_proxy(
+            te_call,
+            te_classifier_module_,
+            assembly);
         const PostAssemblyTeDecision te_decision =
-            evaluate_post_assembly_te_call(te_call, assembly, component, config_);
+            evaluate_post_assembly_te_call(te_call_eval, assembly, component, config_);
         if (!te_decision.pass) {
             continue;
         }
@@ -1734,15 +1772,15 @@ void Pipeline::process_bin_records(
         call.pos = assembly.pos;
         call.window_start = component.bin_start;
         call.window_end = component.bin_end;
-        call.te_name = te_call.te_name.empty() ? "UNK" : te_call.te_name;
-        call.te_vote_fraction = te_call.vote_fraction;
-        call.te_median_identity = te_call.median_identity;
-        call.te_fragment_count = te_call.fragment_count;
-        call.te_top1_name = te_call.top1_te_name;
-        call.te_top2_name = te_call.top2_te_name;
-        call.te_posterior_top1 = te_call.posterior_top1;
-        call.te_posterior_top2 = te_call.posterior_top2;
-        call.te_posterior_margin = te_call.posterior_margin;
+        call.te_name = te_call_eval.te_name.empty() ? "UNK" : te_call_eval.te_name;
+        call.te_vote_fraction = te_call_eval.vote_fraction;
+        call.te_median_identity = te_call_eval.median_identity;
+        call.te_fragment_count = te_call_eval.fragment_count;
+        call.te_top1_name = te_call_eval.top1_te_name;
+        call.te_top2_name = te_call_eval.top2_te_name;
+        call.te_posterior_top1 = te_call_eval.posterior_top1;
+        call.te_posterior_top2 = te_call_eval.posterior_top2;
+        call.te_posterior_margin = te_call_eval.posterior_margin;
         call.te_theta = theta_tag(anchor_report.theta0);
         call.te_mad_fwd = anchor_report.mad_fwd;
         call.te_mad_rev = anchor_report.mad_rev;
@@ -1755,9 +1793,13 @@ void Pipeline::process_bin_records(
         call.te_ref_junc_pos_min = anchor_report.ref_junc_pos_min;
         call.te_ref_junc_pos_max = anchor_report.ref_junc_pos_max;
         call.te_qc = te_decision.qc + "|" + anchor_qc_tag(anchor_report);
-        call.te_status = has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN")
-            ? "TE_UNCERTAIN"
-            : "TE_CERTAIN";
+        if (has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN")) {
+            call.te_status = (call.te_top1_name.empty() || call.te_posterior_top1 <= 0.0)
+                ? "NON_TE"
+                : "TE_UNCERTAIN";
+        } else {
+            call.te_status = "TE_CERTAIN";
+        }
 
         call.tier = placeability.tier;
         call.support_reads = placeability.support_reads;
