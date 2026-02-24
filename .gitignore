@@ -26,6 +26,9 @@ ins_fragments.fasta
 ins_fragment_hits.tsv
 tuning_results.tsv
 *.cluster.msa.fa.progress.log
+pass1_bootstrap_consensus.fasta
+pass1_bootstrap_calls.tsv
+bootstrap_pass2/
 
 # Python cache
 __pycache__/

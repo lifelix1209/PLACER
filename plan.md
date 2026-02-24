@@ -147,6 +147,13 @@ Next implementation block:
 3. Add pass-1 consensus export for `TE_UNCERTAIN` calls.
 4. Add pass-2 reclassification script (incremental TE library bootstrap).
 
+Current status update:
+
+- Done: explicit `te_status` + posterior fields in `scientific.txt`.
+- Done: pass-1 bootstrap export (consensus FASTA + metadata TSV) for `TE_UNCERTAIN` and optional `NON_TE`.
+- Done: pass-2 automation script `scripts/bootstrap_te_reclassify.sh`.
+- Done: posterior calibration from proxy score to continuous `te_conf_prob` and status gating.
+
 Supporting updates:
 
 - Extend `FinalCall` with uncertainty fields (`te_posterior_top1`, `te_posterior_margin`, `te_status`).

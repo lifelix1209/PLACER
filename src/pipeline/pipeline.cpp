@@ -1,10 +1,13 @@
 #include "pipeline.h"
+#include "decision_policy.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <mutex>
@@ -387,6 +390,166 @@ bool has_prefix(const std::string& value, const char* prefix) {
 bool is_consensus_proxy_te_certain(
     const ClusterTECall& te_call,
     const AssemblyCall& assembly,
+    const PipelineConfig& config);
+
+InsertionAcceptanceDecision evaluate_insertion_acceptance_for_pipeline(
+    const PlaceabilityReport& placeability,
+    const PipelineConfig& config) {
+    InsertionEvidence evidence;
+    evidence.tier = placeability.tier;
+    evidence.support_reads = placeability.support_reads;
+    InsertionAcceptanceParams params;
+    params.emit_low_confidence_calls = config.emit_low_confidence_calls;
+    params.low_conf_min_support_reads = config.low_conf_min_support_reads;
+    params.low_conf_max_tier = config.low_conf_max_tier;
+    return evaluate_insertion_acceptance(evidence, params);
+}
+
+void apply_te_open_set_classification(
+    FinalCall& call,
+    const ClusterTECall& te_call,
+    const AssemblyCall& assembly,
+    const PostAssemblyTeDecision& te_decision,
+    const PipelineConfig& config) {
+    TeOpenSetInput input;
+    input.te_gate_pass = te_decision.pass;
+    input.te_gate_uncertain_path = has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN");
+    input.has_proxy_signal = !call.te_top1_name.empty() && call.te_posterior_top1 > 0.0;
+    input.proxy_certain = is_consensus_proxy_te_certain(te_call, assembly, config);
+    input.te_confidence_prob = call.te_confidence_prob;
+    TeOpenSetParams params;
+    params.conf_certain_min = config.te_confidence_prob_certain_min;
+    params.conf_uncertain_min = config.te_confidence_prob_uncertain_min;
+    const TeOpenSetDecision decision = classify_te_open_set(input, params);
+
+    call.te_status = decision.status;
+    if (decision.promote_top1_name) {
+        call.te_name = call.te_top1_name;
+    }
+    if (decision.add_te_gate_fail_tag) {
+        call.te_qc += "|TE_GATE_FAIL";
+    }
+    if (!decision.qc_proxy_tag.empty()) {
+        call.te_qc += "|" + decision.qc_proxy_tag;
+    }
+}
+
+std::mutex g_bootstrap_export_mutex;
+std::atomic<uint64_t> g_bootstrap_export_id{0};
+
+bool bootstrap_export_enabled(const PipelineConfig& config) {
+    if (!config.bootstrap_export_enable) {
+        return false;
+    }
+    return !config.bootstrap_consensus_fasta_path.empty() ||
+           !config.bootstrap_metadata_tsv_path.empty();
+}
+
+void initialize_bootstrap_outputs(const PipelineConfig& config) {
+    if (!bootstrap_export_enabled(config)) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_bootstrap_export_mutex);
+        g_bootstrap_export_id = 0;
+    }
+    if (!config.bootstrap_consensus_fasta_path.empty()) {
+        std::ofstream fasta(config.bootstrap_consensus_fasta_path, std::ios::out | std::ios::trunc);
+    }
+    if (!config.bootstrap_metadata_tsv_path.empty()) {
+        std::ofstream tsv(config.bootstrap_metadata_tsv_path, std::ios::out | std::ios::trunc);
+        if (tsv.is_open()) {
+            tsv << "bootstrap_id\tchrom\tpos\twindow_start\twindow_end\tte_status\tconfidence\tinsertion_qc\tte_name\tte_top1\tte_top2"
+                << "\tte_post_top1\tte_post_top2\tte_post_margin\tte_conf_prob\tsupport_reads\ttier\tasm_consensus_len\tasm_identity_est"
+                << "\tte_qc\n";
+        }
+    }
+}
+
+bool should_export_bootstrap_call(
+    const PipelineConfig& config,
+    const FinalCall& call,
+    const AssemblyCall& assembly) {
+    if (!bootstrap_export_enabled(config)) {
+        return false;
+    }
+    if (assembly.consensus.empty()) {
+        return false;
+    }
+    if (assembly.consensus_len < std::max(20, config.bootstrap_export_min_consensus_len)) {
+        return false;
+    }
+    if (call.te_status == "TE_UNCERTAIN") {
+        return true;
+    }
+    if (call.te_status == "NON_TE" && config.bootstrap_export_include_non_te) {
+        return true;
+    }
+    return false;
+}
+
+bool append_bootstrap_export(
+    const PipelineConfig& config,
+    const FinalCall& call,
+    const AssemblyCall& assembly) {
+    if (!should_export_bootstrap_call(config, call, assembly)) {
+        return false;
+    }
+
+    std::string qc = call.te_qc;
+    std::replace(qc.begin(), qc.end(), '\t', '|');
+    std::replace(qc.begin(), qc.end(), '\n', '|');
+
+    std::lock_guard<std::mutex> lock(g_bootstrap_export_mutex);
+    const uint64_t id = ++g_bootstrap_export_id;
+
+    if (!config.bootstrap_consensus_fasta_path.empty()) {
+        std::ofstream fasta(config.bootstrap_consensus_fasta_path, std::ios::out | std::ios::app);
+        if (fasta.is_open()) {
+            fasta << ">BOOTSTRAP_" << id
+                  << "|status=" << call.te_status
+                  << "|conf=" << call.confidence
+                  << "|chrom=" << call.chrom
+                  << "|pos=" << call.pos
+                  << "|top1=" << (call.te_top1_name.empty() ? "NA" : call.te_top1_name)
+                  << "|post1=" << call.te_posterior_top1
+                  << "|margin=" << call.te_posterior_margin
+                  << '\n'
+                  << assembly.consensus << '\n';
+        }
+    }
+
+    if (!config.bootstrap_metadata_tsv_path.empty()) {
+        std::ofstream tsv(config.bootstrap_metadata_tsv_path, std::ios::out | std::ios::app);
+        if (tsv.is_open()) {
+            tsv << "BOOTSTRAP_" << id << '\t'
+                << call.chrom << '\t'
+                << call.pos << '\t'
+                << call.window_start << '\t'
+                << call.window_end << '\t'
+                << call.te_status << '\t'
+                << call.confidence << '\t'
+                << call.insertion_qc << '\t'
+                << (call.te_name.empty() ? "NA" : call.te_name) << '\t'
+                << (call.te_top1_name.empty() ? "NA" : call.te_top1_name) << '\t'
+                << (call.te_top2_name.empty() ? "NA" : call.te_top2_name) << '\t'
+                << call.te_posterior_top1 << '\t'
+                << call.te_posterior_top2 << '\t'
+                << call.te_posterior_margin << '\t'
+                << call.te_confidence_prob << '\t'
+                << call.support_reads << '\t'
+                << call.tier << '\t'
+                << call.asm_consensus_len << '\t'
+                << call.asm_identity_est << '\t'
+                << qc << '\n';
+        }
+    }
+    return true;
+}
+
+bool is_consensus_proxy_te_certain(
+    const ClusterTECall& te_call,
+    const AssemblyCall& assembly,
     const PipelineConfig& config) {
     if (!assembly.qc_pass) {
         return false;
@@ -403,6 +566,24 @@ bool is_consensus_proxy_te_certain(
     return te_call.posterior_top1 >= p1_min &&
            te_call.posterior_margin >= margin_min &&
            assembly.identity_est >= identity_min;
+}
+
+double calibrate_te_confidence_prob(
+    const ClusterTECall& te_call,
+    const AssemblyCall& assembly,
+    const PlaceabilityReport& placeability,
+    const PipelineConfig& config) {
+    const double support_norm = std::clamp(
+        std::log1p(static_cast<double>(std::max(0, placeability.support_reads))) / std::log1p(10.0),
+        0.0,
+        1.0);
+    const double z =
+        config.te_confidence_bias +
+        (config.te_confidence_w_top1 * std::clamp(te_call.posterior_top1, 0.0, 1.0)) +
+        (config.te_confidence_w_margin * std::clamp(te_call.posterior_margin, 0.0, 1.0)) +
+        (config.te_confidence_w_asm_identity * std::clamp(assembly.identity_est, 0.0, 1.0)) +
+        (config.te_confidence_w_support * support_norm);
+    return std::clamp(sigmoid(z), 0.0, 1.0);
 }
 
 ClusterTECall enrich_te_call_with_consensus_proxy(
@@ -1158,6 +1339,8 @@ PipelineResult Pipeline::run() const {
         throw std::runtime_error("BAM reader is not valid");
     }
 
+    initialize_bootstrap_outputs(config_);
+
     if (config_.enable_parallel) {
         return run_parallel();
     }
@@ -1281,6 +1464,9 @@ PipelineResult Pipeline::run_parallel() const {
         result.final_te_certain += worker_result.final_te_certain;
         result.final_te_uncertain += worker_result.final_te_uncertain;
         result.final_non_te += worker_result.final_non_te;
+        result.final_high_confidence += worker_result.final_high_confidence;
+        result.final_low_confidence += worker_result.final_low_confidence;
+        result.bootstrap_exported_calls += worker_result.bootstrap_exported_calls;
         for (auto& call : worker_result.final_calls) {
             result.final_calls.push_back(std::move(call));
         }
@@ -1780,11 +1966,12 @@ void Pipeline::process_bin_records(
             assembly);
         const PostAssemblyTeDecision te_decision =
             evaluate_post_assembly_te_call(te_call_eval, assembly, component, config_);
-        if (!te_decision.pass) {
+        PlaceabilityReport placeability = score_placeability(assembly, evidence);
+        const InsertionAcceptanceDecision insertion_decision =
+            evaluate_insertion_acceptance_for_pipeline(placeability, config_);
+        if (!insertion_decision.pass) {
             continue;
         }
-
-        PlaceabilityReport placeability = score_placeability(assembly, evidence);
         result.placeability_calls += 1;
 
         GenotypeCall genotype = genotype_call(assembly, placeability);
@@ -1817,26 +2004,20 @@ void Pipeline::process_bin_records(
         call.te_ref_junc_pos_min = anchor_report.ref_junc_pos_min;
         call.te_ref_junc_pos_max = anchor_report.ref_junc_pos_max;
         call.te_qc = te_decision.qc + "|" + anchor_qc_tag(anchor_report);
-        const bool has_proxy_signal =
-            !call.te_top1_name.empty() &&
-            call.te_posterior_top1 > 0.0;
-        const bool proxy_certain =
-            is_consensus_proxy_te_certain(te_call_eval, assembly, config_);
-        if (has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN")) {
-            if (proxy_certain) {
-                call.te_status = "TE_CERTAIN";
-                call.te_name = call.te_top1_name;
-                call.te_qc += "|TE_PROXY_CERTAIN";
-            } else if (has_proxy_signal) {
-                call.te_status = "TE_UNCERTAIN";
-                call.te_qc += "|TE_PROXY_WEAK";
-            } else {
-                call.te_status = "NON_TE";
-                call.te_qc += "|TE_PROXY_NONE";
-            }
+        call.te_confidence_prob = calibrate_te_confidence_prob(
+            te_call_eval,
+            assembly,
+            placeability,
+            config_);
+        call.insertion_qc = insertion_decision.low_confidence ?
+            "PASS_LOW_CONF_ACCEPTED" :
+            "PASS_HIGH_CONF";
+        if (insertion_decision.low_confidence) {
+            call.confidence = "LOW";
         } else {
-            call.te_status = "TE_CERTAIN";
+            call.confidence = "HIGH";
         }
+        apply_te_open_set_classification(call, te_call_eval, assembly, te_decision, config_);
 
         call.tier = placeability.tier;
         call.support_reads = placeability.support_reads;
@@ -1855,6 +2036,14 @@ void Pipeline::process_bin_records(
             result.final_te_uncertain += 1;
         } else {
             result.final_non_te += 1;
+        }
+        if (call.confidence == "LOW") {
+            result.final_low_confidence += 1;
+        } else {
+            result.final_high_confidence += 1;
+        }
+        if (append_bootstrap_export(config_, call, assembly)) {
+            result.bootstrap_exported_calls += 1;
         }
         result.final_calls.push_back(std::move(call));
     }

@@ -19,6 +19,23 @@ bool env_flag_enabled(const char* key) {
     return v == "1" || v == "true" || v == "TRUE" || v == "on" || v == "ON";
 }
 
+bool env_try_bool(const char* key, bool& out) {
+    const char* value = std::getenv(key);
+    if (!value) {
+        return false;
+    }
+    const std::string v(value);
+    if (v == "1" || v == "true" || v == "TRUE" || v == "on" || v == "ON") {
+        out = true;
+        return true;
+    }
+    if (v == "0" || v == "false" || v == "FALSE" || v == "off" || v == "OFF") {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
 bool env_try_double(const char* key, double& out) {
     const char* value = std::getenv(key);
     if (!value || !*value) {
@@ -47,6 +64,15 @@ bool env_try_int32(const char* key, int32_t& out) {
     return true;
 }
 
+bool env_try_string(const char* key, std::string& out) {
+    const char* value = std::getenv(key);
+    if (!value) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
 void write_scientific_txt(const PipelineResult& result, const std::string& output_path) {
     std::ofstream out(output_path);
     if (!out.is_open()) {
@@ -65,11 +91,14 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
     out << "final_te_certain\t" << result.final_te_certain << "\n";
     out << "final_te_uncertain\t" << result.final_te_uncertain << "\n";
     out << "final_non_te\t" << result.final_non_te << "\n";
+    out << "final_high_confidence\t" << result.final_high_confidence << "\n";
+    out << "final_low_confidence\t" << result.final_low_confidence << "\n";
+    out << "bootstrap_exported_calls\t" << result.bootstrap_exported_calls << "\n";
 
     out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_fragments"
         << "\tte_theta\tte_mad_fwd\tte_mad_rev\tte_bp_core\tte_bp_win_start\tte_bp_win_end"
-        << "\tte_core_candidates\tte_core_set\tsplit_sa_core_frac\tte_ref_junc_min\tte_ref_junc_max\tte_qc"
-        << "\tte_status\tte_top1_name\tte_top2_name\tte_post_top1\tte_post_top2\tte_post_margin"
+        << "\tte_core_candidates\tte_core_set\tsplit_sa_core_frac\tte_ref_junc_min\tte_ref_junc_max\tinsertion_qc\tte_qc"
+        << "\tte_status\tte_top1_name\tte_top2_name\tte_post_top1\tte_post_top2\tte_post_margin\tte_conf_prob\tconfidence"
         << "\ttier\tsupport_reads\tgt\taf\tgq\tasm_mode\tasm_input_fragments\tasm_used_fragments"
         << "\tasm_consensus_len\tasm_identity_est\tasm_qc\n";
     for (const auto& call : result.final_calls) {
@@ -93,6 +122,7 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
             << call.te_split_sa_core_frac << "\t"
             << call.te_ref_junc_pos_min << "\t"
             << call.te_ref_junc_pos_max << "\t"
+            << call.insertion_qc << "\t"
             << call.te_qc << "\t"
             << call.te_status << "\t"
             << (call.te_top1_name.empty() ? "NA" : call.te_top1_name) << "\t"
@@ -100,6 +130,8 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
             << call.te_posterior_top1 << "\t"
             << call.te_posterior_top2 << "\t"
             << call.te_posterior_margin << "\t"
+            << call.te_confidence_prob << "\t"
+            << call.confidence << "\t"
             << call.tier << "\t"
             << call.support_reads << "\t"
             << call.genotype << "\t"
@@ -131,8 +163,14 @@ int main(int argc, char** argv) {
     }
 
     config.enable_parallel = placer::env_flag_enabled("PLACER_PARALLEL");
+    config.emit_low_confidence_calls = placer::env_flag_enabled("PLACER_EMIT_LOW_CONFIDENCE_CALLS");
+    config.bootstrap_export_enable = placer::env_flag_enabled("PLACER_BOOTSTRAP_EXPORT");
     {
         double v = 0.0;
+        bool b = false;
+        if (placer::env_try_bool("PLACER_BOOTSTRAP_EXPORT_INCLUDE_NON_TE", b)) {
+            config.bootstrap_export_include_non_te = b;
+        }
         if (placer::env_try_double("PLACER_TE_MEDIAN_IDENTITY_MIN", v)) {
             config.te_median_identity_min = std::clamp(v, 0.0, 1.0);
         }
@@ -167,6 +205,15 @@ int main(int argc, char** argv) {
         if (placer::env_try_int32("PLACER_PURE_SOFTCLIP_MIN_FRAGMENTS", i)) {
             config.te_pure_softclip_min_fragments = std::max(1, i);
         }
+        if (placer::env_try_int32("PLACER_LOW_CONF_MIN_SUPPORT_READS", i)) {
+            config.low_conf_min_support_reads = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_LOW_CONF_MAX_TIER", i)) {
+            config.low_conf_max_tier = std::clamp(i, 1, 3);
+        }
+        if (placer::env_try_int32("PLACER_BOOTSTRAP_MIN_CONSENSUS_LEN", i)) {
+            config.bootstrap_export_min_consensus_len = std::max(20, i);
+        }
 
         if (placer::env_try_double("PLACER_TE_SOFTCLIP_LOW_COMPLEXITY_AT_FRAC_MIN", v)) {
             config.te_softclip_low_complexity_at_frac_min = std::clamp(v, 0.0, 1.0);
@@ -182,6 +229,34 @@ int main(int argc, char** argv) {
         }
         if (placer::env_try_double("PLACER_TE_PROXY_MIN_IDENTITY", v)) {
             config.te_proxy_identity_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_BIAS", v)) {
+            config.te_confidence_bias = v;
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_W_TOP1", v)) {
+            config.te_confidence_w_top1 = v;
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_W_MARGIN", v)) {
+            config.te_confidence_w_margin = v;
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_W_ASM_IDENTITY", v)) {
+            config.te_confidence_w_asm_identity = v;
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_W_SUPPORT", v)) {
+            config.te_confidence_w_support = v;
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_CERTAIN_MIN", v)) {
+            config.te_confidence_prob_certain_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_UNCERTAIN_MIN", v)) {
+            config.te_confidence_prob_uncertain_min = std::clamp(v, 0.0, 1.0);
+        }
+        std::string s;
+        if (placer::env_try_string("PLACER_BOOTSTRAP_FASTA_PATH", s)) {
+            config.bootstrap_consensus_fasta_path = s;
+        }
+        if (placer::env_try_string("PLACER_BOOTSTRAP_TSV_PATH", s)) {
+            config.bootstrap_metadata_tsv_path = s;
         }
         if (placer::env_try_double("PLACER_EVIDENCE_MIN_SUPPORT_ALPHA", v)) {
             config.evidence_min_support_alpha = std::clamp(v, 0.0, 1.0);
@@ -237,6 +312,9 @@ int main(int argc, char** argv) {
         config.te_rescue_median_identity_min = std::min(
             config.te_rescue_median_identity_min,
             config.te_median_identity_min);
+        if (config.te_confidence_prob_uncertain_min > config.te_confidence_prob_certain_min) {
+            config.te_confidence_prob_uncertain_min = config.te_confidence_prob_certain_min;
+        }
         config.assembly_poa_min_reads = std::min(
             config.assembly_poa_min_reads,
             config.assembly_poa_max_reads);
@@ -256,7 +334,10 @@ int main(int argc, char** argv) {
                   << "  genotype_calls=" << result.genotype_calls << "\n"
                   << "  final_te_certain=" << result.final_te_certain << "\n"
                   << "  final_te_uncertain=" << result.final_te_uncertain << "\n"
-                  << "  final_non_te=" << result.final_non_te << std::endl;
+                  << "  final_non_te=" << result.final_non_te << "\n"
+                  << "  final_high_confidence=" << result.final_high_confidence << "\n"
+                  << "  final_low_confidence=" << result.final_low_confidence << "\n"
+                  << "  bootstrap_exported_calls=" << result.bootstrap_exported_calls << std::endl;
 
         placer::write_scientific_txt(result, "scientific.txt");
         return 0;

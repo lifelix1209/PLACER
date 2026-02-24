@@ -241,6 +241,7 @@ struct FinalCall {
     double te_split_sa_core_frac = 0.0;
     int32_t te_ref_junc_pos_min = -1;
     int32_t te_ref_junc_pos_max = -1;
+    std::string insertion_qc = "NA";
     std::string te_qc = "NA";
     std::string te_status = "NON_TE";
     std::string te_top1_name;
@@ -248,6 +249,8 @@ struct FinalCall {
     double te_posterior_top1 = 0.0;
     double te_posterior_top2 = 0.0;
     double te_posterior_margin = 0.0;
+    double te_confidence_prob = 0.0;
+    std::string confidence = "HIGH";
 
     int32_t tier = 3;
     int32_t support_reads = 0;
@@ -297,6 +300,24 @@ struct PipelineConfig {
     double te_proxy_posterior_top1_min = 0.90;
     double te_proxy_posterior_margin_min = 0.50;
     double te_proxy_identity_min = 0.60;
+    // Proxy posterior calibration to continuous confidence probability.
+    double te_confidence_bias = -3.0;
+    double te_confidence_w_top1 = 2.4;
+    double te_confidence_w_margin = 2.0;
+    double te_confidence_w_asm_identity = 1.8;
+    double te_confidence_w_support = 0.8;
+    double te_confidence_prob_certain_min = 0.85;
+    double te_confidence_prob_uncertain_min = 0.35;
+    // Optional low-confidence fallback acceptance for exploratory analysis.
+    bool emit_low_confidence_calls = false;
+    int32_t low_conf_min_support_reads = 2;
+    int32_t low_conf_max_tier = 2;
+    // Pass-1 bootstrap export for low-confidence/unknown TE calls.
+    bool bootstrap_export_enable = false;
+    bool bootstrap_export_include_non_te = true;
+    int32_t bootstrap_export_min_consensus_len = 80;
+    std::string bootstrap_consensus_fasta_path = "pass1_bootstrap_consensus.fasta";
+    std::string bootstrap_metadata_tsv_path = "pass1_bootstrap_calls.tsv";
 
     // Module 2.3: deterministic TE consensus (anchor-locked + theta).
     bool te_consensus_enable = true;
@@ -356,6 +377,9 @@ struct PipelineResult {
     int64_t final_te_certain = 0;
     int64_t final_te_uncertain = 0;
     int64_t final_non_te = 0;
+    int64_t final_high_confidence = 0;
+    int64_t final_low_confidence = 0;
+    int64_t bootstrap_exported_calls = 0;
 
     std::vector<FinalCall> final_calls;
 };

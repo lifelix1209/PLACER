@@ -33,7 +33,7 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-`0.0.1` currently has no registered CTest cases, so `ctest` may report `No tests were found`.
+Current CTest includes `test_decision_policy` (runtime decision matrix checks).
 
 ## Run
 
@@ -46,6 +46,8 @@ Default outputs are written to repository root:
 - `scientific.txt`
 - `ins_fragments.fasta`
 - `ins_fragment_hits.tsv`
+
+`scientific.txt` includes a dedicated `insertion_qc` field (separate from `te_qc`).
 
 ## Real-Data Tuning (ONT)
 
@@ -72,6 +74,64 @@ PLACER_TE_RESCUE_VOTE_FRACTION_MIN=0.25 \
 PLACER_TE_RESCUE_MEDIAN_IDENTITY_MIN=0.20 \
 ./build/placer <input.bam> <ref.fa> <te.fa>
 ```
+
+## Bootstrap Reclassification (Pass-1 / Pass-2)
+
+When TE reference quality is low, you can keep uncertain calls and bootstrap an incremental TE library.
+
+Pass-1 export controls:
+
+```bash
+PLACER_BOOTSTRAP_EXPORT=1 \
+PLACER_BOOTSTRAP_EXPORT_INCLUDE_NON_TE=1 \
+PLACER_BOOTSTRAP_MIN_CONSENSUS_LEN=80 \
+PLACER_BOOTSTRAP_FASTA_PATH=pass1_bootstrap_consensus.fasta \
+PLACER_BOOTSTRAP_TSV_PATH=pass1_bootstrap_calls.tsv \
+./build/placer <input.bam> <ref.fa> <te.fa>
+```
+
+Then run pass-2 with merged base+bootstrap library:
+
+```bash
+scripts/bootstrap_te_reclassify.sh \
+  --bam <input.bam> \
+  --ref <ref.fa> \
+  --base-te <te.fa> \
+  --pass1-fasta pass1_bootstrap_consensus.fasta \
+  --placer ./build/placer \
+  --outdir bootstrap_pass2 \
+  --min-len 80
+```
+
+The script generates:
+
+- `bootstrap_pass2/te_bootstrap_merged.fasta`
+- `bootstrap_pass2/scientific_pass2.txt`
+- `bootstrap_pass2/bootstrap_report.txt`
+
+Optional low-confidence acceptance (default off):
+
+```bash
+PLACER_EMIT_LOW_CONFIDENCE_CALLS=1 \
+PLACER_LOW_CONF_MIN_SUPPORT_READS=2 \
+PLACER_LOW_CONF_MAX_TIER=2 \
+./build/placer <input.bam> <ref.fa> <te.fa>
+```
+
+Posterior calibration knobs (optional):
+
+```bash
+PLACER_TE_CONF_CERTAIN_MIN=0.85 \
+PLACER_TE_CONF_UNCERTAIN_MIN=0.35 \
+PLACER_TE_CONF_BIAS=-3.0 \
+PLACER_TE_CONF_W_TOP1=2.4 \
+PLACER_TE_CONF_W_MARGIN=2.0 \
+PLACER_TE_CONF_W_ASM_IDENTITY=1.8 \
+PLACER_TE_CONF_W_SUPPORT=0.8 \
+./build/placer <input.bam> <ref.fa> <te.fa>
+```
+
+`scientific.txt` now reports calibrated TE confidence as `te_conf_prob`.
 
 ## Notes
 

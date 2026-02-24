@@ -98,6 +98,7 @@ target_link_libraries(placer_bam_io PUBLIC hts::htslib)
 
 add_library(placer_pipeline
     src/pipeline/pipeline.cpp
+    src/pipeline/decision_policy.cpp
     src/gate1/gate1_module.cpp
     src/component/insert_fragment_module.cpp
     src/component/te_quick_classifier.cpp
@@ -119,3 +120,6 @@ add_executable(placer
 )
 target_include_directories(placer PRIVATE include)
 target_link_libraries(placer PRIVATE placer_pipeline)
+
+enable_testing()
+add_subdirectory(tests)
