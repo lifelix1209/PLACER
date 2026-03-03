@@ -6,6 +6,11 @@
 
 namespace placer {
 
+struct ClusterTECall;
+struct AssemblyCall;
+struct ComponentCall;
+struct PipelineConfig;
+
 struct InsertionEvidence {
     int32_t tier = 3;
     int32_t support_reads = 0;
@@ -49,6 +54,17 @@ struct TeOpenSetDecision {
 TeOpenSetDecision classify_te_open_set(
     const TeOpenSetInput& input,
     const TeOpenSetParams& params);
+
+struct PostAssemblyTeDecision {
+    bool pass = false;
+    std::string qc = "FAIL_TE_CLASSIFICATION";
+};
+
+PostAssemblyTeDecision evaluate_post_assembly_te_decision(
+    const ClusterTECall& te_call,
+    const AssemblyCall& assembly,
+    const ComponentCall& component,
+    const PipelineConfig& config);
 
 }  // namespace placer
 

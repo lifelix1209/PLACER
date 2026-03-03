@@ -1,562 +1,327 @@
-# PLACER 项目思路与实现（按当前代码）
+# PLACER 当前算法流程（与代码一致）
 
-本文档基于仓库当前可执行主干实现整理，目标是说明两件事：
-
-1. 项目想解决什么问题（设计思路）。
-2. 代码现在具体是怎么做的（实现细节与边界）。
-
-对应核心代码：
+本文档按当前实现整理，代码基线对应：
 
 - `src/main.cpp`
-- `src/stream/bam_io.cpp`
-- `src/gate1/gate1_module.cpp`
 - `src/pipeline/pipeline.cpp`
+- `src/pipeline/decision_policy.cpp`
+- `src/gate1/gate1_module.cpp`
 - `src/component/insert_fragment_module.cpp`
 - `src/component/te_quick_classifier.cpp`
 - `src/component/te_consensus_module.cpp`
+- `src/component/tsd_detector.cpp`
 - `include/pipeline.h`
-- `include/bam_io.h`
-- `include/gate1_module.h`
 
----
+## 1. 入口与运行模式
 
-## 1. 项目思路（Why）
+命令行入口：
 
-PLACER 的目标是从长读长 BAM（ONT/PacBio）里检测非参考 TE 插入，核心难点来自：
+```bash
+./build/placer <input.bam> <ref.fa> [te.fa]
+```
 
-- 重复区域导致定位歧义（同一片段可落多个位置）。
-- 对齐器可能把插入“线性化”到 CIGAR，或只留软剪切 / SA 线索。
-- 直接做全局重组装成本高，且容易把邻近位点或不同单倍型混在一起。
+`main()` 做两件事：
 
-当前实现采用“分层降本 + 流式处理”的思路：
+1. 解析输入文件并构造 `PipelineConfig`。
+2. 读取大量 `PLACER_*` 环境变量覆盖阈值（TE、assembly、TSD、evidence、genotype、bootstrap、并行等）。
 
-- 先用 Gate1 做信号优先预筛，尽量减少后续处理量。
-- 以 bin 为处理单位串流推进，不把 BAM 全量读入内存。
-- 先提取可解释的插入片段，再做 TE 快速分类（k-mer 投票）。
-- 在可用时做 anchor-locked 的确定性 TE 断点共识，输出诊断字段。
-- local realign / assembly / placeability / genotyping 目前是可运行占位版本，逻辑已内置到 Pipeline 固定流程。
+随后执行：
 
----
+- `build_default_pipeline(config)->run()`
+- 输出 `scientific.txt`
 
-## 2. 总体架构（How）
+运行模式：
 
-### 2.1 执行入口
+- `PLACER_PARALLEL=0/未设置`：`run_streaming()`
+- `PLACER_PARALLEL=1`：`run_parallel()`（生产者 + worker 队列）
 
-`main()`（`src/main.cpp`）流程：
+## 2. 全流程总览
 
-1. 读取命令行参数：`placer <input.bam> <ref.fa> [te.fa]`。
-2. 构造 `PipelineConfig`（含 BAM、REF、TE 路径）。
-3. 读取环境变量 `PLACER_PARALLEL` 决定串流或并行模式。
-4. `build_default_pipeline(config)->run()` 执行主流程。
-5. 把结果写到当前目录 `scientific.txt`。
+每个 bin/component 的核心链路固定为：
 
-说明：
+1. Gate1 读段预筛
+2. 证据点聚窗并构建 component
+3. 插入片段提取（CIGAR + split-SA）
+4. TE 快速分类（multi-k）
+5. Anchor-locked TE 共识（可选）
+6. 证据特征计算与硬过滤
+7. abPOA 局部组装
+8. 组装后 TE 决策（classic/rescue）
+9. placeability 打分与 tier
+10. 插入接受决策（高/低置信）
+11. 分型（0/0,0/1,1/1）
+12. TE 置信校准 + TSD 检测 + open-set 状态分类
+13. 可选 bootstrap 导出
+14. final call 去重与汇总
 
-- `reference_fasta_path` 当前只作为配置输入保留，主流程里尚未实质使用。
-- `te_fasta_path` 直接影响 TE 快速分类与 TE 共识模块是否可用。
+## 3. Gate1（`SignalFirstGate1Module`）
 
-### 2.2 固定流程模块
+硬过滤：
 
-当前 `Pipeline` 不再通过 `I*` 抽象接口注入模块，而是固定成员模块 + 固定步骤函数：
+- `unmapped` / `secondary` 直接丢弃
+- `seq_len < min_seq_len` 丢弃
 
-- Gate1: `SignalFirstGate1Module`
-- Component: `LinearBinComponentModule`
-- Fragment 提取: `CigarInsertionFragmentModule`（内部再调用 `SplitSAFragmentModule`）
-- TE 快速分类: `TEKmerQuickClassifierModule`
-- TE 共识: `DeterministicAnchorLockedModule`
-- 证据收集/组装/placeability/分型：`Pipeline` 内部函数
-  - `collect_evidence(...)`
-  - `assemble_component(...)`
-  - `score_placeability(...)`
-  - `genotype_call(...)`
+信号定义：满足任一
 
-`build_default_pipeline(config)` 当前只负责创建 BAM reader 并构造固定流程 `Pipeline`。
+- supplementary
+- 有 `SA` tag
+- 长 soft-clip
 
----
+若无信号：仅保留 `MAPQ > background_mapq_min`。
 
-## 3. 主流程数据通路
+若有信号，需通过 3 个 fuse：
 
-### 3.1 BAM 串流与分桶
+1. 连续锚定匹配长度充足（`max_match_block`）
+2. 长软剪切两侧锚长度足够
+3. 若有 `NM`，要求 `NM / total_match_bases <= max_nm_rate`
 
-`Pipeline::run()` 按 `config.enable_parallel` 选择：
+## 4. 组件构建（`LinearBinComponentModule`）
 
-- `run_streaming()`：单线程串流。
-- `run_parallel()`：生产者（读 BAM）+ 1 个消费者 worker（处理 batch）。
+不是“每 bin 一个 component”，而是：
 
-并行模式说明：
+1. 从读段抽取证据点（soft-clip/indel/SA hint）并赋权。
+2. 对证据点做直方图平滑，找密度峰。
+3. 从峰扩展候选窗口并合并相邻窗口。
+4. 把 read 按“窗口得分”分配到最佳窗口（含歧义判定）。
+5. 每个窗口生成一个 `ComponentCall`，并填充：
+   - `read_indices`
+   - `soft_clip_read_indices`
+   - `split_sa_read_indices`
+   - `insertion_read_indices`
+   - `breakpoint_candidates`
 
-- 目前是“单 worker 队列”，不是多 worker 扇出。
-- `batch_size` 默认 1000。
+另外支持跨 bin 上下文（`kCrossBinContextBins=2`），避免长读跨桶丢证据。
 
-### 3.2 `consume_record()` 行为
+## 5. 插入片段提取（Module 2.1）
 
-每条记录依次执行：
+### 5.1 CIGAR 路径（`CigarInsertionFragmentModule`）
 
-1. Gate1 预筛，不通过直接丢弃。
-2. 维护 `active_window`（`window_size` 默认 10kb）滑窗状态。
-3. 以 `bin_index = pos / bin_size`（默认 10kb）分桶。
-4. 染色体或 bin 变化时触发 `flush_current_bin()`。
-5. 将记录放入 `current_bin_records`。
+提取三类片段：
 
-说明：
+- 左/右 soft-clip（`kClipRefLeft/Right`）
+- 长插入 `I`（`kCigarInsertion`，每读最多保留最长 2 个）
 
-- `active_window` 当前仅维护窗口状态，不直接参与后续打分。
+`short_ins_enable` 时会在 split/indel 主导场景下动态放宽最小插入长度阈值。
 
-### 3.3 `process_bin_records()` 行为
+### 5.2 Split-SA 路径（`SplitSAFragmentModule`）
 
-对每个非空 bin：
+两步输出：
 
-1. 组件构建：`component_module_.build(...)`
-2. 对每个 component 依次执行：
-   - 片段提取：`ins_fragment_module_.extract(...)`
-   - TE 分类：`te_classifier_module_.classify(...) + vote_cluster(...)`（启用时）
-   - TE 共识：`anchor_locked_module_.resolve(...)`（启用时）
-   - 证据收集：`collect_evidence(...)`
-   - 组装：`assemble_component(...)`
-   - placeability：`score_placeability(...)`
-   - 分型：`genotype_call(...)`
-3. 组装 `FinalCall` 并追加到 `result.final_calls`。
+1. 稳健路径：
+   - 解析 primary + supplementary + `SA:Z`
+   - 如有显式 supplementary，对 SA 做一致性校验（query 区间 IOU/边界差）
+   - 选 flank（锚长度与 NM/大 indel 惩罚联合排序）
+   - 选 mate，定位 query 连接点 `q_junc`
+   - 截取 opposite 片段并推断 `ref_junc_pos`/`ref_side`
+2. 诊断回退：
+   - 若稳健路径失败，保留有限 SA 诊断片段（`max_sa_per_read`）
 
-TE 名称写入规则：
+### 5.3 文件输出
 
-- 先用 `te_classifier_module_.vote_cluster(...)` 产生 `te_call`。
-- Stage-A 证据阶段只做弱 TE 门槛，避免组装前过早丢失低 identity 候选。
-- Stage-B 在组装后做 TE 强判定（标准阈值或 assembly rescue 阈值）。
+默认会写：
 
----
+- `ins_fragments.fasta`
 
-## 4. 各模块实现细节
+模块构造时清空，运行中追加（并发写有互斥锁）。
 
-## 4.1 BAM I/O（`src/stream/bam_io.cpp`）
-
-实现类：`HtslibBamStreamReader`
-
-- 使用 `hts_open`、`sam_hdr_read`、`sam_read1` 流式读取。
-- 读阶段先过滤：
-  - `BAM_FUNMAP`（未比对）
-  - `BAM_FSECONDARY`（次要比对）
-- 支持 htslib 解压线程数 `bam_threads`（默认 2）。
-
-`ReadView` 提供：
-
-- 轻量访问 `tid/pos/mapq/flag/cigar/tag`。
-- `decode_subsequence(start, len)`：按需局部解码序列。
-- `decode_sequence()`：全长解码（仅 assembly 占位模块在用）。
-
----
-
-## 4.2 Gate1（`SignalFirstGate1Module`）
-
-默认参数（`Gate1SignalConfig`）：
-
-- `min_seq_len = 50`
-- `long_soft_clip_min = 100`
-- `background_mapq_min = 20`
-- `min_anchor_match_bases = 200`
-- `min_clip_flank_match_bases = 120`
-- `max_nm_rate = 0.20`
-
-判定逻辑：
-
-1. 硬过滤：unmapped / secondary / read 长度不足，直接拒绝。
-2. 信号判断（满足其一）：
-   - supplementary flag
-   - 存在 `SA` tag
-   - 最大 soft-clip `>= long_soft_clip_min`
-3. 若无信号：仅保留 `MAPQ > background_mapq_min`。
-4. 若有信号：通过三道保险丝：
-   - Fuse1：最大连续 match 块 `>= min_anchor_match_bases`
-   - Fuse2：长 soft-clip 侧邻接锚长度必须足够
-   - Fuse3：若有 `NM` tag，要求 `NM / total_match_bases <= max_nm_rate`
-
----
-
-## 4.3 Component（`LinearBinComponentModule`）
-
-当前实现是占位版本：
-
-- 一个 bin 生成一个 `ComponentCall`。
-- `anchor_pos = (bin_start + bin_end) / 2`。
-- `read_indices` 包含该 bin 全部读段索引。
-
-同时做三类读段标签：
-
-- `split_sa_read_indices`：有 SA 或 supplementary。
-- `soft_clip_read_indices`：最大 soft-clip `>= 20`。
-- `insertion_read_indices`：最大 CIGAR 插入 `I >= 50`。
-
-说明：
-
-- `breakpoint_candidates` 结构已预留，当前未填充。
-
----
-
-## 4.4 插入片段提取（Module 2.1）
-
-主实现：`CigarInsertionFragmentModule::extract()`
-补充实现：`SplitSAFragmentModule::extract()`
-
-最终输出：`std::vector<InsertionFragment>`
-
-### 4.4.1 CIGAR 路径（soft-clip + long insertion）
-
-阈值来自 `PipelineConfig`：
-
-- `min_soft_clip_for_seq_extract`（默认 50）
-- `min_long_ins_for_seq_extract`（默认 50）
-
-处理规则：
-
-1. 软剪切片段：
-   - leading soft-clip -> `source = kClipRefLeft`
-   - trailing soft-clip -> `source = kClipRefRight`
-2. 长插入片段：
-   - 扫 CIGAR 找 `I >= min_long_ins`。
-   - 每条 read 按长度降序最多保留 2 个插入片段。
-3. 记录 `class_mask`：
-   - `kCandidateSoftClip`
-   - `kCandidateSplitSaSupplementary`
-   - `kCandidateLongInsertion`
-4. 片段序列通过 `decode_subsequence()` 延迟提取。
-
-### 4.4.2 Split-SA 路径（稳健提取 + 诊断回退）
-
-核心参数：
-
-- `min_sa_aln_len_for_seq_extract`（默认 50）
-- `max_sa_per_read`（默认 3）
-
-内部固定常量（当前写死）：
-
-- `w_ref = max(200, bin_size/2)`
-- `w_anchor = 150`
-- `mh_max = 20`
-- `l_left = l_right = max(min_len, 100)`
-- `trim_q = 12`
-- `eps_bp = 5`
-- `alpha = 1.0`
-
-核心步骤：
-
-1. 先收集同 `read_id` 的显式 supplementary 记录，标准化为 query/ref 区间。
-2. 对 primary 记录解析 `SA:Z`，从 SA CIGAR 反推出区间。
-3. 若存在显式 supplementary，则做一致性校验：
-   - 方向一致，且 query span IOU 高、起止差值小（代码阈值：IOU `>= 0.9`，起止差 `<= 5`）。
-4. 在与断点邻域同染色体的对齐里选 `flank`，评分近似为：
-   - `score = anchor_len - alpha * (max(0, NM) + 5 * has_large_indel_near_bp)`
-5. 选 query 非重叠最大的 `mate`，推断连接点 `q_junc`，围绕连接点截取 opposite 片段。
-6. 由 `flank` 方向和 `q_junc` 推断 `ref_junc_pos`，再映射 `ref_side`（Left/Right/Unknown）。
-7. 若稳健路径失败，仍可输出 SA 诊断片段（上限 `max_sa_per_read`）。
-
-### 4.4.3 文件输出副作用
-
-若 `ins_fragments_fasta_path` 非空（默认 `ins_fragments.fasta`）：
-
-- 模块构造时清空文件。
-- 运行时追加写入片段 FASTA（80 列换行）。
-- 通过全局互斥锁保证并行写文件安全。
-
----
-
-## 4.5 TE 快速分类（Module 2.2）
+## 6. TE 快速分类（Module 2.2）
 
 实现：`TEKmerQuickClassifierModule`
 
-### 4.5.1 索引构建
+### 6.1 索引
 
-前提：
+- 从 `te.fa` 读取模板
+- 支持多 k（`te_kmer_sizes_csv` + `te_kmer_size`）
+- 每个 k 建 unique-kmer 索引（歧义 kmer 记为 `-1`）
 
-- `te_fasta_path` 非空且索引构建成功，否则模块禁用。
+### 6.2 单片段分类
 
-规则：
+对每个片段：
 
-- k-mer 长度 `te_kmer_size`（默认 13）。
-- 每条 TE 序列使用“正向 + 反向互补”共同建索引。
-- 只接受 `A/C/G/T`。
-- k-mer 仅命中单一 TE 时记该 TE id；命中多个 TE 时标为歧义（`-1`）。
+1. 低复杂 soft-clip 先过滤（AT 比例/同聚物阈值）。
+2. 在多个 k 上计算加权支持，得到 top1/top2 及 `multik_support`。
+3. 估计 `aligned_len_est`（最长连续命中 run）。
+4. 可触发低 k-mer rescue：
+   - 当 top1 支持不足或 top1-top2 间隔过小
+   - 对 topN TE 做半全局编辑身份估计
+   - 超过 rescue identity 阈值则改判并打 `rescue_used`
 
-### 4.5.2 片段打分
+输出行可写入：
 
-对每个 `InsertionFragment`：
+- `ins_fragment_hits.tsv`
 
-1. 统计 `total_kmers`。
-2. 统计各 TE unique k-mer 命中数，取最高 TE 为 `best_te`。
-3. 输出：
-   - `hit_kmers`
-   - `coverage = hit_kmers / total_kmers`
-   - `kmer_support = coverage`
-   - `aligned_len_est`（best_te 连续命中 run 换算长度）
+### 6.3 component 投票
 
-### 4.5.3 component 投票
+`vote_cluster()` 输出：
 
-规则：
+- `top1/top2`
+- `posterior_top1/posterior_top2/posterior_margin`
+- `te_name`（满足最小 fragment 数后）
+- `vote_fraction`、`median_identity`
+- `multik_support`、`rescue_frac`
 
-- 仅 `te_name` 非空片段参与投票。
-- 若 `fragment_count < te_min_fragments_for_vote`（默认 2）则直接失败。
-- 票数最多 TE 为 `te_name`。
-- `vote_fraction = best_votes / fragment_count`。
-- `median_identity = median(kmer_support of best_te)`。
-- 通过条件（默认）：
-  - `vote_fraction >= 0.40`
-  - `median_identity >= 0.30`
+`passed` 条件：
 
-### 4.5.4 两阶段 TE 判定（当前实现）
+- `vote_fraction >= te_vote_fraction_min`
+- `median_identity >= te_median_identity_min`
 
-- Stage-A（组装前，弱筛选）：
-  - 需要 `te_name` 非空
-  - 且 `fragment_count >= max(1, te_min_fragments_for_vote / 2)`
-- Stage-B（组装后，强判定）：
-  - `PASS_CLASSIC`：满足 `vote_fraction >= te_vote_fraction_min` 且 `median_identity >= te_median_identity_min`
-  - `PASS_ASM_RESCUE`：不满足 classic，但满足
-    - `assembly.identity_est >= assembly_min_identity_est`
-    - `vote_fraction >= te_rescue_vote_fraction_min`
-    - `median_identity >= te_rescue_median_identity_min`
-- pure soft-clip 组件额外约束：
-  - `softclip_support_reads >= te_pure_softclip_min_reads`
-  - `fragment_count >= te_pure_softclip_min_fragments`
-  - `max(median_identity, assembly.identity_est) >= te_pure_softclip_min_identity`
-
-TSV 输出：
-
-- `ins_fragment_hits_tsv_path` 非空时，写 `ins_fragment_hits.tsv`（构造时清空并写表头，运行中追加）。
-
----
-
-## 4.6 Anchor-locked TE 共识（Module 2.3）
+## 7. Anchor-locked TE 共识（Module 2.3）
 
 实现：`DeterministicAnchorLockedModule`
 
-目标：在已知 TE 模板下，把“片段落在 TE 内多个可能位置”的不确定性收敛成稳定核心断点窗口，并给出方向诊断 `theta`。
+核心思想：在目标 TE 模板上对每个片段枚举多个放置，做确定性收敛，输出稳定的 TE 内断点窗口。
 
-### 4.6.1 启用条件与模板库
+步骤：
 
-- 需 `te_consensus_enable = true` 且 `te_fasta_path` 可成功构建模板库。
-- 模板库记录每个 TE 的序列与 seed k-mer 到位置的倒排表（`te_consensus_seed_k`，默认 13）。
+1. 目标 TE 选择
+   - 若 `te_call.passed` 用其 `te_name`
+   - 否则按 hits 多数票选
+2. 枚举 placement
+   - seed k-mer 生成起点候选
+   - 对每个起点做半全局仿射对齐（成本 `norm_cost`）
+3. CoreCandidate 过滤
+   - 需满足 ref side、锚长度、起点不确定性、`delta_tpl`、split-SA 侧向约束等
+4. 方向判别 `theta`（FWD/REV）
+   - 基于 `phi()` + weighted median + MAD 比较
+   - 可能标记 `fail_theta_uncertain`
+5. 一轮重分配
+   - 目标函数：`norm_cost + λ|phi-c0| + μ*span_start`
+6. 生成核心窗口
+   - 取 core set
+   - 输出 `te_breakpoint_core`、`[win_start, win_end]`
+   - 统计 `core_candidate_count/core_set_count/split_sa_core_frac/ref_junc_pos_min/max`
 
-### 4.6.2 目标 TE 选择
+## 8. 证据建模与硬过滤（`collect_evidence`）
 
-优先级：
+汇总维度：
 
-1. 若 TE 快速投票已通过，用 `te_call.te_name`。
-2. 否则从 `hits` 里多数票选一个 TE（平票取字典序较小）。
+- 覆盖与支持：`global_cov/local_cov/depth/alt/ref`
+- 断点离散度：`breakpoint_mad`
+- 证据来源计数：`split/clip/indel`
+- 低复杂 soft-clip 比例
+- TE 一致性（弱门）
 
-### 4.6.3 片段放置候选 `P_i` 枚举
+关键过滤条件：
 
-对每个命中目标 TE 的片段：
+- `alt_support_reads >= min_support_required`
+- `breakpoint_mad <= evidence_breakpoint_mad_max`
+- `low_complex_softclip_frac <= evidence_low_complex_softclip_frac_max`
+- `pass_te_consistency`（Stage-A 弱门，允许非强 TE 标签）
 
-1. 基于 seed 命中计数枚举起点（最多 `te_consensus_max_start_candidates`，默认 5）。
-2. 对每个起点执行半全局仿射比对 `semiglobal_affine_align_suffix(query, te_suffix)`：
-   - mismatch=1, gap_open=2, gap_extend=1。
-   - 输出归一化代价 `norm_cost`。
-3. 得到若干 `Placement{te_start, te_end, norm_cost}`，按 `norm_cost` 升序排序。
+任一失败则 `hard_filtered=true`，该 component 终止。
 
-### 4.6.4 CoreCandidate 判定
+## 9. 组装（`assemble_component`）
 
-片段成为 core 候选需同时满足：
+- 过滤短片段后，使用 abPOA 组装 consensus
+- `identity_est` 用 k-mer overlap 估计
+- 依据场景（split/indel dominant、短插入）可放宽 identity 最低阈值
 
-- `ref_side != Unknown`
-- `anchor_len >= te_consensus_anchor_min`（默认 80）
-- `start_span_best <= start_span_bias + start_span_sqrt_scale * sqrt(fragment_len)`
-- `delta_tpl >= te_consensus_delta_tpl_min`（默认 0.05）
-- 对 split-SA 片段：`|ref_junc_pos - anchor_pos| <= te_consensus_w_side_max`（默认 300）
+组装 QC 典型标签：
 
-### 4.6.5 方向判定 `theta0`
+- `NO_CANDIDATE_FRAGMENTS`
+- `INSUFFICIENT_POA_READS`
+- `CONSENSUS_TOO_SHORT`
+- `LOW_IDENTITY`
+- `PASS`
 
-定义 `phi(p, side, theta)`：
+## 10. 组装后 TE 决策（`evaluate_post_assembly_te_decision`）
 
-- `theta = FWD`：
-  - `RefLeft -> te_start`
-  - `RefRight -> te_end`
-- `theta = REV`：
-  - `RefLeft -> te_end`
-  - `RefRight -> te_start`
+主要分支：
 
-对 core 候选按权重：
+1. `PASS_CLASSIC`：标准 vote + identity 通过
+2. `PASS_ASM_RESCUE`：标准失败但 assembly rescue 通过
+3. `PASS_SPLIT_INDEL_RESCUE`：无 soft-clip 或 split/indel 主导时的救援通路
+4. `PASS_SHORT_INS_RESCUE`：短插入救援
+5. pure soft-clip 专门门槛（读段数、片段数、identity）
 
-- `w_i = max(1, anchor_len_i) * exp(-norm_cost_i / te_consensus_temp_t)`
+失败会给出明确 `FAIL_*` QC。
 
-分别计算 FWD/REV 的加权中位中心与 MAD，选择更优方向。
+## 11. Placeability + 插入接受 + 分型
 
-不确定性判定：
+### 11.1 Placeability（`score_placeability`）
 
-- 若 `|mad_fwd - mad_rev| < te_consensus_eps_theta` 且两侧权重和相近（`te_consensus_rel_sumw_eps`），标记 `FAIL_THETA_UNCERTAIN`，输出 `theta0 = Unknown`。
-- 代码仍会继续给出核心窗口结果，但 QC 会标记为不确定。
+用 logistic 组合证据特征得到 `evidence_p` 和 `evidence_q`，并分 tier：
 
-### 4.6.6 一轮确定性重分配 + 核心窗口
+- Tier1: `p >= evidence_tier1_prob`
+- Tier2: `evidence_tier2_prob <= p < tier1`
+- Tier3: 其他
 
-1. 先得到 `c0`（core 候选下的加权中位中心）。
-2. 每片段在其候选放置里选最优：
-   - `obj = norm_cost + lambda*|phi-c0| + mu*|te_start - best_te_start|`
-3. 基于重分配结果计算 `c1`。
-4. CoreSet 条件：
-   - `|phi - c1| <= te_consensus_w_core_gate`（默认 80）。
-5. 核心断点与窗口：
-   - `te_breakpoint_core = median(phi in CoreSet)`
-   - `core_span = 1.4826 * MAD`
-   - `w = max(te_consensus_w_min, te_consensus_gamma * core_span)`
-   - 输出 `[core-w, core+w]`
-6. `has_result` 需要 `core_set_count >= te_consensus_min_core_set`（默认 2）。
+### 11.2 插入接受（`evaluate_insertion_acceptance`）
 
-输出诊断还包含：
+- Tier1/2 默认接受
+- Tier3 仅在 `emit_low_confidence_calls=true` 且满足低置信门槛时接受
 
-- `mad_fwd/mad_rev`
-- `split_sa_core_frac`
-- `ref_junc_pos_min/max`
-- `core_candidate_count/core_set_count`
+输出：`pass` + `low_confidence`。
 
----
+### 11.3 分型（`genotype_call`）
 
-## 4.7 Local realign（占位）
+- 由 alt/ref 深度计算 AF
+- 二项似然比较 `0/0, 0/1, 1/1`
+- 取最优基因型并给 `GQ`
 
-实现：`SimpleLocalRealignModule`
+## 12. TSD、TE open-set 与最终状态
 
-- 对 component 内每条 read 产出一条 `LocusEvidence`。
-- 分数：
-  - `normalized_score = max(0, 1 - |pos-center| / 10000)`
-- 当前不做真实重比对，仅作为后续模块占位输入。
+### 12.1 TE 置信度校准
 
----
+`calibrate_te_confidence_prob()` 结合：
 
-## 4.8 Assembly（占位）
+- posterior
+- assembly identity
+- support
+- vote/TE identity
+- breakpoint MAD
+- rescue 惩罚
 
-实现：`LazyDecodeAssemblyModule`
+输出 `te_conf_prob`。
 
-- 取 component 第一条 read。
-- 解码全长序列并截断到 300bp，作为 `consensus`。
-- `pos` 使用 `component.anchor_pos`。
+### 12.2 TSD 检测（`TSDDetector`）
 
----
+- 从参考序列提取左右断点邻域
+- 优先尝试 DUP（左右同序列）
+- 再尝试 DEL（断点间缺失序列）
+- 计算背景出现率 `bg_p`
 
-## 4.9 Placeability（占位）
+结果写入：`tsd_type/tsd_len/tsd_seq/tsd_bg_p`，并对 `te_conf_prob` 做小幅调节。
 
-实现：`SimplePlaceabilityModule`
+若开启 `te_fail_on_tsd_inconsistent`，会追加 `FAIL_TSD_INCONSISTENT` 并压低置信度。
 
-- `support_reads = evidence.size()`
-- `delta_score = mean(normalized_score) * 100`
-- tier 分级：
-  - Tier1: `delta_score >= 30`
-  - Tier2: `10 <= delta_score < 30`
-  - Tier3: 其他
-
----
-
-## 4.10 Genotyping（占位）
-
-实现：`SimpleGenotypingModule`
-
-- `af = clamp(support_reads / 20.0, 0, 1)`
-- `gq = round(delta_score)`
-- 分型：
-  - `af >= 0.8 -> 1/1`
-  - `0.2 <= af < 0.8 -> 0/1`
-  - `af < 0.2 -> 0/0`
-
----
-
-## 5. 输出格式与统计
+### 12.3 Open-set 分类（`classify_te_open_set`）
 
-结果由 `main.cpp` 写入 `scientific.txt`：
-
-1. 汇总计数：
-
-- `total_reads`
-- `gate1_passed`
-- `processed_bins`
-- `components`
-- `evidence_rows`
-- `assemblies`
-- `placeability_calls`
-- `genotype_calls`
-
-2. 每条 `FinalCall` 明细字段：
-
-- 位置窗：`chrom tid pos window_start window_end`
-- TE 相关：`te te_vote_frac te_median_ident te_fragments`
-- TE 共识诊断：`te_theta te_mad_fwd te_mad_rev te_bp_core te_bp_win_start te_bp_win_end te_core_candidates te_core_set split_sa_core_frac te_ref_junc_min te_ref_junc_max te_qc`
-- 调用与分型：`tier support_reads gt af gq`
-
-`te_qc` 取值逻辑：
-
-- 现在为组合标签：`<TE判定>|<ANCHOR判定>`
-- TE 判定示例：
-  - `PASS_CLASSIC`
-  - `PASS_ASM_RESCUE`
-  - `PASS_CLASSIC_PURE_SOFTCLIP`
-  - `PASS_ASM_RESCUE_PURE_SOFTCLIP`
-- ANCHOR 判定示例：
-  - `ANCHOR_PASS`
-  - `ANCHOR_FAIL_THETA_UNCERTAIN`
-  - `ANCHOR_NO_CORE_RESULT`
-  - `ANCHOR_DISABLED`
-
----
-
-## 6. 关键默认参数（`PipelineConfig`）
-
-基础调度：
-
-- `bam_threads = 2`
-- `progress_interval = 100000`
-- `window_size = 10000`
-- `bin_size = 10000`
-- `enable_parallel = false`
-- `batch_size = 1000`
-
-片段提取：
-
-- `ins_fragments_fasta_path = "ins_fragments.fasta"`
-- `min_soft_clip_for_seq_extract = 50`
-- `min_long_ins_for_seq_extract = 50`
-- `min_sa_aln_len_for_seq_extract = 50`
-- `max_sa_per_read = 3`
-
-TE 快速分类：
-
-- `ins_fragment_hits_tsv_path = "ins_fragment_hits.tsv"`
-- `te_kmer_size = 13`
-- `te_vote_fraction_min = 0.40`
-- `te_median_identity_min = 0.30`
-- `te_min_fragments_for_vote = 2`
-- `te_rescue_vote_fraction_min = 0.25`
-- `te_rescue_median_identity_min = 0.20`
-- `te_pure_softclip_min_reads = 6`
-- `te_pure_softclip_min_fragments = 6`
-- `te_pure_softclip_min_identity = 0.35`
-
-TE 共识：
-
-- `te_consensus_enable = true`
-- `te_consensus_seed_k = 13`
-- `te_consensus_max_start_candidates = 5`
-- `te_consensus_delta_tpl_min = 0.05`
-- `te_consensus_anchor_min = 80`
-- `te_consensus_start_span_sqrt_scale = 2.0`
-- `te_consensus_start_span_bias = 6.0`
-- `te_consensus_w_side_max = 300`
-- `te_consensus_temp_t = 0.25`
-- `te_consensus_beta = 0.20`
-- `te_consensus_lambda = 0.35`
-- `te_consensus_mu = 0.10`
-- `te_consensus_w_core_gate = 80.0`
-- `te_consensus_w_min = 25.0`
-- `te_consensus_gamma = 2.0`
-- `te_consensus_eps_theta = 0.05`
-- `te_consensus_rel_sumw_eps = 0.10`
-- `te_consensus_min_core_set = 2`
-
----
-
-## 7. 当前实现边界与下一步
-
-当前代码已实现：
-
-- BAM 串流调度、Gate1 预筛、分桶处理、片段提取、TE 快速分类、确定性 anchor-locked 共识、最终文本输出。
-
-当前仍是占位/简化部分：
-
-- Component 仍是“每 bin 一个 component”，未做真实断点聚类。
-- local realign / assembly / placeability / genotyping 仍是轻量可运行版本。
-- `reference_fasta_path` 尚未进入实质计算链路。
-- assembly 主流程已统一为 abPOA POA 共识。
-
-因此，PLACER 当前阶段是“可流式运行并输出可诊断结果”的工程骨架版本；高精度科研模型（真实局部重比对、组装、概率分型）可在现有流程骨架上逐步替换升级。
+根据 TE gate、proxy 信号与 `te_conf_prob`，输出：
+
+- `TE_CERTAIN`
+- `TE_UNCERTAIN`
+- `NON_TE`
+
+必要时提升 `top1` 为 `te_name`，并追加 proxy/QC 标签。
+
+## 13. Bootstrap 导出（可选）
+
+开启 `bootstrap_export_enable` 后，对 `TE_UNCERTAIN`（以及可选 `NON_TE`）导出：
+
+- 共识 FASTA：`pass1_bootstrap_consensus.fasta`
+- 元数据 TSV：`pass1_bootstrap_calls.tsv`
+
+用于二次迭代建库。
+
+## 14. FinalCall 去重与输出
+
+`finalize_final_calls()` 会按位置/TE family 去重（默认 50bp 邻域），优先保留支持更强、tier 更高、置信更高、组装更好的 call。
+
+最终输出在 `scientific.txt`：
+
+1. 运行汇总统计
+2. 每条 call 的全字段明细（位点、TE 诊断、TSD、置信、tier、GT/AF/GQ、assembly 指标等）
+
+## 15. 当前默认关键参数（节选）
+
+- `bin_size=10000`, `window_size=10000`
+- `te_kmer_size=13`, `te_kmer_sizes_csv=9,11,13`
+- `te_vote_fraction_min=0.40`, `te_median_identity_min=0.30`
+- `te_rescue_vote_fraction_min=0.25`, `te_rescue_median_identity_min=0.20`
+- `short_ins_enable=true`, `short_ins_min_len=35`, `short_ins_max_len=300`
+- `assembly_min_fragment_len=80`, `assembly_min_consensus_len=80`, `assembly_min_identity_est=0.55`
+- `tsd_enable=true`, `tsd_min_len=3`, `tsd_max_len=50`, `tsd_bg_p_max=0.05`
+- `emit_low_confidence_calls=false`
+
+如需调参，优先使用 `main.cpp` 支持的 `PLACER_*` 环境变量。

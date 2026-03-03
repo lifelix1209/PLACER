@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -14,6 +17,11 @@
 
 namespace placer {
 namespace {
+
+struct TeEntry {
+    std::string name;
+    std::string sequence;
+};
 
 uint8_t char_to_2bit(char c) {
     switch (c) {
@@ -134,6 +142,119 @@ bool is_low_complexity_softclip(
            max_homopolymer_run(seq) >= homopolymer_run_min;
 }
 
+double semiglobal_edit_identity(const std::string& query, const std::string& target) {
+    const int32_t n = static_cast<int32_t>(query.size());
+    const int32_t m = static_cast<int32_t>(target.size());
+    if (n <= 0 || m <= 0) {
+        return 0.0;
+    }
+
+    std::vector<int32_t> prev(static_cast<size_t>(m + 1), 0);
+    std::vector<int32_t> curr(static_cast<size_t>(m + 1), 0);
+
+    for (int32_t i = 1; i <= n; ++i) {
+        curr[0] = i;
+        for (int32_t j = 1; j <= m; ++j) {
+            const int32_t sub_cost =
+                prev[static_cast<size_t>(j - 1)] +
+                ((query[static_cast<size_t>(i - 1)] == target[static_cast<size_t>(j - 1)]) ? 0 : 1);
+            const int32_t del_cost = prev[static_cast<size_t>(j)] + 1;
+            const int32_t ins_cost = curr[static_cast<size_t>(j - 1)] + 1;
+            curr[static_cast<size_t>(j)] = std::min({sub_cost, del_cost, ins_cost});
+        }
+        std::swap(prev, curr);
+    }
+
+    int32_t best = prev[0];
+    for (int32_t j = 1; j <= m; ++j) {
+        best = std::min(best, prev[static_cast<size_t>(j)]);
+    }
+    const double identity =
+        1.0 - (static_cast<double>(best) / static_cast<double>(std::max(1, n)));
+    return std::clamp(identity, 0.0, 1.0);
+}
+
+std::vector<int32_t> parse_kmer_sizes_csv(const std::string& csv, int32_t fallback_k) {
+    std::vector<int32_t> out;
+    std::stringstream ss(csv);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        size_t b = 0;
+        while (b < token.size() && std::isspace(static_cast<unsigned char>(token[b]))) {
+            ++b;
+        }
+        size_t e = token.size();
+        while (e > b && std::isspace(static_cast<unsigned char>(token[e - 1]))) {
+            --e;
+        }
+        if (e <= b) {
+            continue;
+        }
+
+        const std::string trimmed = token.substr(b, e - b);
+        char* end = nullptr;
+        const long parsed = std::strtol(trimmed.c_str(), &end, 10);
+        if (end == trimmed.c_str() || (end && *end != '\0')) {
+            continue;
+        }
+        if (parsed < 7 || parsed > 31) {
+            continue;
+        }
+        out.push_back(static_cast<int32_t>(parsed));
+    }
+
+    if (fallback_k >= 7 && fallback_k <= 31) {
+        out.push_back(fallback_k);
+    }
+    if (out.empty()) {
+        out.push_back(13);
+    }
+
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+bool load_te_entries_from_fasta(
+    const std::string& fasta_path,
+    std::vector<TeEntry>& out_entries) {
+    std::ifstream in(fasta_path);
+    if (!in.is_open()) {
+        return false;
+    }
+
+    std::string line;
+    std::string header;
+    std::string seq;
+    auto flush = [&]() {
+        if (header.empty() || seq.empty()) {
+            header.clear();
+            seq.clear();
+            return;
+        }
+        TeEntry e;
+        e.name = take_header_token(header);
+        e.sequence = upper_acgt(seq);
+        out_entries.push_back(std::move(e));
+        header.clear();
+        seq.clear();
+    };
+
+    while (std::getline(in, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        if (line[0] == '>') {
+            flush();
+            header = line.substr(1);
+            continue;
+        }
+        seq += line;
+    }
+    flush();
+    return !out_entries.empty();
+}
+
 std::mutex g_fragment_hits_tsv_mutex;
 
 }  // namespace
@@ -148,44 +269,17 @@ struct TEKmerQuickClassifierModule::Index {
     // Value == -1: ambiguous (k-mer occurs in >=2 TE entries)
     std::unordered_map<uint64_t, int32_t> kmer_to_id;
 
-    bool build_from_fasta(const std::string& fasta_path) {
-        std::ifstream in(fasta_path);
-        if (!in.is_open()) {
-            return false;
+    bool build_from_entries(const std::vector<TeEntry>& entries) {
+        te_names.clear();
+        kmer_to_id.clear();
+        te_names.reserve(entries.size());
+
+        for (size_t i = 0; i < entries.size(); ++i) {
+            const int32_t te_id = static_cast<int32_t>(i);
+            te_names.push_back(entries[i].name);
+            add_sequence(te_id, entries[i].sequence);
+            add_sequence(te_id, reverse_complement(entries[i].sequence));
         }
-
-        std::string line;
-        std::string header;
-        std::string seq;
-
-        auto flush = [&]() {
-            if (header.empty() || seq.empty()) {
-                header.clear();
-                seq.clear();
-                return;
-            }
-            const int32_t id = static_cast<int32_t>(te_names.size());
-            te_names.push_back(take_header_token(header));
-            const std::string normalized = upper_acgt(seq);
-            // Index both strands so read-orientation does not drop TE hits.
-            add_sequence(id, normalized);
-            add_sequence(id, reverse_complement(normalized));
-            header.clear();
-            seq.clear();
-        };
-
-        while (std::getline(in, line)) {
-            if (line.empty()) {
-                continue;
-            }
-            if (line[0] == '>') {
-                flush();
-                header = line.substr(1);
-                continue;
-            }
-            seq += line;
-        }
-        flush();
 
         return !te_names.empty() && !kmer_to_id.empty();
     }
@@ -212,7 +306,7 @@ struct TEKmerQuickClassifierModule::Index {
         }
 
         for (int32_t i = 0; i + k <= static_cast<int32_t>(seq.size()); ++i) {
-            uint64_t key;
+            uint64_t key = 0;
             if (!build_kmer(seq, i, k, key)) {
                 continue;
             }
@@ -230,12 +324,11 @@ struct TEKmerQuickClassifierModule::Index {
 
 TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
     : config_(std::move(config)) {
-    // Prepare TSV output.
     if (!config_.ins_fragment_hits_tsv_path.empty()) {
         std::lock_guard<std::mutex> lock(g_fragment_hits_tsv_mutex);
         std::ofstream out(config_.ins_fragment_hits_tsv_path, std::ios::out | std::ios::trunc);
         if (out.is_open()) {
-            out << "fragment_id\tte\tfrag_len\thit_kmers\ttotal_kmers\tcoverage\taligned_len_est\tkmer_support\n";
+            out << "fragment_id\tte\tfrag_len\thit_kmers\ttotal_kmers\tcoverage\taligned_len_est\tkmer_support\tmultik_support\trescue_used\n";
         }
     }
 
@@ -243,16 +336,44 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
         return;
     }
 
-    auto idx = std::make_shared<Index>(config_.te_kmer_size);
-    if (!idx->build_from_fasta(config_.te_fasta_path)) {
-        std::cerr << "[TEQuick] failed to build k-mer index from: " << config_.te_fasta_path << "\n";
+    std::vector<TeEntry> entries;
+    if (!load_te_entries_from_fasta(config_.te_fasta_path, entries)) {
+        std::cerr << "[TEQuick] failed to parse TE FASTA: " << config_.te_fasta_path << "\n";
         return;
     }
-    index_ = std::move(idx);
+
+    te_names_.reserve(entries.size());
+    te_sequences_.reserve(entries.size());
+    for (const auto& e : entries) {
+        te_names_.push_back(e.name);
+        te_sequences_.push_back(e.sequence);
+    }
+
+    const auto ks = parse_kmer_sizes_csv(config_.te_kmer_sizes_csv, config_.te_kmer_size);
+    for (int32_t k : ks) {
+        auto idx = std::make_shared<Index>(k);
+        if (!idx->build_from_entries(entries)) {
+            continue;
+        }
+        indices_.push_back(std::move(idx));
+    }
+
+    if (indices_.empty()) {
+        std::cerr << "[TEQuick] failed to build any k-mer index from: " << config_.te_fasta_path << "\n";
+        return;
+    }
+
+    auto best_primary = indices_.front();
+    for (const auto& idx : indices_) {
+        if (std::abs(idx->k - config_.te_kmer_size) < std::abs(best_primary->k - config_.te_kmer_size)) {
+            best_primary = idx;
+        }
+    }
+    primary_index_ = std::move(best_primary);
 }
 
 bool TEKmerQuickClassifierModule::is_enabled() const {
-    return static_cast<bool>(index_);
+    return static_cast<bool>(primary_index_) && !indices_.empty();
 }
 
 std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
@@ -260,7 +381,7 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
     std::vector<FragmentTEHit> hits;
     hits.reserve(fragments.size());
 
-    if (!is_enabled() || !index_ || index_->k <= 0) {
+    if (!is_enabled()) {
         return hits;
     }
 
@@ -269,6 +390,15 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
         std::clamp(config_.te_softclip_low_complexity_at_frac_min, 0.0, 1.0);
     const int32_t low_complexity_homopolymer_min =
         std::max(1, config_.te_softclip_low_complexity_homopolymer_min);
+    const int32_t rescue_topn = std::max(1, config_.te_low_kmer_rescue_topn);
+    const int32_t rescue_min_frag_len = std::max(1, config_.te_low_kmer_rescue_min_frag_len);
+    const double rescue_identity_min =
+        std::clamp(config_.te_low_kmer_rescue_identity_min, 0.0, 1.0);
+    const double rescue_margin_max =
+        std::clamp(config_.te_low_kmer_rescue_margin_max, 0.0, 1.0);
+    const double support_gate =
+        std::clamp(config_.te_median_identity_min, 0.0, 1.0);
+
     std::ostringstream tsv_buffer;
 
     for (const auto& frag : fragments) {
@@ -285,60 +415,123 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
             if (write_tsv) {
                 tsv_buffer << hit.fragment_id << "\t" << hit.te_name << "\t" << hit.fragment_len << "\t"
                            << hit.hit_kmers << "\t" << hit.total_kmers << "\t"
-                           << hit.coverage << "\t" << hit.aligned_len_est << "\t" << hit.kmer_support << "\n";
+                           << hit.coverage << "\t" << hit.aligned_len_est << "\t" << hit.kmer_support << "\t"
+                           << hit.multik_support << "\t" << (hit.rescue_used ? 1 : 0) << "\n";
             }
             hits.push_back(std::move(hit));
             continue;
         }
 
-        const int32_t k = index_->k;
-        if (static_cast<int32_t>(seq.size()) < k) {
-            hits.push_back(hit);
-            continue;
-        }
+        std::unordered_map<int32_t, double> weighted_support_sum;
+        double total_weight = 0.0;
 
-        std::unordered_map<int32_t, int32_t> counts;
-        int32_t total = 0;
+        int32_t primary_total = 0;
+        std::unordered_map<int32_t, int32_t> primary_counts;
+        int32_t fallback_total = 0;
+        std::unordered_map<int32_t, int32_t> fallback_counts;
 
-        for (int32_t i = 0; i + k <= static_cast<int32_t>(seq.size()); ++i) {
-            uint64_t key;
-            if (!build_kmer(seq, i, k, key)) {
+        for (const auto& idx_ptr : indices_) {
+            const Index& idx = *idx_ptr;
+            const int32_t k = idx.k;
+            if (static_cast<int32_t>(seq.size()) < k) {
                 continue;
             }
-            ++total;
-            const int32_t id = index_->lookup(key);
-            if (id >= 0) {
-                counts[id] += 1;
+
+            std::unordered_map<int32_t, int32_t> counts;
+            int32_t total = 0;
+            for (int32_t i = 0; i + k <= static_cast<int32_t>(seq.size()); ++i) {
+                uint64_t key = 0;
+                if (!build_kmer(seq, i, k, key)) {
+                    continue;
+                }
+                ++total;
+                const int32_t id = idx.lookup(key);
+                if (id >= 0) {
+                    counts[id] += 1;
+                }
+            }
+            if (total <= 0) {
+                continue;
+            }
+
+            const double w = static_cast<double>(k);
+            total_weight += w;
+            for (const auto& kv : counts) {
+                const double support_k =
+                    static_cast<double>(kv.second) / static_cast<double>(total);
+                weighted_support_sum[kv.first] += (w * support_k);
+            }
+
+            if (idx_ptr.get() == primary_index_.get()) {
+                primary_total = total;
+                primary_counts = counts;
+            }
+            if (fallback_total <= 0) {
+                fallback_total = total;
+                fallback_counts = counts;
             }
         }
 
-        hit.total_kmers = total;
+        std::vector<std::pair<int32_t, double>> ranked;
+        ranked.reserve(weighted_support_sum.size());
+        if (total_weight > 0.0) {
+            for (const auto& kv : weighted_support_sum) {
+                ranked.push_back({kv.first, kv.second / total_weight});
+            }
+            std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+                if (a.second != b.second) {
+                    return a.second > b.second;
+                }
+                return a.first < b.first;
+            });
+        }
 
         int32_t best_id = -1;
-        int32_t best_hits = 0;
-        for (const auto& kv : counts) {
-            if (kv.second > best_hits) {
-                best_hits = kv.second;
-                best_id = kv.first;
+        double best_score = 0.0;
+        double second_score = 0.0;
+        if (!ranked.empty()) {
+            best_id = ranked.front().first;
+            best_score = ranked.front().second;
+            if (ranked.size() >= 2) {
+                second_score = ranked[1].second;
             }
         }
 
-        hit.hit_kmers = best_hits;
-        hit.coverage = (total > 0) ? static_cast<double>(best_hits) / static_cast<double>(total) : 0.0;
-        hit.kmer_support = hit.coverage;
-        hit.te_name = index_->te_name(best_id);
+        hit.multik_support = best_score;
+        hit.coverage = best_score;
+        hit.kmer_support = best_score;
+        hit.te_name = (best_id >= 0 && best_id < static_cast<int32_t>(te_names_.size()))
+            ? te_names_[static_cast<size_t>(best_id)]
+            : std::string();
 
-        // Second pass: longest consecutive run for best_id
-        int32_t run = 0;
-        int32_t max_run = 0;
+        const auto& count_source = (primary_total > 0) ? primary_counts : fallback_counts;
+        hit.total_kmers = (primary_total > 0) ? primary_total : fallback_total;
         if (best_id >= 0) {
-            for (int32_t i = 0; i + k <= static_cast<int32_t>(seq.size()); ++i) {
-                uint64_t key;
-                if (!build_kmer(seq, i, k, key)) {
+            const auto it = count_source.find(best_id);
+            if (it != count_source.end()) {
+                hit.hit_kmers = it->second;
+            }
+        }
+
+        const Index* run_index = nullptr;
+        for (const auto& idx_ptr : indices_) {
+            if (static_cast<int32_t>(seq.size()) < idx_ptr->k) {
+                continue;
+            }
+            if (!run_index || idx_ptr->k > run_index->k) {
+                run_index = idx_ptr.get();
+            }
+        }
+        if (run_index && best_id >= 0) {
+            int32_t run = 0;
+            int32_t max_run = 0;
+            for (int32_t i = 0; i + run_index->k <= static_cast<int32_t>(seq.size()); ++i) {
+                uint64_t key = 0;
+                if (!build_kmer(seq, i, run_index->k, key)) {
                     run = 0;
                     continue;
                 }
-                const int32_t id = index_->lookup(key);
+                const int32_t id = run_index->lookup(key);
                 if (id == best_id) {
                     ++run;
                     max_run = std::max(max_run, run);
@@ -346,13 +539,55 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
                     run = 0;
                 }
             }
+            hit.aligned_len_est = (max_run > 0) ? (run_index->k + max_run - 1) : 0;
         }
-        hit.aligned_len_est = (max_run > 0) ? (k + max_run - 1) : 0;
+
+        if (config_.te_low_kmer_rescue_enable &&
+            static_cast<int32_t>(seq.size()) >= rescue_min_frag_len &&
+            !ranked.empty()) {
+            const bool support_trigger = best_score < support_gate;
+            const bool margin_trigger = (ranked.size() >= 2) &&
+                ((best_score - second_score) < rescue_margin_max);
+            if (support_trigger || margin_trigger) {
+                int32_t rescue_best_id = -1;
+                double rescue_best_identity = 0.0;
+                const int32_t n = std::min(
+                    rescue_topn,
+                    static_cast<int32_t>(ranked.size()));
+                for (int32_t i = 0; i < n; ++i) {
+                    const int32_t te_id = ranked[static_cast<size_t>(i)].first;
+                    if (te_id < 0 || te_id >= static_cast<int32_t>(te_sequences_.size())) {
+                        continue;
+                    }
+                    const double iden = semiglobal_edit_identity(
+                        seq,
+                        te_sequences_[static_cast<size_t>(te_id)]);
+                    if (iden > rescue_best_identity ||
+                        (iden == rescue_best_identity && te_id < rescue_best_id)) {
+                        rescue_best_identity = iden;
+                        rescue_best_id = te_id;
+                    }
+                }
+                if (rescue_best_id >= 0 && rescue_best_identity >= rescue_identity_min) {
+                    hit.rescue_used = true;
+                    hit.te_name = te_names_[static_cast<size_t>(rescue_best_id)];
+                    hit.kmer_support = std::max(hit.kmer_support, rescue_best_identity);
+                    hit.coverage = hit.kmer_support;
+                    if (hit.total_kmers > 0) {
+                        const auto it = count_source.find(rescue_best_id);
+                        if (it != count_source.end()) {
+                            hit.hit_kmers = it->second;
+                        }
+                    }
+                }
+            }
+        }
 
         if (write_tsv) {
             tsv_buffer << hit.fragment_id << "\t" << hit.te_name << "\t" << hit.fragment_len << "\t"
                        << hit.hit_kmers << "\t" << hit.total_kmers << "\t"
-                       << hit.coverage << "\t" << hit.aligned_len_est << "\t" << hit.kmer_support << "\n";
+                       << hit.coverage << "\t" << hit.aligned_len_est << "\t" << hit.kmer_support << "\t"
+                       << hit.multik_support << "\t" << (hit.rescue_used ? 1 : 0) << "\n";
         }
 
         hits.push_back(std::move(hit));
@@ -376,12 +611,11 @@ ClusterTECall TEKmerQuickClassifierModule::vote_cluster(
     const std::vector<FragmentTEHit>& hits) const {
     ClusterTECall call;
 
-    std::vector<FragmentTEHit> filtered;
+    std::vector<const FragmentTEHit*> filtered;
     filtered.reserve(hits.size());
-
     for (const auto& h : hits) {
         if (!h.te_name.empty()) {
-            filtered.push_back(h);
+            filtered.push_back(&h);
         }
     }
 
@@ -390,33 +624,58 @@ ClusterTECall TEKmerQuickClassifierModule::vote_cluster(
         return call;
     }
 
-    std::unordered_map<std::string, int32_t> votes;
-    for (const auto& h : filtered) {
-        votes[h.te_name] += 1;
+    std::unordered_map<std::string, double> weighted_votes;
+    std::unordered_map<std::string, int32_t> raw_votes;
+    double total_weight = 0.0;
+
+    for (const auto* h : filtered) {
+        const double w = std::max(1e-6, std::clamp(h->kmer_support, 0.0, 1.0));
+        weighted_votes[h->te_name] += w;
+        raw_votes[h->te_name] += 1;
+        total_weight += w;
     }
 
     std::string best_te;
     std::string second_te;
-    int32_t best_votes = 0;
-    int32_t second_votes = 0;
-    for (const auto& kv : votes) {
-        if (kv.second > best_votes ||
-            (kv.second == best_votes && (best_te.empty() || kv.first < best_te))) {
+    double best_w = -1.0;
+    double second_w = -1.0;
+    int32_t best_raw = -1;
+    int32_t second_raw = -1;
+
+    for (const auto& kv : weighted_votes) {
+        const auto raw_it = raw_votes.find(kv.first);
+        const int32_t raw = (raw_it == raw_votes.end()) ? 0 : raw_it->second;
+        const bool better_than_best =
+            kv.second > best_w ||
+            (kv.second == best_w && raw > best_raw) ||
+            (kv.second == best_w && raw == best_raw && (best_te.empty() || kv.first < best_te));
+        if (better_than_best) {
             second_te = best_te;
-            second_votes = best_votes;
+            second_w = best_w;
+            second_raw = best_raw;
             best_te = kv.first;
-            best_votes = kv.second;
-        } else if (kv.second > second_votes ||
-                   (kv.second == second_votes && (second_te.empty() || kv.first < second_te))) {
+            best_w = kv.second;
+            best_raw = raw;
+            continue;
+        }
+
+        const bool better_than_second =
+            kv.second > second_w ||
+            (kv.second == second_w && raw > second_raw) ||
+            (kv.second == second_w && raw == second_raw && (second_te.empty() || kv.first < second_te));
+        if (better_than_second) {
             second_te = kv.first;
-            second_votes = kv.second;
+            second_w = kv.second;
+            second_raw = raw;
         }
     }
 
     call.top1_te_name = best_te;
     call.top2_te_name = second_te;
-    call.posterior_top1 = static_cast<double>(best_votes) / static_cast<double>(filtered.size());
-    call.posterior_top2 = static_cast<double>(second_votes) / static_cast<double>(filtered.size());
+    if (total_weight > 0.0) {
+        call.posterior_top1 = std::clamp(best_w / total_weight, 0.0, 1.0);
+        call.posterior_top2 = std::clamp(std::max(0.0, second_w) / total_weight, 0.0, 1.0);
+    }
     call.posterior_margin = std::max(0.0, call.posterior_top1 - call.posterior_top2);
 
     if (call.fragment_count < config_.te_min_fragments_for_vote) {
@@ -427,17 +686,33 @@ ClusterTECall TEKmerQuickClassifierModule::vote_cluster(
     call.vote_fraction = call.posterior_top1;
 
     std::vector<double> supports;
-    for (const auto& h : filtered) {
-        if (h.te_name == best_te) {
-            supports.push_back(h.kmer_support);
+    std::vector<double> multik_supports;
+    int32_t rescue_count = 0;
+    for (const auto* h : filtered) {
+        if (h->te_name == best_te) {
+            supports.push_back(h->kmer_support);
+            multik_supports.push_back(h->multik_support);
+            if (h->rescue_used) {
+                rescue_count += 1;
+            }
         }
     }
     std::sort(supports.begin(), supports.end());
+    std::sort(multik_supports.begin(), multik_supports.end());
     if (!supports.empty()) {
         const size_t mid = supports.size() / 2;
         call.median_identity = (supports.size() % 2 == 1)
             ? supports[mid]
             : 0.5 * (supports[mid - 1] + supports[mid]);
+    }
+    if (!multik_supports.empty()) {
+        const size_t mid = multik_supports.size() / 2;
+        call.multik_support = (multik_supports.size() % 2 == 1)
+            ? multik_supports[mid]
+            : 0.5 * (multik_supports[mid - 1] + multik_supports[mid]);
+        call.rescue_frac =
+            static_cast<double>(rescue_count) /
+            static_cast<double>(multik_supports.size());
     }
 
     call.passed =

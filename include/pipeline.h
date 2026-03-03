@@ -65,6 +65,10 @@ struct EvidenceFeatures {
     int32_t evidence_point_count = 0;
 
     double breakpoint_mad = 0.0;
+    int32_t bp_source_split_count = 0;
+    int32_t bp_source_clip_count = 0;
+    int32_t bp_source_indel_count = 0;
+    bool bp_fallback_used = false;
     double te_vote_fraction = 0.0;
     double te_median_identity = 0.0;
     double ambiguous_frac = 0.0;
@@ -145,6 +149,8 @@ struct FragmentTEHit {
     int32_t aligned_len_est = 0;
     double kmer_support = 0.0;  // quick estimate [0,1], not sequence identity
     double coverage = 0.0;      // quick estimate [0,1]
+    double multik_support = 0.0;
+    bool rescue_used = false;
 
     int32_t hit_kmers = 0;
     int32_t total_kmers = 0;
@@ -154,6 +160,8 @@ struct ClusterTECall {
     std::string te_name;
     double vote_fraction = 0.0;
     double median_identity = 0.0;  // median fragment k-mer support
+    double multik_support = 0.0;
+    double rescue_frac = 0.0;
     int32_t fragment_count = 0;
     std::string top1_te_name;
     std::string top2_te_name;
@@ -229,6 +237,8 @@ struct FinalCall {
     std::string te_name;
     double te_vote_fraction = 0.0;
     double te_median_identity = 0.0;
+    double te_multik_support = 0.0;
+    double te_rescue_frac = 0.0;
     int32_t te_fragment_count = 0;
     std::string te_theta = "NA";
     double te_mad_fwd = 0.0;
@@ -241,8 +251,14 @@ struct FinalCall {
     double te_split_sa_core_frac = 0.0;
     int32_t te_ref_junc_pos_min = -1;
     int32_t te_ref_junc_pos_max = -1;
+    std::string bp_source_counts = "split:0,clip:0,indel:0";
+    bool bp_fallback_used = false;
     std::string insertion_qc = "NA";
     std::string te_qc = "NA";
+    std::string tsd_type = "NONE";
+    int32_t tsd_len = 0;
+    std::string tsd_seq = "NA";
+    double tsd_bg_p = 1.0;
     std::string te_status = "NON_TE";
     std::string te_top1_name;
     std::string te_top2_name;
@@ -286,11 +302,26 @@ struct PipelineConfig {
     // Module 2.2: quick TE classification (optional, requires te_fasta_path).
     std::string ins_fragment_hits_tsv_path = "ins_fragment_hits.tsv";
     int32_t te_kmer_size = 13;
+    std::string te_kmer_sizes_csv = "9,11,13";
     double te_vote_fraction_min = 0.40;
     double te_median_identity_min = 0.30;
     int32_t te_min_fragments_for_vote = 2;
     double te_rescue_vote_fraction_min = 0.25;
     double te_rescue_median_identity_min = 0.20;
+    bool te_low_kmer_rescue_enable = true;
+    int32_t te_low_kmer_rescue_topn = 3;
+    int32_t te_low_kmer_rescue_min_frag_len = 40;
+    double te_low_kmer_rescue_identity_min = 0.55;
+    double te_low_kmer_rescue_margin_max = 0.08;
+    int32_t te_no_softclip_min_reads = 2;
+    int32_t te_no_softclip_min_fragments = 2;
+    double te_no_softclip_identity_min = 0.20;
+    double te_one_sided_breakpoint_mad_max = 40.0;
+    bool short_ins_enable = true;
+    int32_t short_ins_min_len = 35;
+    int32_t short_ins_max_len = 300;
+    int32_t short_ins_min_reads = 2;
+    double short_ins_kmer_relax_identity = 0.15;
     double te_softclip_low_complexity_at_frac_min = 0.90;
     int32_t te_softclip_low_complexity_homopolymer_min = 80;
     int32_t te_pure_softclip_min_reads = 6;
@@ -306,8 +337,13 @@ struct PipelineConfig {
     double te_confidence_w_margin = 2.0;
     double te_confidence_w_asm_identity = 1.8;
     double te_confidence_w_support = 0.8;
+    double te_confidence_w_vote = 1.0;
+    double te_confidence_w_te_identity = 1.0;
+    double te_confidence_w_breakpoint_mad = 0.8;
+    double te_confidence_rescue_penalty = 0.35;
     double te_confidence_prob_certain_min = 0.85;
     double te_confidence_prob_uncertain_min = 0.35;
+    bool te_fail_on_tsd_inconsistent = false;
     // Optional low-confidence fallback acceptance for exploratory analysis.
     bool emit_low_confidence_calls = false;
     int32_t low_conf_min_support_reads = 2;
@@ -338,6 +374,13 @@ struct PipelineConfig {
     double te_consensus_eps_theta = 0.05;
     double te_consensus_rel_sumw_eps = 0.10;
     int32_t te_consensus_min_core_set = 2;
+
+    // Module 2.4: TSD detector (duplication / deletion).
+    bool tsd_enable = true;
+    int32_t tsd_min_len = 3;
+    int32_t tsd_max_len = 50;
+    int32_t tsd_flank_window = 150;
+    double tsd_bg_p_max = 0.05;
 
     // Evidence scoring and hard filters.
     double evidence_min_support_alpha = 0.08;
@@ -431,7 +474,10 @@ public:
 private:
     PipelineConfig config_;
     struct Index;
-    std::shared_ptr<const Index> index_;
+    std::shared_ptr<const Index> primary_index_;
+    std::vector<std::shared_ptr<const Index>> indices_;
+    std::vector<std::string> te_names_;
+    std::vector<std::string> te_sequences_;
 };
 
 class DeterministicAnchorLockedModule final {
@@ -451,6 +497,30 @@ private:
     std::shared_ptr<const TemplateDb> template_db_;
 };
 
+struct TsdDetection {
+    std::string type = "NONE";  // DUP / DEL / NONE / UNCERTAIN
+    int32_t length = 0;
+    std::string sequence;
+    double bg_p = 1.0;
+    bool significant = false;
+};
+
+class TSDDetector final {
+public:
+    explicit TSDDetector(PipelineConfig config);
+
+    bool is_enabled() const;
+    TsdDetection detect(
+        const std::string& chrom,
+        int32_t left_bp,
+        int32_t right_bp) const;
+
+private:
+    PipelineConfig config_;
+    struct Impl;
+    std::shared_ptr<const Impl> impl_;
+};
+
 class Pipeline {
 public:
     Pipeline(PipelineConfig config, std::unique_ptr<BamStreamReader> bam_reader);
@@ -464,7 +534,14 @@ private:
     };
 
     struct StreamingState {
+        struct BinSnapshot {
+            int32_t tid = -1;
+            int32_t bin_index = -1;
+            std::vector<BamRecordPtr> records;
+        };
+
         std::deque<WindowCoord> active_window;
+        std::deque<BinSnapshot> recent_bin_snapshots;
         std::vector<BamRecordPtr> current_bin_records;
         int32_t current_tid = -1;
         int32_t current_bin_index = -1;
@@ -516,6 +593,7 @@ private:
     CigarInsertionFragmentModule ins_fragment_module_;
     TEKmerQuickClassifierModule te_classifier_module_;
     DeterministicAnchorLockedModule anchor_locked_module_;
+    TSDDetector tsd_detector_;
 };
 
 std::unique_ptr<Pipeline> build_default_pipeline(const PipelineConfig& config);

@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1028,7 +1029,28 @@ std::vector<InsertionFragment> CigarInsertionFragmentModule::extract(
     std::vector<InsertionFragment> out;
 
     const int32_t min_clip = config_.min_soft_clip_for_seq_extract;
-    const int32_t min_ins = config_.min_long_ins_for_seq_extract;
+    int32_t min_ins = config_.min_long_ins_for_seq_extract;
+
+    if (config_.short_ins_enable) {
+        std::unordered_set<size_t> split_indel_support;
+        split_indel_support.insert(
+            component.split_sa_read_indices.begin(),
+            component.split_sa_read_indices.end());
+        split_indel_support.insert(
+            component.insertion_read_indices.begin(),
+            component.insertion_read_indices.end());
+
+        const int32_t split_indel_reads = static_cast<int32_t>(split_indel_support.size());
+        const int32_t softclip_reads = static_cast<int32_t>(component.soft_clip_read_indices.size());
+        const bool split_indel_dominant =
+            split_indel_reads > 0 && split_indel_reads >= softclip_reads;
+
+        if (split_indel_dominant &&
+            split_indel_reads >= std::max(1, config_.short_ins_min_reads)) {
+            const int32_t relaxed_short_min = std::max(10, config_.short_ins_min_len);
+            min_ins = std::min(min_ins, relaxed_short_min);
+        }
+    }
 
     const bool write_fasta = !config_.ins_fragments_fasta_path.empty();
     std::ostringstream fasta_buffer;

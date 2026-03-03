@@ -94,10 +94,13 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
     out << "final_high_confidence\t" << result.final_high_confidence << "\n";
     out << "final_low_confidence\t" << result.final_low_confidence << "\n";
     out << "bootstrap_exported_calls\t" << result.bootstrap_exported_calls << "\n";
+    out << "schema_version\t0.0.2\n";
 
-    out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_fragments"
+    out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_multik_support\tte_rescue_frac\tte_fragments"
         << "\tte_theta\tte_mad_fwd\tte_mad_rev\tte_bp_core\tte_bp_win_start\tte_bp_win_end"
-        << "\tte_core_candidates\tte_core_set\tsplit_sa_core_frac\tte_ref_junc_min\tte_ref_junc_max\tinsertion_qc\tte_qc"
+        << "\tte_core_candidates\tte_core_set\tsplit_sa_core_frac\tte_ref_junc_min\tte_ref_junc_max"
+        << "\tbp_source_counts\tbp_fallback_used\tinsertion_qc\tte_qc"
+        << "\ttsd_type\ttsd_len\ttsd_seq\ttsd_bg_p"
         << "\tte_status\tte_top1_name\tte_top2_name\tte_post_top1\tte_post_top2\tte_post_margin\tte_conf_prob\tconfidence"
         << "\ttier\tsupport_reads\tgt\taf\tgq\tasm_mode\tasm_input_fragments\tasm_used_fragments"
         << "\tasm_consensus_len\tasm_identity_est\tasm_qc\n";
@@ -110,6 +113,8 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
             << (call.te_name.empty() ? "NA" : call.te_name) << "\t"
             << call.te_vote_fraction << "\t"
             << call.te_median_identity << "\t"
+            << call.te_multik_support << "\t"
+            << call.te_rescue_frac << "\t"
             << call.te_fragment_count << "\t"
             << call.te_theta << "\t"
             << call.te_mad_fwd << "\t"
@@ -122,8 +127,14 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
             << call.te_split_sa_core_frac << "\t"
             << call.te_ref_junc_pos_min << "\t"
             << call.te_ref_junc_pos_max << "\t"
+            << call.bp_source_counts << "\t"
+            << (call.bp_fallback_used ? 1 : 0) << "\t"
             << call.insertion_qc << "\t"
             << call.te_qc << "\t"
+            << call.tsd_type << "\t"
+            << call.tsd_len << "\t"
+            << call.tsd_seq << "\t"
+            << call.tsd_bg_p << "\t"
             << call.te_status << "\t"
             << (call.te_top1_name.empty() ? "NA" : call.te_top1_name) << "\t"
             << (call.te_top2_name.empty() ? "NA" : call.te_top2_name) << "\t"
@@ -183,9 +194,28 @@ int main(int argc, char** argv) {
         if (placer::env_try_double("PLACER_TE_RESCUE_MEDIAN_IDENTITY_MIN", v)) {
             config.te_rescue_median_identity_min = std::clamp(v, 0.0, 1.0);
         }
+        if (placer::env_try_double("PLACER_TE_LOW_KMER_RESCUE_IDENTITY_MIN", v)) {
+            config.te_low_kmer_rescue_identity_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_LOW_KMER_RESCUE_MARGIN_MAX", v)) {
+            config.te_low_kmer_rescue_margin_max = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_NO_SOFTCLIP_IDENTITY_MIN", v)) {
+            config.te_no_softclip_identity_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_ONE_SIDED_BREAKPOINT_MAD_MAX", v)) {
+            config.te_one_sided_breakpoint_mad_max = std::max(0.0, v);
+        }
+        if (placer::env_try_double("PLACER_SHORT_INS_KMER_RELAX_IDENTITY", v)) {
+            config.short_ins_kmer_relax_identity = std::clamp(v, 0.0, 1.0);
+        }
         int32_t i = 0;
+        std::string s;
         if (placer::env_try_int32("PLACER_TE_KMER_SIZE", i)) {
             config.te_kmer_size = std::max(7, i);
+        }
+        if (placer::env_try_string("PLACER_TE_KMER_SIZES", s)) {
+            config.te_kmer_sizes_csv = s;
         }
         if (placer::env_try_int32("PLACER_BAM_THREADS", i)) {
             config.bam_threads = std::max(1, i);
@@ -205,6 +235,33 @@ int main(int argc, char** argv) {
         if (placer::env_try_int32("PLACER_PURE_SOFTCLIP_MIN_FRAGMENTS", i)) {
             config.te_pure_softclip_min_fragments = std::max(1, i);
         }
+        if (placer::env_try_bool("PLACER_TE_LOW_KMER_RESCUE_ENABLE", b)) {
+            config.te_low_kmer_rescue_enable = b;
+        }
+        if (placer::env_try_int32("PLACER_TE_LOW_KMER_RESCUE_TOPN", i)) {
+            config.te_low_kmer_rescue_topn = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_LOW_KMER_RESCUE_MIN_FRAG_LEN", i)) {
+            config.te_low_kmer_rescue_min_frag_len = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_NO_SOFTCLIP_MIN_READS", i)) {
+            config.te_no_softclip_min_reads = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_NO_SOFTCLIP_MIN_FRAGMENTS", i)) {
+            config.te_no_softclip_min_fragments = std::max(1, i);
+        }
+        if (placer::env_try_bool("PLACER_SHORT_INS_ENABLE", b)) {
+            config.short_ins_enable = b;
+        }
+        if (placer::env_try_int32("PLACER_SHORT_INS_MIN_LEN", i)) {
+            config.short_ins_min_len = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_SHORT_INS_MAX_LEN", i)) {
+            config.short_ins_max_len = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_SHORT_INS_MIN_READS", i)) {
+            config.short_ins_min_reads = std::max(1, i);
+        }
         if (placer::env_try_int32("PLACER_LOW_CONF_MIN_SUPPORT_READS", i)) {
             config.low_conf_min_support_reads = std::max(1, i);
         }
@@ -214,9 +271,24 @@ int main(int argc, char** argv) {
         if (placer::env_try_int32("PLACER_BOOTSTRAP_MIN_CONSENSUS_LEN", i)) {
             config.bootstrap_export_min_consensus_len = std::max(20, i);
         }
+        if (placer::env_try_bool("PLACER_TSD_ENABLE", b)) {
+            config.tsd_enable = b;
+        }
+        if (placer::env_try_int32("PLACER_TSD_MIN_LEN", i)) {
+            config.tsd_min_len = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TSD_MAX_LEN", i)) {
+            config.tsd_max_len = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TSD_FLANK_WINDOW", i)) {
+            config.tsd_flank_window = std::max(10, i);
+        }
 
         if (placer::env_try_double("PLACER_TE_SOFTCLIP_LOW_COMPLEXITY_AT_FRAC_MIN", v)) {
             config.te_softclip_low_complexity_at_frac_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TSD_BG_P_MAX", v)) {
+            config.tsd_bg_p_max = std::clamp(v, 0.0, 1.0);
         }
         if (placer::env_try_double("PLACER_PURE_SOFTCLIP_MIN_IDENTITY", v)) {
             config.te_pure_softclip_min_identity = std::clamp(v, 0.0, 1.0);
@@ -245,13 +317,24 @@ int main(int argc, char** argv) {
         if (placer::env_try_double("PLACER_TE_CONF_W_SUPPORT", v)) {
             config.te_confidence_w_support = v;
         }
+        if (placer::env_try_double("PLACER_TE_CONF_W_VOTE", v)) {
+            config.te_confidence_w_vote = v;
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_W_TE_IDENTITY", v)) {
+            config.te_confidence_w_te_identity = v;
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_W_BREAKPOINT_MAD", v)) {
+            config.te_confidence_w_breakpoint_mad = v;
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_RESCUE_PENALTY", v)) {
+            config.te_confidence_rescue_penalty = std::max(0.0, v);
+        }
         if (placer::env_try_double("PLACER_TE_CONF_CERTAIN_MIN", v)) {
             config.te_confidence_prob_certain_min = std::clamp(v, 0.0, 1.0);
         }
         if (placer::env_try_double("PLACER_TE_CONF_UNCERTAIN_MIN", v)) {
             config.te_confidence_prob_uncertain_min = std::clamp(v, 0.0, 1.0);
         }
-        std::string s;
         if (placer::env_try_string("PLACER_BOOTSTRAP_FASTA_PATH", s)) {
             config.bootstrap_consensus_fasta_path = s;
         }
@@ -285,6 +368,9 @@ int main(int argc, char** argv) {
         if (placer::env_try_int32("PLACER_GENOTYPE_MIN_DEPTH", i)) {
             config.genotype_min_depth = std::max(1, i);
         }
+        if (placer::env_try_bool("PLACER_TE_FAIL_ON_TSD_INCONSISTENT", b)) {
+            config.te_fail_on_tsd_inconsistent = b;
+        }
         if (placer::env_try_double("PLACER_GENOTYPE_ERROR_RATE", v)) {
             config.genotype_error_rate = std::clamp(v, 1e-4, 0.25);
         }
@@ -312,6 +398,8 @@ int main(int argc, char** argv) {
         config.te_rescue_median_identity_min = std::min(
             config.te_rescue_median_identity_min,
             config.te_median_identity_min);
+        config.tsd_max_len = std::max(config.tsd_min_len, config.tsd_max_len);
+        config.short_ins_max_len = std::max(config.short_ins_min_len, config.short_ins_max_len);
         if (config.te_confidence_prob_uncertain_min > config.te_confidence_prob_certain_min) {
             config.te_confidence_prob_uncertain_min = config.te_confidence_prob_certain_min;
         }

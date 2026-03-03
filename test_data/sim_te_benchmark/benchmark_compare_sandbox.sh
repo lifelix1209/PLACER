@@ -14,7 +14,7 @@ DATA_DIR="${ROOT_DIR}/test_data/sim_te_benchmark"
 
 TLDR_ENV_PREFIX="${TLDR_ENV_PREFIX:-/opt/anaconda3/envs/tldr-dev-test}"
 TLDR_PY="${TLDR_PY:-${TLDR_ENV_PREFIX}/bin/python}"
-TLDR_ENTRY="${TLDR_ENTRY:-/Users/hanzhang/Desktop/File/softwares/opensource/tldr_optimized/tldr/tldr}"
+TLDR_ENTRY="${TLDR_ENTRY:-${ROOT_DIR}/../tldr_optimized/tldr/tldr}"
 PLACER_BIN="${PLACER_BIN:-${ROOT_DIR}/build/placer}"
 OUT_DIR="${OUT_DIR:-/tmp/placer_tldr_compare}"
 WORKERS="${WORKERS:-8}"

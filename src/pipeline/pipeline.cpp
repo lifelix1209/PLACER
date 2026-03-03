@@ -34,12 +34,19 @@ constexpr int32_t kHistPadding = 120;
 constexpr double kPeakMinWeight = 1.2;
 constexpr int32_t kPeakMergeDistance = 120;
 constexpr int32_t kWindowMergeGap = 80;
+// Allow component windows to cross bin boundaries so insertion evidence carried
+// by long reads (whose starts may fall in adjacent bins) is not dropped.
+constexpr int32_t kWindowBinSlackBp = 20000;
+// Merge current bin with a small number of previous bins so split support from
+// long reads can be assembled in one component.
+constexpr int32_t kCrossBinContextBins = 2;
 constexpr int32_t kWindowMaxExpandBins = 30;
 constexpr double kWindowDropRatio = 0.35;
 constexpr int32_t kMinWindowSpan = 120;
 constexpr double kReadAssignMinScore = 0.8;
 constexpr double kReadAmbiguousRatio = 0.75;
 constexpr double kReadAssignDecayBp = 150.0;
+constexpr int32_t kFinalCallDedupDistanceBp = 50;
 
 enum class EvidenceKind : uint8_t {
     kSoftClip = 0,
@@ -81,6 +88,148 @@ struct CandidateWindow {
     int32_t center = -1;
     double peak_weight = 0.0;
 };
+
+BamRecordPtr clone_bam_record(const BamRecordPtr& src) {
+    if (!src) {
+        return BamRecordPtr();
+    }
+    bam1_t* dup = bam_dup1(src.get());
+    return BamRecordPtr(dup);
+}
+
+void append_record_copies(
+    const std::vector<BamRecordPtr>& src,
+    std::vector<BamRecordPtr>& dst) {
+    dst.reserve(dst.size() + src.size());
+    for (const auto& rec : src) {
+        if (!rec) {
+            continue;
+        }
+        BamRecordPtr dup = clone_bam_record(rec);
+        if (dup) {
+            dst.push_back(std::move(dup));
+        }
+    }
+}
+
+std::string normalize_te_family(const std::string& te_name) {
+    if (te_name.empty()) {
+        return "UNK";
+    }
+    const size_t colon = te_name.find(':');
+    std::string family = te_name.substr(0, colon);
+    for (char& c : family) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    if (family.rfind("ALU", 0) == 0) {
+        return "ALU";
+    }
+    if (family.rfind("L1", 0) == 0) {
+        return "L1";
+    }
+    if (family.rfind("SVA", 0) == 0) {
+        return "SVA";
+    }
+    if (family.rfind("HERV", 0) == 0) {
+        return "HERV";
+    }
+    return family;
+}
+
+bool final_call_sort_less(const FinalCall& a, const FinalCall& b) {
+    if (a.tid != b.tid) {
+        return a.tid < b.tid;
+    }
+    if (a.pos != b.pos) {
+        return a.pos < b.pos;
+    }
+    if (a.window_start != b.window_start) {
+        return a.window_start < b.window_start;
+    }
+    if (a.window_end != b.window_end) {
+        return a.window_end < b.window_end;
+    }
+    if (a.chrom != b.chrom) {
+        return a.chrom < b.chrom;
+    }
+    return a.te_name < b.te_name;
+}
+
+bool same_call_locus(const FinalCall& a, const FinalCall& b) {
+    if (a.tid != b.tid) {
+        return false;
+    }
+    if (std::abs(a.pos - b.pos) > kFinalCallDedupDistanceBp) {
+        return false;
+    }
+    return normalize_te_family(a.te_name) == normalize_te_family(b.te_name);
+}
+
+bool prefer_new_call(const FinalCall& cur, const FinalCall& incumbent) {
+    if (cur.support_reads != incumbent.support_reads) {
+        return cur.support_reads > incumbent.support_reads;
+    }
+    if (cur.tier != incumbent.tier) {
+        return cur.tier < incumbent.tier;
+    }
+    if (cur.confidence != incumbent.confidence) {
+        return cur.confidence == "HIGH";
+    }
+    if (cur.te_status != incumbent.te_status) {
+        if (cur.te_status == "TE_CERTAIN") {
+            return true;
+        }
+        if (incumbent.te_status == "TE_CERTAIN") {
+            return false;
+        }
+    }
+    if (cur.te_confidence_prob != incumbent.te_confidence_prob) {
+        return cur.te_confidence_prob > incumbent.te_confidence_prob;
+    }
+    if (cur.asm_consensus_len != incumbent.asm_consensus_len) {
+        return cur.asm_consensus_len > incumbent.asm_consensus_len;
+    }
+    if (cur.asm_identity_est != incumbent.asm_identity_est) {
+        return cur.asm_identity_est > incumbent.asm_identity_est;
+    }
+    return cur.pos < incumbent.pos;
+}
+
+void finalize_final_calls(PipelineResult& result) {
+    std::sort(result.final_calls.begin(), result.final_calls.end(), final_call_sort_less);
+    std::vector<FinalCall> deduped;
+    deduped.reserve(result.final_calls.size());
+    for (const auto& call : result.final_calls) {
+        if (!deduped.empty() && same_call_locus(call, deduped.back())) {
+            if (prefer_new_call(call, deduped.back())) {
+                deduped.back() = call;
+            }
+            continue;
+        }
+        deduped.push_back(call);
+    }
+    result.final_calls = std::move(deduped);
+
+    result.final_te_certain = 0;
+    result.final_te_uncertain = 0;
+    result.final_non_te = 0;
+    result.final_high_confidence = 0;
+    result.final_low_confidence = 0;
+    for (const auto& call : result.final_calls) {
+        if (call.te_status == "TE_CERTAIN") {
+            result.final_te_certain += 1;
+        } else if (call.te_status == "TE_UNCERTAIN") {
+            result.final_te_uncertain += 1;
+        } else {
+            result.final_non_te += 1;
+        }
+        if (call.confidence == "LOW") {
+            result.final_low_confidence += 1;
+        } else {
+            result.final_high_confidence += 1;
+        }
+    }
+}
 
 const char* theta_tag(InsertionTheta theta) {
     switch (theta) {
@@ -365,11 +514,6 @@ std::string abpoa_consensus(const std::vector<std::string>& seqs) {
     return consensus;
 }
 
-struct PostAssemblyTeDecision {
-    bool pass = false;
-    std::string qc = "FAIL_TE_CLASSIFICATION";
-};
-
 std::string anchor_qc_tag(const AnchorLockedReport& anchor_report) {
     if (!anchor_report.enabled) {
         return "ANCHOR_DISABLED";
@@ -385,6 +529,12 @@ std::string anchor_qc_tag(const AnchorLockedReport& anchor_report) {
 
 bool has_prefix(const std::string& value, const char* prefix) {
     return value.rfind(prefix, 0) == 0;
+}
+
+std::string format_bp_source_counts(const EvidenceFeatures& evidence) {
+    return "split:" + std::to_string(std::max(0, evidence.bp_source_split_count)) +
+           ",clip:" + std::to_string(std::max(0, evidence.bp_source_clip_count)) +
+           ",indel:" + std::to_string(std::max(0, evidence.bp_source_indel_count));
 }
 
 bool is_consensus_proxy_te_certain(
@@ -411,9 +561,11 @@ void apply_te_open_set_classification(
     const AssemblyCall& assembly,
     const PostAssemblyTeDecision& te_decision,
     const PipelineConfig& config) {
+    const bool tsd_hard_fail = call.te_qc.find("FAIL_TSD_INCONSISTENT") != std::string::npos;
     TeOpenSetInput input;
-    input.te_gate_pass = te_decision.pass;
-    input.te_gate_uncertain_path = has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN");
+    input.te_gate_pass = te_decision.pass && !tsd_hard_fail;
+    input.te_gate_uncertain_path =
+        has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN") || tsd_hard_fail;
     input.has_proxy_signal = !call.te_top1_name.empty() && call.te_posterior_top1 > 0.0;
     input.proxy_certain = is_consensus_proxy_te_certain(te_call, assembly, config);
     input.te_confidence_prob = call.te_confidence_prob;
@@ -572,17 +724,28 @@ double calibrate_te_confidence_prob(
     const ClusterTECall& te_call,
     const AssemblyCall& assembly,
     const PlaceabilityReport& placeability,
+    const PostAssemblyTeDecision& te_decision,
     const PipelineConfig& config) {
     const double support_norm = std::clamp(
         std::log1p(static_cast<double>(std::max(0, placeability.support_reads))) / std::log1p(10.0),
         0.0,
         1.0);
+    const double mad_term = std::exp(-std::max(0.0, placeability.breakpoint_mad) / 25.0);
+    const bool rescue_path =
+        has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN") ||
+        has_prefix(te_decision.qc, "PASS_SHORT_INS_RESCUE") ||
+        has_prefix(te_decision.qc, "PASS_SPLIT_INDEL_RESCUE") ||
+        has_prefix(te_decision.qc, "PASS_ASM_RESCUE");
     const double z =
         config.te_confidence_bias +
         (config.te_confidence_w_top1 * std::clamp(te_call.posterior_top1, 0.0, 1.0)) +
         (config.te_confidence_w_margin * std::clamp(te_call.posterior_margin, 0.0, 1.0)) +
         (config.te_confidence_w_asm_identity * std::clamp(assembly.identity_est, 0.0, 1.0)) +
-        (config.te_confidence_w_support * support_norm);
+        (config.te_confidence_w_support * support_norm) +
+        (config.te_confidence_w_vote * std::clamp(te_call.vote_fraction, 0.0, 1.0)) +
+        (config.te_confidence_w_te_identity * std::clamp(te_call.median_identity, 0.0, 1.0)) +
+        (config.te_confidence_w_breakpoint_mad * std::clamp(mad_term, 0.0, 1.0)) -
+        ((rescue_path ? 1.0 : 0.0) * std::max(0.0, config.te_confidence_rescue_penalty));
     return std::clamp(sigmoid(z), 0.0, 1.0);
 }
 
@@ -620,100 +783,75 @@ ClusterTECall enrich_te_call_with_consensus_proxy(
     return base_call;
 }
 
-PostAssemblyTeDecision evaluate_post_assembly_te_call(
-    const ClusterTECall& te_call,
-    const AssemblyCall& assembly,
+std::pair<int32_t, int32_t> infer_tsd_breakpoint_bounds(
     const ComponentCall& component,
-    const PipelineConfig& config) {
-    PostAssemblyTeDecision decision;
+    const AnchorLockedReport& anchor_report) {
+    int32_t bp_min = std::numeric_limits<int32_t>::max();
+    int32_t bp_max = std::numeric_limits<int32_t>::min();
 
-    if (te_call.te_name.empty()) {
-        std::unordered_set<size_t> non_softclip_support;
-        non_softclip_support.insert(
-            component.split_sa_read_indices.begin(),
-            component.split_sa_read_indices.end());
-        non_softclip_support.insert(
-            component.insertion_read_indices.begin(),
-            component.insertion_read_indices.end());
-        const int32_t non_softclip_reads = static_cast<int32_t>(non_softclip_support.size());
-        const int32_t min_non_softclip_reads = std::max(2, config.te_min_fragments_for_vote);
-
-        if (assembly.qc_pass &&
-            assembly.identity_est >= std::clamp(config.assembly_min_identity_est, 0.0, 1.0) &&
-            non_softclip_reads >= min_non_softclip_reads) {
-            decision.pass = true;
-            decision.qc = "PASS_INSERTION_TE_UNCERTAIN";
-        } else {
-            decision.qc = "FAIL_NO_TE_LABEL";
-            return decision;
+    for (const auto& bp : component.breakpoint_candidates) {
+        if (bp.pos < 0) {
+            continue;
         }
+        bp_min = std::min(bp_min, bp.pos);
+        bp_max = std::max(bp_max, bp.pos);
     }
 
-    if (!te_call.te_name.empty()) {
-        const int32_t min_fragments = std::max(1, config.te_min_fragments_for_vote);
-        if (te_call.fragment_count < min_fragments) {
-            decision.qc = "FAIL_LOW_TE_FRAGMENTS";
-            return decision;
-        }
-
-        const double vote_min = std::clamp(config.te_vote_fraction_min, 0.0, 1.0);
-        const double identity_min = std::clamp(config.te_median_identity_min, 0.0, 1.0);
-        const bool classic_pass =
-            te_call.vote_fraction >= vote_min &&
-            te_call.median_identity >= identity_min;
-        if (classic_pass) {
-            decision.pass = true;
-            decision.qc = "PASS_CLASSIC";
-        } else {
-            const double rescue_vote_min = std::clamp(config.te_rescue_vote_fraction_min, 0.0, vote_min);
-            const double rescue_identity_min = std::clamp(config.te_rescue_median_identity_min, 0.0, identity_min);
-            const bool rescue_pass =
-                assembly.qc_pass &&
-                assembly.identity_est >= std::clamp(config.assembly_min_identity_est, 0.0, 1.0) &&
-                te_call.vote_fraction >= rescue_vote_min &&
-                te_call.median_identity >= rescue_identity_min;
-            if (!rescue_pass) {
-                decision.qc = "FAIL_LOW_TE_SUPPORT";
-                return decision;
-            }
-            decision.pass = true;
-            decision.qc = "PASS_ASM_RESCUE";
-        }
+    if (bp_min <= bp_max) {
+        return {bp_min, bp_max};
     }
 
-    const bool pure_softclip_component =
-        component.split_sa_read_indices.empty() &&
-        component.insertion_read_indices.empty() &&
-        !component.soft_clip_read_indices.empty();
-    if (!pure_softclip_component) {
-        return decision;
+    if (anchor_report.ref_junc_pos_min >= 0 && anchor_report.ref_junc_pos_max >= 0) {
+        return {
+            std::min(anchor_report.ref_junc_pos_min, anchor_report.ref_junc_pos_max),
+            std::max(anchor_report.ref_junc_pos_min, anchor_report.ref_junc_pos_max)};
     }
 
-    const int32_t softclip_support_reads = static_cast<int32_t>(component.soft_clip_read_indices.size());
-    if (softclip_support_reads < std::max(1, config.te_pure_softclip_min_reads)) {
-        decision.pass = false;
-        decision.qc = "FAIL_PURE_SOFTCLIP_LOW_READS";
-        return decision;
-    }
-    if (te_call.fragment_count < std::max(1, config.te_pure_softclip_min_fragments)) {
-        decision.pass = false;
-        decision.qc = "FAIL_PURE_SOFTCLIP_LOW_FRAGMENTS";
-        return decision;
+    if (anchor_report.te_breakpoint_window_start >= 0 &&
+        anchor_report.te_breakpoint_window_end >= 0) {
+        return {
+            std::min(anchor_report.te_breakpoint_window_start, anchor_report.te_breakpoint_window_end),
+            std::max(anchor_report.te_breakpoint_window_start, anchor_report.te_breakpoint_window_end)};
     }
 
-    const double pure_identity_min = std::clamp(config.te_pure_softclip_min_identity, 0.0, 1.0);
-    if (std::max(te_call.median_identity, assembly.identity_est) < pure_identity_min) {
-        decision.pass = false;
-        decision.qc = "FAIL_PURE_SOFTCLIP_LOW_IDENTITY";
-        return decision;
-    }
+    const int32_t fallback = std::max(0, component.anchor_pos);
+    return {fallback, fallback};
+}
 
-    if (decision.qc == "PASS_CLASSIC") {
-        decision.qc = "PASS_CLASSIC_PURE_SOFTCLIP";
-    } else if (decision.qc == "PASS_ASM_RESCUE") {
-        decision.qc = "PASS_ASM_RESCUE_PURE_SOFTCLIP";
+void apply_tsd_to_call(
+    const TsdDetection& tsd,
+    const PipelineConfig& config,
+    FinalCall& call) {
+    call.tsd_type = tsd.type;
+    call.tsd_len = std::max(0, tsd.length);
+    call.tsd_seq = tsd.sequence.empty() ? "NA" : tsd.sequence;
+    call.tsd_bg_p = std::clamp(tsd.bg_p, 0.0, 1.0);
+
+    if (tsd.type == "DUP" && tsd.significant) {
+        call.te_confidence_prob = std::clamp(call.te_confidence_prob + 0.06, 0.0, 1.0);
+    } else if (tsd.type == "DEL" && tsd.significant) {
+        call.te_confidence_prob = std::clamp(call.te_confidence_prob + 0.03, 0.0, 1.0);
+    } else if (tsd.type == "UNCERTAIN" && call.tsd_bg_p > std::clamp(config.tsd_bg_p_max, 0.0, 1.0)) {
+        call.te_confidence_prob = std::clamp(call.te_confidence_prob - 0.02, 0.0, 1.0);
     }
-    return decision;
+}
+
+void apply_tsd_consistency_gate(
+    const TsdDetection& tsd,
+    const PipelineConfig& config,
+    FinalCall& call) {
+    if (!config.te_fail_on_tsd_inconsistent) {
+        return;
+    }
+    if (tsd.type == "UNCERTAIN" &&
+        std::clamp(tsd.bg_p, 0.0, 1.0) > std::clamp(config.tsd_bg_p_max, 0.0, 1.0)) {
+        call.te_qc += "|FAIL_TSD_INCONSISTENT";
+        const double fail_cap = std::clamp(
+            0.5 * std::clamp(config.te_confidence_prob_uncertain_min, 0.0, 1.0),
+            0.0,
+            1.0);
+        call.te_confidence_prob = std::min(call.te_confidence_prob, fail_cap);
+    }
 }
 
 template <typename T>
@@ -1104,8 +1242,10 @@ std::vector<CandidateWindow> build_density_windows(
             end = start + kMinWindowSpan;
         }
 
-        start = std::max(bin_start, start);
-        end = std::min(bin_end, end);
+        const int32_t relaxed_bin_start = bin_start - kWindowBinSlackBp;
+        const int32_t relaxed_bin_end = bin_end + kWindowBinSlackBp;
+        start = std::max(relaxed_bin_start, start);
+        end = std::min(relaxed_bin_end, end);
         if (end <= start) {
             continue;
         }
@@ -1332,7 +1472,8 @@ Pipeline::Pipeline(PipelineConfig config, std::unique_ptr<BamStreamReader> bam_r
       component_module_(),
       ins_fragment_module_(config_),
       te_classifier_module_(config_),
-      anchor_locked_module_(config_) {}
+      anchor_locked_module_(config_),
+      tsd_detector_(config_) {}
 
 PipelineResult Pipeline::run() const {
     if (!bam_reader_ || !bam_reader_->is_valid()) {
@@ -1364,6 +1505,7 @@ PipelineResult Pipeline::run_streaming() const {
         config_.progress_interval);
 
     flush_current_bin(state, result);
+    finalize_final_calls(result);
     return result;
 }
 
@@ -1396,16 +1538,56 @@ PipelineResult Pipeline::run_parallel() const {
     int32_t current_bin_index = -1;
     std::vector<BamRecordPtr> current_bin_records;
     current_bin_records.reserve(config_.batch_size);
+    struct BinSnapshot {
+        int32_t tid = -1;
+        int32_t bin_index = -1;
+        std::vector<BamRecordPtr> records;
+    };
+    std::deque<BinSnapshot> recent_bin_snapshots;
+
+    const auto trim_recent_snapshots = [&](int32_t tid, int32_t bin_index) {
+        while (!recent_bin_snapshots.empty()) {
+            const auto& front = recent_bin_snapshots.front();
+            if (front.tid != tid) {
+                recent_bin_snapshots.pop_front();
+                continue;
+            }
+            if ((bin_index - front.bin_index) > kCrossBinContextBins) {
+                recent_bin_snapshots.pop_front();
+                continue;
+            }
+            break;
+        }
+    };
 
     const auto flush_bin_task = [&]() {
         if (current_bin_records.empty()) {
             return;
         }
         BinTask task;
-        task.records = std::move(current_bin_records);
         task.tid = current_tid;
         task.bin_index = current_bin_index;
-        bin_queue.push(std::move(task));
+        for (const auto& snapshot : recent_bin_snapshots) {
+            if (snapshot.tid != current_tid) {
+                continue;
+            }
+            if ((current_bin_index - snapshot.bin_index) > kCrossBinContextBins) {
+                continue;
+            }
+            append_record_copies(snapshot.records, task.records);
+        }
+        append_record_copies(current_bin_records, task.records);
+        if (!task.records.empty()) {
+            bin_queue.push(std::move(task));
+        }
+
+        BinSnapshot snapshot;
+        snapshot.tid = current_tid;
+        snapshot.bin_index = current_bin_index;
+        snapshot.records = std::move(current_bin_records);
+        recent_bin_snapshots.push_back(std::move(snapshot));
+        trim_recent_snapshots(current_tid, current_bin_index);
+
         current_bin_records.clear();
         current_bin_records.reserve(config_.batch_size);
     };
@@ -1472,25 +1654,7 @@ PipelineResult Pipeline::run_parallel() const {
         }
     }
 
-    std::sort(result.final_calls.begin(), result.final_calls.end(), [](const FinalCall& a, const FinalCall& b) {
-        if (a.tid != b.tid) {
-            return a.tid < b.tid;
-        }
-        if (a.pos != b.pos) {
-            return a.pos < b.pos;
-        }
-        if (a.window_start != b.window_start) {
-            return a.window_start < b.window_start;
-        }
-        if (a.window_end != b.window_end) {
-            return a.window_end < b.window_end;
-        }
-        if (a.chrom != b.chrom) {
-            return a.chrom < b.chrom;
-        }
-        return a.te_name < b.te_name;
-    });
-
+    finalize_final_calls(result);
     return result;
 }
 
@@ -1543,11 +1707,43 @@ void Pipeline::flush_current_bin(
         return;
     }
 
-    process_bin_records(
-        std::move(state.current_bin_records),
-        state.current_tid,
-        state.current_bin_index,
-        result);
+    std::vector<BamRecordPtr> merged_records;
+    for (const auto& snapshot : state.recent_bin_snapshots) {
+        if (snapshot.tid != state.current_tid) {
+            continue;
+        }
+        if ((state.current_bin_index - snapshot.bin_index) > kCrossBinContextBins) {
+            continue;
+        }
+        append_record_copies(snapshot.records, merged_records);
+    }
+    append_record_copies(state.current_bin_records, merged_records);
+
+    if (!merged_records.empty()) {
+        process_bin_records(
+            std::move(merged_records),
+            state.current_tid,
+            state.current_bin_index,
+            result);
+    }
+
+    StreamingState::BinSnapshot snapshot;
+    snapshot.tid = state.current_tid;
+    snapshot.bin_index = state.current_bin_index;
+    snapshot.records = std::move(state.current_bin_records);
+    state.recent_bin_snapshots.push_back(std::move(snapshot));
+    while (!state.recent_bin_snapshots.empty()) {
+        const auto& front = state.recent_bin_snapshots.front();
+        if (front.tid != state.current_tid) {
+            state.recent_bin_snapshots.pop_front();
+            continue;
+        }
+        if ((state.current_bin_index - front.bin_index) > kCrossBinContextBins) {
+            state.recent_bin_snapshots.pop_front();
+            continue;
+        }
+        break;
+    }
 
     state.current_bin_records.clear();
 }
@@ -1570,14 +1766,48 @@ EvidenceFeatures Pipeline::collect_evidence(
     features.anchor_consensus_ok = anchor_report.has_result && !anchor_report.fail_theta_uncertain;
 
     std::unordered_set<size_t> alt_support_set;
-    std::vector<int32_t> breakpoint_positions;
-    breakpoint_positions.reserve(component.breakpoint_candidates.size());
+    std::vector<int32_t> split_bp_positions;
+    std::vector<int32_t> clip_bp_positions;
+    std::vector<int32_t> indel_bp_positions;
+    split_bp_positions.reserve(component.breakpoint_candidates.size());
+    clip_bp_positions.reserve(component.breakpoint_candidates.size());
+    indel_bp_positions.reserve(component.breakpoint_candidates.size());
+
     for (const auto& bp : component.breakpoint_candidates) {
         alt_support_set.insert(bp.read_index);
-        if (bp.pos >= 0) {
-            breakpoint_positions.push_back(bp.pos);
+        if (bp.pos < 0) {
+            continue;
+        }
+        if ((bp.class_mask & kCandidateSplitSaSupplementary) != 0) {
+            split_bp_positions.push_back(bp.pos);
+            continue;
+        }
+        if ((bp.class_mask & kCandidateLongInsertion) != 0) {
+            indel_bp_positions.push_back(bp.pos);
+            continue;
+        }
+        if ((bp.class_mask & kCandidateSoftClip) != 0) {
+            clip_bp_positions.push_back(bp.pos);
         }
     }
+
+    for (const auto& frag : fragments) {
+        if (frag.ref_junc_pos < 0) {
+            continue;
+        }
+        if (frag.source == InsertionFragmentSource::kSplitSa) {
+            split_bp_positions.push_back(frag.ref_junc_pos);
+        } else if (frag.source == InsertionFragmentSource::kCigarInsertion) {
+            indel_bp_positions.push_back(frag.ref_junc_pos);
+        } else if (is_softclip_source(frag.source)) {
+            clip_bp_positions.push_back(frag.ref_junc_pos);
+        }
+    }
+
+    features.bp_source_split_count = static_cast<int32_t>(split_bp_positions.size());
+    features.bp_source_clip_count = static_cast<int32_t>(clip_bp_positions.size());
+    features.bp_source_indel_count = static_cast<int32_t>(indel_bp_positions.size());
+
     if (alt_support_set.empty()) {
         alt_support_set.insert(
             component.split_sa_read_indices.begin(),
@@ -1592,7 +1822,31 @@ EvidenceFeatures Pipeline::collect_evidence(
     if (alt_support_set.empty()) {
         alt_support_set.insert(component.read_indices.begin(), component.read_indices.end());
     }
+
+    std::vector<int32_t> breakpoint_positions;
+    if (!split_bp_positions.empty()) {
+        breakpoint_positions = split_bp_positions;
+    } else if (!indel_bp_positions.empty() || !clip_bp_positions.empty()) {
+        breakpoint_positions.reserve(indel_bp_positions.size() + clip_bp_positions.size());
+        breakpoint_positions.insert(
+            breakpoint_positions.end(),
+            indel_bp_positions.begin(),
+            indel_bp_positions.end());
+        breakpoint_positions.insert(
+            breakpoint_positions.end(),
+            clip_bp_positions.begin(),
+            clip_bp_positions.end());
+    } else if (anchor_report.ref_junc_pos_min >= 0 && anchor_report.ref_junc_pos_max >= 0) {
+        breakpoint_positions.push_back(anchor_report.ref_junc_pos_min);
+        breakpoint_positions.push_back(anchor_report.ref_junc_pos_max);
+    } else if (anchor_report.te_breakpoint_core >= 0) {
+        breakpoint_positions.push_back(anchor_report.te_breakpoint_core);
+    } else if (component.anchor_pos >= 0) {
+        breakpoint_positions.push_back(component.anchor_pos);
+    }
+
     if (breakpoint_positions.empty()) {
+        features.bp_fallback_used = true;
         breakpoint_positions.reserve(alt_support_set.size());
         for (size_t idx : alt_support_set) {
             if (idx >= bin_records.size() || !bin_records[idx]) {
@@ -1777,13 +2031,46 @@ AssemblyCall Pipeline::assemble_component(
     call.consensus_len = static_cast<int32_t>(call.consensus.size());
     call.identity_est = estimate_mean_identity_kmer(call.consensus, candidates, config_.assembly_kmer_size);
 
+    std::unordered_set<size_t> non_softclip_support;
+    non_softclip_support.insert(
+        component.split_sa_read_indices.begin(),
+        component.split_sa_read_indices.end());
+    non_softclip_support.insert(
+        component.insertion_read_indices.begin(),
+        component.insertion_read_indices.end());
+    const int32_t non_softclip_reads = static_cast<int32_t>(non_softclip_support.size());
+    const int32_t softclip_reads = static_cast<int32_t>(component.soft_clip_read_indices.size());
+    const bool split_indel_dominant =
+        non_softclip_reads > 0 && non_softclip_reads >= softclip_reads;
+
+    double identity_min = std::clamp(config_.assembly_min_identity_est, 0.0, 1.0);
+    if (split_indel_dominant &&
+        non_softclip_reads >= std::max(1, config_.te_no_softclip_min_reads)) {
+        identity_min = std::min(
+            identity_min,
+            std::clamp(config_.te_no_softclip_identity_min, 0.0, 1.0));
+    }
+    if (config_.short_ins_enable &&
+        split_indel_dominant &&
+        non_softclip_reads >= std::max(1, config_.short_ins_min_reads) &&
+        call.consensus_len >= std::max(1, config_.short_ins_min_len) &&
+        call.consensus_len <= std::max(std::max(1, config_.short_ins_min_len), config_.short_ins_max_len)) {
+        identity_min = std::min(
+            identity_min,
+            std::clamp(
+                config_.assembly_min_identity_est -
+                std::clamp(config_.short_ins_kmer_relax_identity, 0.0, 1.0),
+                0.0,
+                1.0));
+    }
+
     if (call.consensus.empty()) {
         call.qc_pass = false;
         call.qc = "EMPTY_CONSENSUS";
     } else if (call.consensus_len < config_.assembly_min_consensus_len) {
         call.qc_pass = false;
         call.qc = "CONSENSUS_TOO_SHORT";
-    } else if (call.used_fragments >= 2 && call.identity_est < config_.assembly_min_identity_est) {
+    } else if (call.used_fragments >= 2 && call.identity_est < identity_min) {
         call.qc_pass = false;
         call.qc = "LOW_IDENTITY";
     } else {
@@ -1965,7 +2252,7 @@ void Pipeline::process_bin_records(
             te_classifier_module_,
             assembly);
         const PostAssemblyTeDecision te_decision =
-            evaluate_post_assembly_te_call(te_call_eval, assembly, component, config_);
+            evaluate_post_assembly_te_decision(te_call_eval, assembly, component, config_);
         PlaceabilityReport placeability = score_placeability(assembly, evidence);
         const InsertionAcceptanceDecision insertion_decision =
             evaluate_insertion_acceptance_for_pipeline(placeability, config_);
@@ -1986,6 +2273,8 @@ void Pipeline::process_bin_records(
         call.te_name = te_call_eval.te_name.empty() ? "UNK" : te_call_eval.te_name;
         call.te_vote_fraction = te_call_eval.vote_fraction;
         call.te_median_identity = te_call_eval.median_identity;
+        call.te_multik_support = te_call_eval.multik_support;
+        call.te_rescue_frac = te_call_eval.rescue_frac;
         call.te_fragment_count = te_call_eval.fragment_count;
         call.te_top1_name = te_call_eval.top1_te_name;
         call.te_top2_name = te_call_eval.top2_te_name;
@@ -2003,12 +2292,23 @@ void Pipeline::process_bin_records(
         call.te_split_sa_core_frac = anchor_report.split_sa_core_frac;
         call.te_ref_junc_pos_min = anchor_report.ref_junc_pos_min;
         call.te_ref_junc_pos_max = anchor_report.ref_junc_pos_max;
+        call.bp_source_counts = format_bp_source_counts(evidence);
+        call.bp_fallback_used = evidence.bp_fallback_used;
         call.te_qc = te_decision.qc + "|" + anchor_qc_tag(anchor_report);
         call.te_confidence_prob = calibrate_te_confidence_prob(
             te_call_eval,
             assembly,
             placeability,
+            te_decision,
             config_);
+        const auto bp_bounds = infer_tsd_breakpoint_bounds(component, anchor_report);
+        const TsdDetection tsd = tsd_detector_.detect(
+            component.chrom,
+            bp_bounds.first,
+            bp_bounds.second);
+        apply_tsd_to_call(tsd, config_, call);
+        call.te_qc += "|TSD_" + call.tsd_type;
+        apply_tsd_consistency_gate(tsd, config_, call);
         call.insertion_qc = insertion_decision.low_confidence ?
             "PASS_LOW_CONF_ACCEPTED" :
             "PASS_HIGH_CONF";
