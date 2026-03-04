@@ -644,7 +644,7 @@ SplitSAFragmentModule::SplitSAFragmentModule(PipelineConfig config)
 
 std::vector<InsertionFragment> SplitSAFragmentModule::extract(
     const ComponentCall& component,
-    const std::vector<BamRecordPtr>& bin_records) const {
+    const std::vector<const bam1_t*>& bin_records) const {
     std::vector<InsertionFragment> out;
 
     const int32_t min_len = config_.min_sa_aln_len_for_seq_extract;
@@ -668,7 +668,7 @@ std::vector<InsertionFragment> SplitSAFragmentModule::extract(
         if (idx_in_bin >= bin_records.size() || !bin_records[idx_in_bin]) {
             continue;
         }
-        ReadView read(bin_records[idx_in_bin].get());
+        ReadView read(bin_records[idx_in_bin]);
         const uint16_t flag = read.flag();
         if ((flag & BAM_FSUPPLEMENTARY) == 0 || (flag & BAM_FSECONDARY) != 0) {
             continue;
@@ -708,7 +708,7 @@ std::vector<InsertionFragment> SplitSAFragmentModule::extract(
             continue;
         }
 
-        ReadView read(bin_records[idx_in_bin].get());
+        ReadView read(bin_records[idx_in_bin]);
         const uint16_t flag = read.flag();
 
         if ((flag & BAM_FSUPPLEMENTARY) != 0 || (flag & BAM_FSECONDARY) != 0) {
@@ -1025,7 +1025,7 @@ CigarInsertionFragmentModule::CigarInsertionFragmentModule(PipelineConfig config
 
 std::vector<InsertionFragment> CigarInsertionFragmentModule::extract(
     const ComponentCall& component,
-    const std::vector<BamRecordPtr>& bin_records) const {
+    const std::vector<const bam1_t*>& bin_records) const {
     std::vector<InsertionFragment> out;
 
     const int32_t min_clip = config_.min_soft_clip_for_seq_extract;
@@ -1072,7 +1072,7 @@ std::vector<InsertionFragment> CigarInsertionFragmentModule::extract(
             continue;
         }
 
-        ReadView read(bin_records[idx_in_bin].get());
+        ReadView read(bin_records[idx_in_bin]);
         const std::string read_id = sanitize_fragment_token(std::string(read.qname()));
 
         const uint16_t flag = read.flag();

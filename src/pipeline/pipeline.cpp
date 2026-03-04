@@ -2,6 +2,7 @@
 #include "decision_policy.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -89,28 +90,23 @@ struct CandidateWindow {
     double peak_weight = 0.0;
 };
 
-BamRecordPtr clone_bam_record(const BamRecordPtr& src) {
-    if (!src) {
-        return BamRecordPtr();
-    }
-    bam1_t* dup = bam_dup1(src.get());
-    return BamRecordPtr(dup);
-}
-
-void append_record_copies(
-    const std::vector<BamRecordPtr>& src,
-    std::vector<BamRecordPtr>& dst) {
+void append_record_ptrs(
+    const std::vector<BufferedRecord>& src,
+    std::vector<const bam1_t*>& dst,
+    int32_t min_ref_end) {
     dst.reserve(dst.size() + src.size());
     for (const auto& rec : src) {
-        if (!rec) {
+        if (!rec.record) {
             continue;
         }
-        BamRecordPtr dup = clone_bam_record(rec);
-        if (dup) {
-            dst.push_back(std::move(dup));
+        if (rec.ref_end < min_ref_end) {
+            continue;
         }
+        dst.push_back(rec.record.get());
     }
 }
+
+using SharedRecordBatch = std::shared_ptr<const std::vector<BufferedRecord>>;
 
 std::string normalize_te_family(const std::string& te_name) {
     if (te_name.empty()) {
@@ -857,11 +853,18 @@ void apply_tsd_consistency_gate(
 template <typename T>
 class SafeQueue {
 public:
+    explicit SafeQueue(size_t max_size = 0) : max_size_(max_size) {}
+
     void push(T&& value) {
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            queue_.push(std::move(value));
+        std::unique_lock<std::mutex> lock(mu_);
+        if (max_size_ > 0) {
+            not_full_cv_.wait(lock, [this]() { return finished_ || queue_.size() < max_size_; });
         }
+        if (finished_) {
+            return;
+        }
+        queue_.push(std::move(value));
+        lock.unlock();
         cv_.notify_one();
     }
 
@@ -873,6 +876,10 @@ public:
         }
         out = std::move(queue_.front());
         queue_.pop();
+        lock.unlock();
+        if (max_size_ > 0) {
+            not_full_cv_.notify_one();
+        }
         return true;
     }
 
@@ -882,17 +889,24 @@ public:
             finished_ = true;
         }
         cv_.notify_all();
+        if (max_size_ > 0) {
+            not_full_cv_.notify_all();
+        }
     }
 
 private:
     std::queue<T> queue_;
     std::mutex mu_;
     std::condition_variable cv_;
+    std::condition_variable not_full_cv_;
     bool finished_ = false;
+    size_t max_size_ = 0;
 };
 
 struct BinTask {
-    std::vector<BamRecordPtr> records;
+    std::vector<const bam1_t*> records;
+    std::array<SharedRecordBatch, static_cast<size_t>(kCrossBinContextBins) + 1> owners;
+    size_t owner_count = 0;
     int32_t tid = -1;
     int32_t bin_index = -1;
 };
@@ -991,7 +1005,7 @@ std::vector<double> smooth_histogram(const std::vector<double>& hist) {
 }
 
 EvidenceBundle extract_evidence_points(
-    const std::vector<BamRecordPtr>& bin_records,
+    const std::vector<const bam1_t*>& bin_records,
     int32_t expected_tid) {
     EvidenceBundle bundle;
     bundle.read_summaries.resize(bin_records.size());
@@ -1001,7 +1015,7 @@ EvidenceBundle extract_evidence_points(
             continue;
         }
 
-        ReadView view(bin_records[idx].get());
+        ReadView view(bin_records[idx]);
         if (view.tid() != expected_tid) {
             continue;
         }
@@ -1296,7 +1310,7 @@ std::vector<CandidateWindow> build_density_windows(
 }  // namespace
 
 std::vector<ComponentCall> LinearBinComponentModule::build(
-    const std::vector<BamRecordPtr>& bin_records,
+    const std::vector<const bam1_t*>& bin_records,
     const std::string& chrom,
     int32_t tid,
     int32_t bin_start,
@@ -1514,7 +1528,9 @@ PipelineResult Pipeline::run_parallel() const {
     const int32_t worker_count = std::max(
         1,
         (config_.parallel_workers > 0) ? config_.parallel_workers : config_.bam_threads);
-    SafeQueue<BinTask> bin_queue;
+    const int32_t queue_cap_cfg = config_.parallel_queue_max_tasks;
+    const size_t queue_cap = (queue_cap_cfg > 0) ? static_cast<size_t>(queue_cap_cfg) : size_t{0};
+    SafeQueue<BinTask> bin_queue(queue_cap);
     std::vector<PipelineResult> worker_results(static_cast<size_t>(worker_count));
     std::vector<std::thread> workers;
     workers.reserve(static_cast<size_t>(worker_count));
@@ -1528,7 +1544,10 @@ PipelineResult Pipeline::run_parallel() const {
                     task.tid,
                     task.bin_index,
                     worker_results[static_cast<size_t>(wi)]);
-                task = BinTask();
+                for (size_t oi = 0; oi < task.owner_count; ++oi) {
+                    task.owners[oi].reset();
+                }
+                task.owner_count = 0;
             }
         });
     }
@@ -1536,12 +1555,12 @@ PipelineResult Pipeline::run_parallel() const {
     int64_t gate1_passed = 0;
     int32_t current_tid = -1;
     int32_t current_bin_index = -1;
-    std::vector<BamRecordPtr> current_bin_records;
+    std::vector<BufferedRecord> current_bin_records;
     current_bin_records.reserve(config_.batch_size);
     struct BinSnapshot {
         int32_t tid = -1;
         int32_t bin_index = -1;
-        std::vector<BamRecordPtr> records;
+        SharedRecordBatch records;
     };
     std::deque<BinSnapshot> recent_bin_snapshots;
 
@@ -1564,9 +1583,14 @@ PipelineResult Pipeline::run_parallel() const {
         if (current_bin_records.empty()) {
             return;
         }
+        SharedRecordBatch current_batch = std::make_shared<const std::vector<BufferedRecord>>(
+            std::move(current_bin_records));
         BinTask task;
         task.tid = current_tid;
         task.bin_index = current_bin_index;
+        task.owner_count = 0;
+        const int32_t bin_start = current_bin_index * config_.bin_size;
+        const int32_t snapshot_min_ref_end = bin_start - kWindowBinSlackBp;
         for (const auto& snapshot : recent_bin_snapshots) {
             if (snapshot.tid != current_tid) {
                 continue;
@@ -1574,9 +1598,31 @@ PipelineResult Pipeline::run_parallel() const {
             if ((current_bin_index - snapshot.bin_index) > kCrossBinContextBins) {
                 continue;
             }
-            append_record_copies(snapshot.records, task.records);
+            if (snapshot.records && task.owner_count < task.owners.size()) {
+                task.owners[task.owner_count++] = snapshot.records;
+            }
         }
-        append_record_copies(current_bin_records, task.records);
+        if (current_batch && task.owner_count < task.owners.size()) {
+            task.owners[task.owner_count++] = current_batch;
+        }
+        size_t total_records = 0;
+        for (size_t oi = 0; oi < task.owner_count; ++oi) {
+            const auto& owner = task.owners[oi];
+            if (owner) {
+                total_records += owner->size();
+            }
+        }
+        task.records.reserve(total_records);
+        for (size_t oi = 0; oi < task.owner_count; ++oi) {
+            const auto& owner = task.owners[oi];
+            if (!owner) {
+                continue;
+            }
+            const int32_t min_ref_end = (oi + 1 == task.owner_count)
+                ? std::numeric_limits<int32_t>::min()
+                : snapshot_min_ref_end;
+            append_record_ptrs(*owner, task.records, min_ref_end);
+        }
         if (!task.records.empty()) {
             bin_queue.push(std::move(task));
         }
@@ -1584,7 +1630,7 @@ PipelineResult Pipeline::run_parallel() const {
         BinSnapshot snapshot;
         snapshot.tid = current_tid;
         snapshot.bin_index = current_bin_index;
-        snapshot.records = std::move(current_bin_records);
+        snapshot.records = std::move(current_batch);
         recent_bin_snapshots.push_back(std::move(snapshot));
         trim_recent_snapshots(current_tid, current_bin_index);
 
@@ -1621,7 +1667,10 @@ PipelineResult Pipeline::run_parallel() const {
                 current_tid = view.tid();
                 current_bin_index = bin_index;
             }
-            current_bin_records.push_back(std::move(record));
+            BufferedRecord buffered;
+            buffered.ref_end = compute_ref_end(view);
+            buffered.record = std::move(record);
+            current_bin_records.push_back(std::move(buffered));
         },
         progress_cb,
         config_.progress_interval);
@@ -1697,7 +1746,10 @@ void Pipeline::consume_record(
         state.current_bin_index = bin_index;
     }
 
-    state.current_bin_records.push_back(std::move(record));
+    BufferedRecord buffered;
+    buffered.ref_end = compute_ref_end(view);
+    buffered.record = std::move(record);
+    state.current_bin_records.push_back(std::move(buffered));
 }
 
 void Pipeline::flush_current_bin(
@@ -1707,7 +1759,9 @@ void Pipeline::flush_current_bin(
         return;
     }
 
-    std::vector<BamRecordPtr> merged_records;
+    std::vector<const bam1_t*> merged_records;
+    const int32_t bin_start = state.current_bin_index * config_.bin_size;
+    const int32_t snapshot_min_ref_end = bin_start - kWindowBinSlackBp;
     for (const auto& snapshot : state.recent_bin_snapshots) {
         if (snapshot.tid != state.current_tid) {
             continue;
@@ -1715,9 +1769,12 @@ void Pipeline::flush_current_bin(
         if ((state.current_bin_index - snapshot.bin_index) > kCrossBinContextBins) {
             continue;
         }
-        append_record_copies(snapshot.records, merged_records);
+        append_record_ptrs(snapshot.records, merged_records, snapshot_min_ref_end);
     }
-    append_record_copies(state.current_bin_records, merged_records);
+    append_record_ptrs(
+        state.current_bin_records,
+        merged_records,
+        std::numeric_limits<int32_t>::min());
 
     if (!merged_records.empty()) {
         process_bin_records(
@@ -1750,7 +1807,8 @@ void Pipeline::flush_current_bin(
 
 EvidenceFeatures Pipeline::collect_evidence(
     const ComponentCall& component,
-    const std::vector<BamRecordPtr>& bin_records,
+    const std::vector<const bam1_t*>& bin_records,
+    const std::vector<ReadReferenceSpan>& read_spans,
     const std::vector<InsertionFragment>& fragments,
     const ClusterTECall& te_call,
     const AnchorLockedReport& anchor_report) const {
@@ -1849,12 +1907,15 @@ EvidenceFeatures Pipeline::collect_evidence(
         features.bp_fallback_used = true;
         breakpoint_positions.reserve(alt_support_set.size());
         for (size_t idx : alt_support_set) {
-            if (idx >= bin_records.size() || !bin_records[idx]) {
+            if (idx >= read_spans.size()) {
                 continue;
             }
-            ReadView view(bin_records[idx].get());
-            if (view.pos() >= 0) {
-                breakpoint_positions.push_back(view.pos());
+            const auto& span = read_spans[idx];
+            if (!span.valid) {
+                continue;
+            }
+            if (span.start >= 0) {
+                breakpoint_positions.push_back(span.start);
             }
         }
     }
@@ -1865,17 +1926,15 @@ EvidenceFeatures Pipeline::collect_evidence(
     depth_set.reserve(bin_records.size());
     const int32_t anchor_start = component.anchor_pos - anchor_margin;
     const int32_t anchor_end = component.anchor_pos + anchor_margin;
-    for (size_t idx = 0; idx < bin_records.size(); ++idx) {
-        if (!bin_records[idx]) {
+    for (size_t idx = 0; idx < read_spans.size(); ++idx) {
+        const auto& span = read_spans[idx];
+        if (!span.valid) {
             continue;
         }
-        ReadView view(bin_records[idx].get());
-        if (view.tid() != component.tid) {
+        if (span.tid != component.tid) {
             continue;
         }
-        const int32_t read_start = view.pos();
-        const int32_t read_end = compute_ref_end(view);
-        if (read_end < anchor_start || read_start > anchor_end) {
+        if (span.end < anchor_start || span.start > anchor_end) {
             continue;
         }
         depth_set.insert(idx);
@@ -2203,7 +2262,7 @@ GenotypeCall Pipeline::genotype_call(
 }
 
 void Pipeline::process_bin_records(
-    std::vector<BamRecordPtr>&& bin_records,
+    std::vector<const bam1_t*>&& bin_records,
     int32_t tid,
     int32_t bin_index,
     PipelineResult& result) const {
@@ -2220,6 +2279,20 @@ void Pipeline::process_bin_records(
     auto components = component_module_.build(bin_records, chrom, tid, bin_start, bin_end);
     result.built_components += static_cast<int64_t>(components.size());
 
+    std::vector<ReadReferenceSpan> read_spans(bin_records.size());
+    for (size_t idx = 0; idx < bin_records.size(); ++idx) {
+        if (!bin_records[idx]) {
+            continue;
+        }
+        ReadView view(bin_records[idx]);
+        ReadReferenceSpan span;
+        span.valid = true;
+        span.tid = view.tid();
+        span.start = view.pos();
+        span.end = compute_ref_end(view);
+        read_spans[idx] = span;
+    }
+
     for (const auto& component : components) {
         std::vector<InsertionFragment> fragments = ins_fragment_module_.extract(component, bin_records);
         std::vector<FragmentTEHit> hits;
@@ -2235,7 +2308,13 @@ void Pipeline::process_bin_records(
             anchor_report = anchor_locked_module_.resolve(component, fragments, hits, te_call);
         }
 
-        auto evidence = collect_evidence(component, bin_records, fragments, te_call, anchor_report);
+        auto evidence = collect_evidence(
+            component,
+            bin_records,
+            read_spans,
+            fragments,
+            te_call,
+            anchor_report);
         result.evidence_rows += static_cast<int64_t>(evidence.evidence_point_count);
         if (evidence.hard_filtered) {
             continue;

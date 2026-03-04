@@ -33,16 +33,32 @@ uint8_t char_to_2bit(char c) {
     }
 }
 
-bool build_kmer(const std::string& s, int32_t start, int32_t k, uint64_t& out) {
-    out = 0;
-    for (int32_t i = 0; i < k; ++i) {
-        const uint8_t code = char_to_2bit(s[static_cast<size_t>(start + i)]);
-        if (code > 3) {
-            return false;
-        }
-        out = (out << 2) | code;
+template <typename Fn>
+void for_each_valid_kmer(const std::string& seq, int32_t k, Fn&& fn) {
+    if (k <= 0 || static_cast<int32_t>(seq.size()) < k) {
+        return;
     }
-    return true;
+
+    const uint64_t mask = (k >= 32)
+        ? std::numeric_limits<uint64_t>::max()
+        : ((uint64_t{1} << (2 * k)) - 1);
+    uint64_t key = 0;
+    int32_t valid_bases = 0;
+    for (int32_t i = 0; i < static_cast<int32_t>(seq.size()); ++i) {
+        const uint8_t code = char_to_2bit(seq[static_cast<size_t>(i)]);
+        if (code > 3) {
+            key = 0;
+            valid_bases = 0;
+            continue;
+        }
+        key = ((key << 2) | code) & mask;
+        if (valid_bases < k) {
+            ++valid_bases;
+        }
+        if (valid_bases >= k) {
+            fn(i - k + 1, key);
+        }
+    }
 }
 
 std::string take_header_token(const std::string& header) {
@@ -305,20 +321,16 @@ struct TEKmerQuickClassifierModule::Index {
             return;
         }
 
-        for (int32_t i = 0; i + k <= static_cast<int32_t>(seq.size()); ++i) {
-            uint64_t key = 0;
-            if (!build_kmer(seq, i, k, key)) {
-                continue;
-            }
+        for_each_valid_kmer(seq, k, [&](int32_t /*start*/, uint64_t key) {
             auto it = kmer_to_id.find(key);
             if (it == kmer_to_id.end()) {
                 kmer_to_id.emplace(key, te_id);
-                continue;
+                return;
             }
             if (it->second != te_id) {
                 it->second = -1;
             }
-        }
+        });
     }
 };
 
@@ -439,17 +451,13 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
 
             std::unordered_map<int32_t, int32_t> counts;
             int32_t total = 0;
-            for (int32_t i = 0; i + k <= static_cast<int32_t>(seq.size()); ++i) {
-                uint64_t key = 0;
-                if (!build_kmer(seq, i, k, key)) {
-                    continue;
-                }
+            for_each_valid_kmer(seq, k, [&](int32_t /*start*/, uint64_t key) {
                 ++total;
                 const int32_t id = idx.lookup(key);
                 if (id >= 0) {
                     counts[id] += 1;
                 }
-            }
+            });
             if (total <= 0) {
                 continue;
             }
@@ -525,11 +533,10 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
         if (run_index && best_id >= 0) {
             int32_t run = 0;
             int32_t max_run = 0;
-            for (int32_t i = 0; i + run_index->k <= static_cast<int32_t>(seq.size()); ++i) {
-                uint64_t key = 0;
-                if (!build_kmer(seq, i, run_index->k, key)) {
+            int32_t prev_start = -2;
+            for_each_valid_kmer(seq, run_index->k, [&](int32_t start, uint64_t key) {
+                if (start != (prev_start + 1)) {
                     run = 0;
-                    continue;
                 }
                 const int32_t id = run_index->lookup(key);
                 if (id == best_id) {
@@ -538,7 +545,8 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
                 } else {
                     run = 0;
                 }
-            }
+                prev_start = start;
+            });
             hit.aligned_len_est = (max_run > 0) ? (run_index->k + max_run - 1) : 0;
         }
 

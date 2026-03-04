@@ -226,6 +226,13 @@ struct GenotypeCall {
     int32_t gq = 0;
 };
 
+struct ReadReferenceSpan {
+    bool valid = false;
+    int32_t tid = -1;
+    int32_t start = -1;
+    int32_t end = -1;
+};
+
 struct FinalCall {
     std::string chrom;
     int32_t tid = -1;
@@ -293,14 +300,16 @@ struct PipelineConfig {
     int32_t bin_size = 10000;
 
     // Module 2.1: insertion fragment extraction (optional).
-    std::string ins_fragments_fasta_path = "ins_fragments.fasta";
+    // Empty path disables fragment FASTA emission (recommended default for large runs).
+    std::string ins_fragments_fasta_path;
     int32_t min_soft_clip_for_seq_extract = 50;
     int32_t min_long_ins_for_seq_extract = 50;
     int32_t min_sa_aln_len_for_seq_extract = 50;
     int32_t max_sa_per_read = 3;
 
     // Module 2.2: quick TE classification (optional, requires te_fasta_path).
-    std::string ins_fragment_hits_tsv_path = "ins_fragment_hits.tsv";
+    // Empty path disables per-fragment hit TSV emission (recommended default for large runs).
+    std::string ins_fragment_hits_tsv_path;
     int32_t te_kmer_size = 13;
     std::string te_kmer_sizes_csv = "9,11,13";
     double te_vote_fraction_min = 0.40;
@@ -406,6 +415,7 @@ struct PipelineConfig {
     bool enable_parallel = false;
     size_t batch_size = 1000;
     int32_t parallel_workers = 0;
+    int32_t parallel_queue_max_tasks = 0;  // <=0 means unbounded queue
 };
 
 struct PipelineResult {
@@ -430,7 +440,7 @@ struct PipelineResult {
 class LinearBinComponentModule final {
 public:
     std::vector<ComponentCall> build(
-        const std::vector<BamRecordPtr>& bin_records,
+        const std::vector<const bam1_t*>& bin_records,
         const std::string& chrom,
         int32_t tid,
         int32_t bin_start,
@@ -443,7 +453,7 @@ public:
 
     std::vector<InsertionFragment> extract(
         const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records) const;
+        const std::vector<const bam1_t*>& bin_records) const;
 
 private:
     PipelineConfig config_;
@@ -455,7 +465,7 @@ public:
 
     std::vector<InsertionFragment> extract(
         const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records) const;
+        const std::vector<const bam1_t*>& bin_records) const;
 
 private:
     PipelineConfig config_;
@@ -505,6 +515,11 @@ struct TsdDetection {
     bool significant = false;
 };
 
+struct BufferedRecord {
+    BamRecordPtr record;
+    int32_t ref_end = -1;
+};
+
 class TSDDetector final {
 public:
     explicit TSDDetector(PipelineConfig config);
@@ -537,12 +552,12 @@ private:
         struct BinSnapshot {
             int32_t tid = -1;
             int32_t bin_index = -1;
-            std::vector<BamRecordPtr> records;
+            std::vector<BufferedRecord> records;
         };
 
         std::deque<WindowCoord> active_window;
         std::deque<BinSnapshot> recent_bin_snapshots;
-        std::vector<BamRecordPtr> current_bin_records;
+        std::vector<BufferedRecord> current_bin_records;
         int32_t current_tid = -1;
         int32_t current_bin_index = -1;
     };
@@ -560,14 +575,15 @@ private:
         PipelineResult& result) const;
 
     void process_bin_records(
-        std::vector<BamRecordPtr>&& bin_records,
+        std::vector<const bam1_t*>&& bin_records,
         int32_t tid,
         int32_t bin_index,
         PipelineResult& result) const;
 
     EvidenceFeatures collect_evidence(
         const ComponentCall& component,
-        const std::vector<BamRecordPtr>& bin_records,
+        const std::vector<const bam1_t*>& bin_records,
+        const std::vector<ReadReferenceSpan>& read_spans,
         const std::vector<InsertionFragment>& fragments,
         const ClusterTECall& te_call,
         const AnchorLockedReport& anchor_report) const;

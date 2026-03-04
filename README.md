@@ -41,13 +41,53 @@ Current CTest includes `test_decision_policy` (runtime decision matrix checks).
 ./build/placer <input.bam> <ref.fa> [te.fa]
 ```
 
-Default outputs are written to repository root:
+Default output:
 
 - `scientific.txt`
-- `ins_fragments.fasta`
-- `ins_fragment_hits.tsv`
+
+Optional debug outputs (off by default to reduce I/O on large runs):
+
+```bash
+PLACER_INS_FRAGMENTS_FASTA_PATH=ins_fragments.fasta \
+PLACER_INS_FRAGMENT_HITS_TSV_PATH=ins_fragment_hits.tsv \
+./build/placer <input.bam> <ref.fa> [te.fa]
+```
 
 `scientific.txt` includes a dedicated `insertion_qc` field (separate from `te_qc`).
+
+## Sharded Run (Large BAM)
+
+For very large BAMs, run by shard and merge final calls without disabling modules:
+
+```bash
+python3 scripts/run_sharded_placer.py \
+  --bam <input.bam> \
+  --ref <ref.fa> \
+  --te <te.fa> \
+  --placer ./build/placer \
+  --mode contig \
+  --workers 8 \
+  --outdir sharded_placer_out
+```
+
+Outputs:
+
+- `sharded_placer_out/scientific.sharded.txt` (merged callset)
+- `sharded_placer_out/shard_manifest.tsv` (per-shard runtime/row stats)
+
+Accuracy notes:
+
+- `--mode contig` is recommended and exact (no overlap artifacts).
+- `--mode region` uses overlap + core-range merge filtering for boundary safety.
+
+Memory/backpressure tuning for internal parallel mode:
+
+```bash
+PLACER_PARALLEL=1 \
+PLACER_PARALLEL_WORKERS=8 \
+PLACER_PARALLEL_QUEUE_MAX_TASKS=64 \
+./build/placer <input.bam> <ref.fa> <te.fa>
+```
 
 ## Real-Data Tuning (ONT)
 

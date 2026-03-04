@@ -28,16 +28,32 @@ uint8_t char_to_2bit(char c) {
     }
 }
 
-bool build_kmer(const std::string& s, int32_t start, int32_t k, uint64_t& out) {
-    out = 0;
-    for (int32_t i = 0; i < k; ++i) {
-        const uint8_t code = char_to_2bit(s[static_cast<size_t>(start + i)]);
-        if (code > 3) {
-            return false;
-        }
-        out = (out << 2) | code;
+template <typename Fn>
+void for_each_valid_kmer(const std::string& seq, int32_t k, Fn&& fn) {
+    if (k <= 0 || static_cast<int32_t>(seq.size()) < k) {
+        return;
     }
-    return true;
+
+    const uint64_t mask = (k >= 32)
+        ? std::numeric_limits<uint64_t>::max()
+        : ((uint64_t{1} << (2 * k)) - 1);
+    uint64_t key = 0;
+    int32_t valid_bases = 0;
+    for (int32_t i = 0; i < static_cast<int32_t>(seq.size()); ++i) {
+        const uint8_t code = char_to_2bit(seq[static_cast<size_t>(i)]);
+        if (code > 3) {
+            key = 0;
+            valid_bases = 0;
+            continue;
+        }
+        key = ((key << 2) | code) & mask;
+        if (valid_bases < k) {
+            ++valid_bases;
+        }
+        if (valid_bases >= k) {
+            fn(i - k + 1, key);
+        }
+    }
 }
 
 std::string upper_acgt(const std::string& s) {
@@ -464,13 +480,9 @@ struct DeterministicAnchorLockedModule::TemplateDb {
             rec.name = take_header_token(header);
             rec.sequence = upper_acgt(seq);
             if (static_cast<int32_t>(rec.sequence.size()) >= k) {
-                for (int32_t i = 0; i + k <= static_cast<int32_t>(rec.sequence.size()); ++i) {
-                    uint64_t key;
-                    if (!build_kmer(rec.sequence, i, k, key)) {
-                        continue;
-                    }
+                for_each_valid_kmer(rec.sequence, k, [&](int32_t i, uint64_t key) {
                     rec.kmer_to_positions[key].push_back(i);
-                }
+                });
             }
 
             if (!rec.name.empty() && !rec.sequence.empty()) {
@@ -576,14 +588,10 @@ AnchorLockedReport DeterministicAnchorLockedModule::resolve(
         }
 
         std::unordered_map<int32_t, int32_t> counts;
-        for (int32_t q = 0; q + k <= static_cast<int32_t>(query.size()); ++q) {
-            uint64_t key;
-            if (!build_kmer(query, q, k, key)) {
-                continue;
-            }
+        for_each_valid_kmer(query, k, [&](int32_t q, uint64_t key) {
             const auto it = te.kmer_to_positions.find(key);
             if (it == te.kmer_to_positions.end()) {
-                continue;
+                return;
             }
             const auto& positions = it->second;
             const size_t max_positions = std::min<size_t>(positions.size(), 128);
@@ -595,7 +603,7 @@ AnchorLockedReport DeterministicAnchorLockedModule::resolve(
                 }
                 counts[start] += 1;
             }
-        }
+        });
 
         if (counts.empty()) {
             out.starts.push_back(0);

@@ -211,6 +211,12 @@ int main(int argc, char** argv) {
         }
         int32_t i = 0;
         std::string s;
+        if (placer::env_try_string("PLACER_INS_FRAGMENTS_FASTA_PATH", s)) {
+            config.ins_fragments_fasta_path = s;
+        }
+        if (placer::env_try_string("PLACER_INS_FRAGMENT_HITS_TSV_PATH", s)) {
+            config.ins_fragment_hits_tsv_path = s;
+        }
         if (placer::env_try_int32("PLACER_TE_KMER_SIZE", i)) {
             config.te_kmer_size = std::max(7, i);
         }
@@ -225,6 +231,9 @@ int main(int argc, char** argv) {
         }
         if (placer::env_try_int32("PLACER_PARALLEL_WORKERS", i)) {
             config.parallel_workers = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_PARALLEL_QUEUE_MAX_TASKS", i)) {
+            config.parallel_queue_max_tasks = i;
         }
         if (placer::env_try_int32("PLACER_TE_SOFTCLIP_LOW_COMPLEXITY_HOMOPOLYMER_MIN", i)) {
             config.te_softclip_low_complexity_homopolymer_min = std::max(1, i);
