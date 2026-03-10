@@ -37,3 +37,11 @@ target_include_directories(test_short_insertion_rescue PRIVATE ${CMAKE_SOURCE_DI
 target_link_libraries(test_short_insertion_rescue PRIVATE placer_pipeline)
 
 add_test(NAME test_short_insertion_rescue COMMAND test_short_insertion_rescue)
+
+add_executable(test_denovo_cli
+    test_denovo_cli.cpp
+)
+target_include_directories(test_denovo_cli PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_denovo_cli PRIVATE placer_denovo)
+
+add_test(NAME test_denovo_cli COMMAND test_denovo_cli)

@@ -176,4 +176,3 @@ PLACER_TE_CONF_W_SUPPORT=0.8 \
 ## Notes
 
 - On Apple Silicon, abPOA builds through the top-level CMake SIMDE definitions.
-- Tuned benchmark helper: `scripts/tune_sim_benchmark.sh`.

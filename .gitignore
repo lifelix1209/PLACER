@@ -40,3 +40,7 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Local planning / assistant notes
+plan.md
+CLAUDE.md

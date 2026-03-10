@@ -116,11 +116,23 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
 endif()
 target_link_libraries(placer_pipeline PUBLIC abpoa)
 
+add_library(placer_denovo
+    src/denovo/indexed_bam_reader.cpp
+    src/denovo/parent_pool_scanner.cpp
+    src/denovo/denovo_cli.cpp
+)
+target_include_directories(placer_denovo
+    PUBLIC
+        include
+        ${HTSLIB_INCLUDE_DIR}
+)
+target_link_libraries(placer_denovo PUBLIC hts::htslib placer_pipeline)
+
 add_executable(placer
     src/main.cpp
 )
 target_include_directories(placer PRIVATE include)
-target_link_libraries(placer PRIVATE placer_pipeline)
+target_link_libraries(placer PRIVATE placer_denovo)
 
 enable_testing()
 add_subdirectory(tests)

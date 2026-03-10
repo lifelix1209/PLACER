@@ -1,3 +1,4 @@
+#include "denovo.h"
 #include "pipeline.h"
 
 #include <algorithm>
@@ -161,6 +162,10 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
 }  // namespace placer
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && std::string(argv[1]) == "denovo") {
+        return placer::run_denovo_cli(argc - 1, argv + 1);
+    }
+
     if (argc < 3) {
         std::cerr << "Usage: placer <input.bam> <ref.fa> [te.fa]" << std::endl;
         return 1;
