@@ -25,6 +25,7 @@ scientific.txt
 ins_fragments.fasta
 ins_fragment_hits.tsv
 tuning_results.tsv
+placer_out/
 benchmark_steller_out/
 benchmark_steller_sweep/
 benchmark_stress_out/
@@ -37,10 +38,23 @@ bootstrap_pass2/
 # Python cache
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # macOS
 .DS_Store
 
+# Editors / local tooling
+.idea/
+.vscode/
+*.swp
+*.swo
+*.tmp
+*.bak
+*.orig
+
 # Local planning / assistant notes
 plan.md
 CLAUDE.md
+*.private.md
+*.local.md
+scripts/rebuild_igv_validation_bams.py

@@ -77,6 +77,23 @@ TeOpenSetDecision classify_te_open_set(
     const bool prob_certain = input.te_confidence_prob >= conf_certain_min;
     const bool prob_uncertain = input.te_confidence_prob >= conf_uncertain_min;
 
+    if (input.force_non_te) {
+        if (!input.te_gate_pass) {
+            decision.add_te_gate_fail_tag = true;
+        }
+        return decision;
+    }
+
+    if (input.force_te_uncertain) {
+        if (!input.te_gate_pass) {
+            decision.add_te_gate_fail_tag = true;
+        }
+        decision.status = (input.has_proxy_signal || prob_uncertain || input.te_gate_pass)
+            ? "TE_UNCERTAIN"
+            : "NON_TE";
+        return decision;
+    }
+
     const bool uncertain_path = !input.te_gate_pass || input.te_gate_uncertain_path;
     if (!uncertain_path) {
         decision.status = "TE_CERTAIN";
@@ -96,6 +113,74 @@ TeOpenSetDecision classify_te_open_set(
     } else {
         decision.status = "NON_TE";
         decision.qc_proxy_tag = "TE_PROXY_NONE";
+    }
+
+    return decision;
+}
+
+BreakpointConsistencyDecision evaluate_breakpoint_consistency(
+    const BreakpointConsistencyInput& input,
+    const BreakpointConsistencyParams& params) {
+    BreakpointConsistencyDecision decision;
+
+    const double breakpoint_mad_max = std::max(0.0, params.breakpoint_mad_max);
+    const double clip_breakpoint_mad_max = std::max(0.0, params.clip_breakpoint_mad_max);
+    const double split_clip_core_delta_max = std::max(0.0, params.split_clip_core_delta_max);
+    const double tight_split_like_breakpoint_mad_max = std::max(
+        0.0,
+        std::min(params.tight_split_like_breakpoint_mad_max, breakpoint_mad_max));
+    const int32_t split_like_count =
+        std::max(0, input.split_count) + std::max(0, input.indel_count);
+    const int32_t clip_count = std::max(0, input.clip_count);
+
+    decision.pass_breakpoint_mad = input.all_breakpoint_mad <= breakpoint_mad_max;
+
+    const bool comparable =
+        split_like_count >= std::max(1, params.min_split_like_count) &&
+        clip_count >= std::max(1, params.min_clip_count);
+    if (!comparable) {
+        return decision;
+    }
+
+    const bool clip_spread_fail =
+        clip_breakpoint_mad_max <= 0.0
+            ? input.clip_breakpoint_mad > 0.0
+            : input.clip_breakpoint_mad > clip_breakpoint_mad_max;
+    const bool core_delta_fail =
+        split_clip_core_delta_max <= 0.0
+            ? input.split_clip_core_delta > 0.0
+            : input.split_clip_core_delta > split_clip_core_delta_max;
+    decision.pass_split_clip_consistency = !(clip_spread_fail || core_delta_fail);
+
+    const bool split_like_tight =
+        input.split_like_breakpoint_mad <= tight_split_like_breakpoint_mad_max;
+    const bool clip_dominant = clip_count > split_like_count;
+    decision.severe_inconsistency =
+        split_like_tight &&
+        clip_dominant &&
+        (clip_spread_fail || core_delta_fail);
+
+    double clip_ratio = 0.0;
+    if (clip_breakpoint_mad_max > 0.0) {
+        clip_ratio = input.clip_breakpoint_mad / clip_breakpoint_mad_max;
+    } else if (input.clip_breakpoint_mad > 0.0) {
+        clip_ratio = 1.0;
+    }
+
+    double core_delta_ratio = 0.0;
+    if (split_clip_core_delta_max > 0.0) {
+        core_delta_ratio = input.split_clip_core_delta / split_clip_core_delta_max;
+    } else if (input.split_clip_core_delta > 0.0) {
+        core_delta_ratio = 1.0;
+    }
+
+    const double dominance_scale = clip_dominant ? 1.0 : 0.6;
+    decision.placeability_penalty =
+        dominance_scale *
+        ((0.45 * std::clamp(clip_ratio, 0.0, 1.5)) +
+         (0.55 * std::clamp(core_delta_ratio, 0.0, 1.5)));
+    if (decision.severe_inconsistency) {
+        decision.placeability_penalty = std::max(decision.placeability_penalty, 1.0);
     }
 
     return decision;
@@ -138,8 +223,28 @@ PostAssemblyTeDecision evaluate_post_assembly_te_decision(
 
     const bool no_softclip_component =
         softclip_reads <= 0 && non_softclip_reads > 0;
+    const bool mixed_component =
+        softclip_reads > 0 && non_softclip_reads > 0;
     const bool split_indel_dominant =
         non_softclip_reads > 0 && non_softclip_reads >= softclip_reads;
+    const double non_softclip_frac = total_support_reads > 0
+        ? static_cast<double>(non_softclip_reads) / static_cast<double>(total_support_reads)
+        : 0.0;
+    const int32_t mixed_min_non_softclip_reads =
+        std::max(1, config.te_mixed_min_non_softclip_reads);
+    const double mixed_min_non_softclip_frac =
+        std::clamp(config.te_mixed_min_non_softclip_frac, 0.0, 1.0);
+    const double clip_dominant_ratio =
+        std::max(0.0, config.te_mixed_clip_dominant_ratio);
+    const bool mixed_support_certain_ok =
+        !mixed_component ||
+        split_indel_dominant ||
+        (non_softclip_reads >= mixed_min_non_softclip_reads &&
+         non_softclip_frac >= mixed_min_non_softclip_frac);
+    const bool clip_dominant_mixed =
+        mixed_component &&
+        static_cast<double>(softclip_reads) >
+            (clip_dominant_ratio * static_cast<double>(std::max(1, non_softclip_reads)));
 
     const int32_t short_ins_len_min = std::max(1, config.short_ins_min_len);
     const int32_t short_ins_len_max = std::max(short_ins_len_min, config.short_ins_max_len);
@@ -201,7 +306,14 @@ PostAssemblyTeDecision evaluate_post_assembly_te_decision(
             te_call.median_identity >= identity_min;
         if (classic_pass) {
             decision.pass = true;
-            decision.qc = "PASS_CLASSIC";
+            if (mixed_component && !mixed_support_certain_ok) {
+                decision.force_te_uncertain = true;
+                decision.qc = clip_dominant_mixed
+                    ? "PASS_INSERTION_TE_UNCERTAIN_CLIP_DOMINANT"
+                    : "PASS_INSERTION_TE_UNCERTAIN_MIXED_SUPPORT";
+            } else {
+                decision.qc = "PASS_CLASSIC";
+            }
         } else {
             const double rescue_vote_min = std::clamp(config.te_rescue_vote_fraction_min, 0.0, vote_min);
             const double rescue_identity_min = std::clamp(config.te_rescue_median_identity_min, 0.0, identity_min);
@@ -217,7 +329,8 @@ PostAssemblyTeDecision evaluate_post_assembly_te_decision(
                     assembly.qc_pass &&
                     non_softclip_reads >= std::max(1, config.te_no_softclip_min_reads) &&
                     te_call.fragment_count >= std::max(1, config.te_no_softclip_min_fragments) &&
-                    assembly.identity_est >= std::clamp(config.te_no_softclip_identity_min, 0.0, 1.0);
+                    assembly.identity_est >= std::clamp(config.te_no_softclip_identity_min, 0.0, 1.0) &&
+                    te_call.median_identity >= rescue_identity_min;
                 if (split_indel_rescue) {
                     decision.pass = true;
                     decision.qc = "PASS_SPLIT_INDEL_RESCUE";
@@ -245,7 +358,14 @@ PostAssemblyTeDecision evaluate_post_assembly_te_decision(
                 return decision;
             }
             decision.pass = true;
-            decision.qc = "PASS_ASM_RESCUE";
+            if (mixed_component && !mixed_support_certain_ok) {
+                decision.force_te_uncertain = true;
+                decision.qc = clip_dominant_mixed
+                    ? "PASS_INSERTION_TE_UNCERTAIN_CLIP_DOMINANT"
+                    : "PASS_INSERTION_TE_UNCERTAIN_MIXED_SUPPORT";
+            } else {
+                decision.qc = "PASS_ASM_RESCUE";
+            }
         }
     }
 

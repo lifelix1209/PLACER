@@ -34,6 +34,8 @@ InsertionAcceptanceDecision evaluate_insertion_acceptance(
 struct TeOpenSetInput {
     bool te_gate_pass = false;
     bool te_gate_uncertain_path = false;
+    bool force_te_uncertain = false;
+    bool force_non_te = false;
     bool has_proxy_signal = false;
     bool proxy_certain = false;
     double te_confidence_prob = 0.0;
@@ -55,8 +57,41 @@ TeOpenSetDecision classify_te_open_set(
     const TeOpenSetInput& input,
     const TeOpenSetParams& params);
 
+struct BreakpointConsistencyInput {
+    int32_t split_count = 0;
+    int32_t clip_count = 0;
+    int32_t indel_count = 0;
+    double all_breakpoint_mad = 0.0;
+    double split_breakpoint_mad = 0.0;
+    double split_like_breakpoint_mad = 0.0;
+    double clip_breakpoint_mad = 0.0;
+    double indel_breakpoint_mad = 0.0;
+    double split_clip_core_delta = 0.0;
+};
+
+struct BreakpointConsistencyParams {
+    double breakpoint_mad_max = 80.0;
+    double clip_breakpoint_mad_max = 120.0;
+    double split_clip_core_delta_max = 150.0;
+    double tight_split_like_breakpoint_mad_max = 40.0;
+    int32_t min_split_like_count = 1;
+    int32_t min_clip_count = 2;
+};
+
+struct BreakpointConsistencyDecision {
+    bool pass_breakpoint_mad = true;
+    bool pass_split_clip_consistency = true;
+    bool severe_inconsistency = false;
+    double placeability_penalty = 0.0;
+};
+
+BreakpointConsistencyDecision evaluate_breakpoint_consistency(
+    const BreakpointConsistencyInput& input,
+    const BreakpointConsistencyParams& params);
+
 struct PostAssemblyTeDecision {
     bool pass = false;
+    bool force_te_uncertain = false;
     std::string qc = "FAIL_TE_CLASSIFICATION";
 };
 

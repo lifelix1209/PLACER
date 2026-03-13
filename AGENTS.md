@@ -11,7 +11,7 @@
 - `python3 -m pip install -r requirements.txt` installs Python dependencies (notably `pysam` headers used by CMake).
 - `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` configures the project.
 - `cmake --build build -j` compiles `placer` and all module/test targets.
-- `ctest --test-dir build --output-on-failure` runs the full CTest suite.
+- `(cd build && ctest --output-on-failure)` runs the full CTest suite.
 - `./build/placer <input.bam> <ref.fa> [te.fa]` runs the pipeline locally.
 - `./build.sh` wraps configure/build/test, but includes a hardcoded demo path; edit before reuse.
 
@@ -26,7 +26,7 @@
 - Tests are plain C++ executables with `assert` checks, registered in `tests/CMakeLists.txt`.
 - Add tests as `tests/test_<feature>.cpp` and register each target with `add_test(...)`.
 - Run focused tests during iteration, then run full `ctest` before opening a PR.
-- Several current tests use absolute `/mnt/home1/...` paths; switch to local fixtures or guarded paths for portable development.
+- Avoid machine-specific absolute paths in tests; use local fixtures or guarded paths for portable development.
 
 ## Commit & Pull Request Guidelines
 - Keep commit subjects short, imperative, and phase/module scoped (history examples: `Add test data`, `Fix phase 1 bugs`).

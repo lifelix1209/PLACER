@@ -30,10 +30,24 @@ cmake --build build -j
 ## Test
 
 ```bash
-ctest --test-dir build --output-on-failure
+(cd build && ctest --output-on-failure)
 ```
 
 Current CTest includes `test_decision_policy` (runtime decision matrix checks).
+
+## Repository Hygiene
+
+This repository is intended to publish source code only.
+
+- Local outputs such as `build/`, `placer_out/`, shard outputs, bootstrap outputs, and assistant notes are ignored by `.gitignore`.
+- Keep real BAM/VCF/IGV screenshots and validation exports outside the tracked tree.
+- Before pushing to GitHub, run:
+
+```bash
+./scripts/repo_audit.sh
+```
+
+The audit script fails if tracked files include large binaries, data-like outputs, or machine-local absolute paths.
 
 ## Run
 

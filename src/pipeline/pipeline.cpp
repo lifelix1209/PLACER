@@ -8,6 +8,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -33,21 +34,21 @@ constexpr double kSaHintWeight = 0.35;
 constexpr int32_t kHistBinSize = 20;
 constexpr int32_t kHistPadding = 120;
 constexpr double kPeakMinWeight = 1.2;
-constexpr int32_t kPeakMergeDistance = 120;
-constexpr int32_t kWindowMergeGap = 80;
+constexpr int32_t kPeakMergeDistance = 100;
+constexpr int32_t kWindowMergeGap = 60;
 // Allow component windows to cross bin boundaries so insertion evidence carried
 // by long reads (whose starts may fall in adjacent bins) is not dropped.
-constexpr int32_t kWindowBinSlackBp = 20000;
+constexpr int32_t kWindowBinSlackBp = 5000;
 // Merge current bin with a small number of previous bins so split support from
 // long reads can be assembled in one component.
 constexpr int32_t kCrossBinContextBins = 2;
-constexpr int32_t kWindowMaxExpandBins = 30;
-constexpr double kWindowDropRatio = 0.35;
+constexpr int32_t kWindowMaxExpandBins = 15;
+constexpr double kWindowDropRatio = 0.50;
 constexpr int32_t kMinWindowSpan = 120;
 constexpr double kReadAssignMinScore = 0.8;
 constexpr double kReadAmbiguousRatio = 0.75;
 constexpr double kReadAssignDecayBp = 150.0;
-constexpr int32_t kFinalCallDedupDistanceBp = 50;
+constexpr int32_t kFinalCallDedupDistanceBp = 100;
 
 enum class EvidenceKind : uint8_t {
     kSoftClip = 0,
@@ -89,6 +90,32 @@ struct CandidateWindow {
     int32_t center = -1;
     double peak_weight = 0.0;
 };
+
+enum class SaHintSide : uint8_t {
+    kNone = 0,
+    kLeft = 1,
+    kRight = 2
+};
+
+SaHintSide choose_sa_hint_side(int32_t leading_soft, int32_t trailing_soft) {
+    const bool left = leading_soft >= kSoftClipSignalMin;
+    const bool right = trailing_soft >= kSoftClipSignalMin;
+    if (left && !right) {
+        return SaHintSide::kLeft;
+    }
+    if (right && !left) {
+        return SaHintSide::kRight;
+    }
+    if (left && right) {
+        if (leading_soft > trailing_soft) {
+            return SaHintSide::kLeft;
+        }
+        if (trailing_soft > leading_soft) {
+            return SaHintSide::kRight;
+        }
+    }
+    return SaHintSide::kNone;
+}
 
 void append_record_ptrs(
     const std::vector<BufferedRecord>& src,
@@ -155,10 +182,7 @@ bool same_call_locus(const FinalCall& a, const FinalCall& b) {
     if (a.tid != b.tid) {
         return false;
     }
-    if (std::abs(a.pos - b.pos) > kFinalCallDedupDistanceBp) {
-        return false;
-    }
-    return normalize_te_family(a.te_name) == normalize_te_family(b.te_name);
+    return std::abs(a.pos - b.pos) <= kFinalCallDedupDistanceBp;
 }
 
 bool prefer_new_call(const FinalCall& cur, const FinalCall& incumbent) {
@@ -182,6 +206,17 @@ bool prefer_new_call(const FinalCall& cur, const FinalCall& incumbent) {
     if (cur.te_confidence_prob != incumbent.te_confidence_prob) {
         return cur.te_confidence_prob > incumbent.te_confidence_prob;
     }
+    if (cur.te_posterior_margin != incumbent.te_posterior_margin) {
+        return cur.te_posterior_margin > incumbent.te_posterior_margin;
+    }
+    if (cur.te_name != incumbent.te_name) {
+        if (incumbent.te_name == "UNK") {
+            return true;
+        }
+        if (cur.te_name == "UNK") {
+            return false;
+        }
+    }
     if (cur.asm_consensus_len != incumbent.asm_consensus_len) {
         return cur.asm_consensus_len > incumbent.asm_consensus_len;
     }
@@ -189,42 +224,6 @@ bool prefer_new_call(const FinalCall& cur, const FinalCall& incumbent) {
         return cur.asm_identity_est > incumbent.asm_identity_est;
     }
     return cur.pos < incumbent.pos;
-}
-
-void finalize_final_calls(PipelineResult& result) {
-    std::sort(result.final_calls.begin(), result.final_calls.end(), final_call_sort_less);
-    std::vector<FinalCall> deduped;
-    deduped.reserve(result.final_calls.size());
-    for (const auto& call : result.final_calls) {
-        if (!deduped.empty() && same_call_locus(call, deduped.back())) {
-            if (prefer_new_call(call, deduped.back())) {
-                deduped.back() = call;
-            }
-            continue;
-        }
-        deduped.push_back(call);
-    }
-    result.final_calls = std::move(deduped);
-
-    result.final_te_certain = 0;
-    result.final_te_uncertain = 0;
-    result.final_non_te = 0;
-    result.final_high_confidence = 0;
-    result.final_low_confidence = 0;
-    for (const auto& call : result.final_calls) {
-        if (call.te_status == "TE_CERTAIN") {
-            result.final_te_certain += 1;
-        } else if (call.te_status == "TE_UNCERTAIN") {
-            result.final_te_uncertain += 1;
-        } else {
-            result.final_non_te += 1;
-        }
-        if (call.confidence == "LOW") {
-            result.final_low_confidence += 1;
-        } else {
-            result.final_high_confidence += 1;
-        }
-    }
 }
 
 const char* theta_tag(InsertionTheta theta) {
@@ -315,6 +314,50 @@ double at_fraction(const std::string& seq) {
     return static_cast<double>(at_count) / static_cast<double>(total);
 }
 
+double shannon_entropy_acgt(const std::string& seq) {
+    std::array<int32_t, 4> counts = {0, 0, 0, 0};
+    int32_t total = 0;
+    for (char c : seq) {
+        switch (c) {
+            case 'A':
+                counts[0] += 1;
+                total += 1;
+                break;
+            case 'C':
+                counts[1] += 1;
+                total += 1;
+                break;
+            case 'G':
+                counts[2] += 1;
+                total += 1;
+                break;
+            case 'T':
+                counts[3] += 1;
+                total += 1;
+                break;
+            default:
+                break;
+        }
+    }
+    if (total <= 0) {
+        return 0.0;
+    }
+
+    double entropy = 0.0;
+    for (int32_t count : counts) {
+        if (count <= 0) {
+            continue;
+        }
+        const double p = static_cast<double>(count) / static_cast<double>(total);
+        entropy -= p * std::log2(p);
+    }
+    return entropy;
+}
+
+uint8_t char_to_2bit(char c);
+bool build_kmer(const std::string& s, int32_t start, int32_t k, uint64_t& out);
+double kmer_uniqueness_ratio(const std::string& seq, int32_t k);
+
 bool is_low_complexity_softclip(
     const InsertionFragment& fragment,
     const PipelineConfig& config) {
@@ -326,8 +369,32 @@ bool is_low_complexity_softclip(
     }
     const double at_frac = at_fraction(fragment.sequence);
     const int32_t homopolymer = max_homopolymer_run(fragment.sequence);
+    const double entropy = shannon_entropy_acgt(fragment.sequence);
+    const double kmer_uniqueness = kmer_uniqueness_ratio(fragment.sequence, 5);
     return at_frac >= config.te_softclip_low_complexity_at_frac_min ||
-           homopolymer >= config.te_softclip_low_complexity_homopolymer_min;
+           homopolymer >= config.te_softclip_low_complexity_homopolymer_min ||
+           entropy < std::max(0.0, config.te_softclip_entropy_min) ||
+           kmer_uniqueness < std::clamp(config.te_softclip_kmer_uniqueness_min, 0.0, 1.0);
+}
+
+bool is_low_quality_softclip_anchor(
+    const InsertionFragment& fragment,
+    const PipelineConfig& config) {
+    if (!is_softclip_source(fragment.source)) {
+        return false;
+    }
+    if (fragment.anchor_len > 0 &&
+        fragment.anchor_len < std::max(1, config.te_softclip_min_anchor_len)) {
+        return true;
+    }
+    if (fragment.anchor_len > 0 && fragment.nm >= 0) {
+        const double nm_per_bp =
+            static_cast<double>(fragment.nm) / static_cast<double>(std::max(1, fragment.anchor_len));
+        if (nm_per_bp > std::max(0.0, config.te_softclip_max_nm_per_bp)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 uint8_t char_to_2bit(char c) {
@@ -366,6 +433,27 @@ std::unordered_set<uint64_t> kmer_set(const std::string& seq, int32_t k) {
         out.insert(key);
     }
     return out;
+}
+
+double kmer_uniqueness_ratio(const std::string& seq, int32_t k) {
+    if (k <= 0 || static_cast<int32_t>(seq.size()) < k) {
+        return 0.0;
+    }
+    int32_t total = 0;
+    std::unordered_set<uint64_t> uniq;
+    uniq.reserve(static_cast<size_t>(seq.size()));
+    for (int32_t i = 0; i + k <= static_cast<int32_t>(seq.size()); ++i) {
+        uint64_t key = 0;
+        if (!build_kmer(seq, i, k, key)) {
+            continue;
+        }
+        uniq.insert(key);
+        total += 1;
+    }
+    if (total <= 0) {
+        return 0.0;
+    }
+    return static_cast<double>(uniq.size()) / static_cast<double>(total);
 }
 
 double kmer_overlap_fraction(
@@ -527,6 +615,92 @@ bool has_prefix(const std::string& value, const char* prefix) {
     return value.rfind(prefix, 0) == 0;
 }
 
+bool has_qc_token(const std::string& qc, const char* token) {
+    if (!token || *token == '\0') {
+        return false;
+    }
+    size_t start = 0;
+    while (start <= qc.size()) {
+        const size_t end = qc.find('|', start);
+        const size_t len = (end == std::string::npos) ? (qc.size() - start) : (end - start);
+        if (len == std::strlen(token) && qc.compare(start, len, token) == 0) {
+            return true;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return false;
+}
+
+void append_qc_token(std::string& qc, const char* token) {
+    if (!token || *token == '\0' || has_qc_token(qc, token)) {
+        return;
+    }
+    if (!qc.empty()) {
+        qc += "|";
+    }
+    qc += token;
+}
+
+struct BpSourceCountSummary {
+    int32_t split = 0;
+    int32_t clip = 0;
+    int32_t indel = 0;
+};
+
+void parse_bp_source_counts(const std::string& text, BpSourceCountSummary& out) {
+    out = BpSourceCountSummary{};
+    size_t start = 0;
+    while (start < text.size()) {
+        const size_t end = text.find(',', start);
+        const size_t len = (end == std::string::npos) ? (text.size() - start) : (end - start);
+        const std::string token = text.substr(start, len);
+        const size_t colon = token.find(':');
+        if (colon != std::string::npos && colon + 1 < token.size()) {
+            int32_t value = 0;
+            try {
+                value = static_cast<int32_t>(std::stoi(token.substr(colon + 1)));
+            } catch (const std::exception&) {
+                value = 0;
+            }
+            const std::string key = token.substr(0, colon);
+            if (key == "split") {
+                out.split = std::max(0, value);
+            } else if (key == "clip") {
+                out.clip = std::max(0, value);
+            } else if (key == "indel") {
+                out.indel = std::max(0, value);
+            }
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+}
+
+void update_best_bp_by_read(
+    std::unordered_map<size_t, int32_t>& bp_by_read,
+    size_t read_index,
+    int32_t pos,
+    int32_t anchor_pos) {
+    if (pos < 0) {
+        return;
+    }
+    const auto it = bp_by_read.find(read_index);
+    if (it == bp_by_read.end()) {
+        bp_by_read.emplace(read_index, pos);
+        return;
+    }
+    const int32_t cur_dist = std::abs(it->second - anchor_pos);
+    const int32_t new_dist = std::abs(pos - anchor_pos);
+    if (new_dist < cur_dist || (new_dist == cur_dist && pos < it->second)) {
+        it->second = pos;
+    }
+}
+
 std::string format_bp_source_counts(const EvidenceFeatures& evidence) {
     return "split:" + std::to_string(std::max(0, evidence.bp_source_split_count)) +
            ",clip:" + std::to_string(std::max(0, evidence.bp_source_clip_count)) +
@@ -558,10 +732,13 @@ void apply_te_open_set_classification(
     const PostAssemblyTeDecision& te_decision,
     const PipelineConfig& config) {
     const bool tsd_hard_fail = call.te_qc.find("FAIL_TSD_INCONSISTENT") != std::string::npos;
+    const TeFinalEvidenceDecision evidence_gate = apply_te_evidence_gates(call, config);
     TeOpenSetInput input;
     input.te_gate_pass = te_decision.pass && !tsd_hard_fail;
     input.te_gate_uncertain_path =
         has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN") || tsd_hard_fail;
+    input.force_te_uncertain = te_decision.force_te_uncertain || evidence_gate.force_te_uncertain;
+    input.force_non_te = evidence_gate.force_non_te;
     input.has_proxy_signal = !call.te_top1_name.empty() && call.te_posterior_top1 > 0.0;
     input.proxy_certain = is_consensus_proxy_te_certain(te_call, assembly, config);
     input.te_confidence_prob = call.te_confidence_prob;
@@ -1067,21 +1244,8 @@ EvidenceBundle extract_evidence_points(
                 point.weight = 0.80 + (static_cast<double>(std::min(len, 400)) / 200.0);
                 point.kind = EvidenceKind::kIndel;
                 point.signal_len = len;
+                point.class_mask = kCandidateLongInsertion;
                 local_points.push_back(point);
-            } else if (op == BAM_CDEL && len >= kLargeIndelEvidenceMin) {
-                const double weight = 0.60 + (static_cast<double>(std::min(len, 400)) / 260.0);
-
-                EvidencePoint left_point;
-                left_point.read_index = idx;
-                left_point.pos = ref_pos;
-                left_point.weight = weight;
-                left_point.kind = EvidenceKind::kIndel;
-                left_point.signal_len = len;
-                local_points.push_back(left_point);
-
-                EvidencePoint right_point = left_point;
-                right_point.pos = ref_pos + len;
-                local_points.push_back(right_point);
             }
 
             if ((bam_cigar_type(op) & 2) != 0) {
@@ -1097,6 +1261,7 @@ EvidenceBundle extract_evidence_points(
             point.weight = 1.00 + (static_cast<double>(std::min(leading_soft, 500)) / 180.0);
             point.kind = EvidenceKind::kSoftClip;
             point.signal_len = leading_soft;
+            point.class_mask = kCandidateSoftClip;
             local_points.push_back(point);
         }
         if (trailing_soft >= kSoftClipSignalMin) {
@@ -1106,20 +1271,21 @@ EvidenceBundle extract_evidence_points(
             point.weight = 1.00 + (static_cast<double>(std::min(trailing_soft, 500)) / 180.0);
             point.kind = EvidenceKind::kSoftClip;
             point.signal_len = trailing_soft;
+            point.class_mask = kCandidateSoftClip;
             local_points.push_back(point);
         }
 
         if (summary.has_sa_or_supp) {
-            EvidencePoint left_hint;
-            left_hint.read_index = idx;
-            left_hint.pos = view.pos();
-            left_hint.weight = kSaHintWeight;
-            left_hint.kind = EvidenceKind::kSAHint;
-            local_points.push_back(left_hint);
-
-            EvidencePoint right_hint = left_hint;
-            right_hint.pos = ref_end;
-            local_points.push_back(right_hint);
+            const SaHintSide hint_side = choose_sa_hint_side(leading_soft, trailing_soft);
+            if (hint_side != SaHintSide::kNone) {
+                EvidencePoint hint;
+                hint.read_index = idx;
+                hint.pos = (hint_side == SaHintSide::kLeft) ? view.pos() : ref_end;
+                hint.weight = kSaHintWeight;
+                hint.kind = EvidenceKind::kSAHint;
+                hint.class_mask = kCandidateSplitSaSupplementary;
+                local_points.push_back(hint);
+            }
         }
 
         if (summary.has_sa_or_supp) {
@@ -1133,7 +1299,6 @@ EvidenceBundle extract_evidence_points(
         }
 
         for (auto& point : local_points) {
-            point.class_mask = summary.class_mask;
             bundle.points.push_back(point);
         }
         bundle.read_summaries[idx] = std::move(summary);
@@ -1309,6 +1474,164 @@ std::vector<CandidateWindow> build_density_windows(
 
 }  // namespace
 
+void finalize_final_calls(PipelineResult& result) {
+    std::sort(result.final_calls.begin(), result.final_calls.end(), final_call_sort_less);
+
+    std::vector<FinalCall> deduped;
+    deduped.reserve(result.final_calls.size());
+
+    size_t cluster_start = 0;
+    while (cluster_start < result.final_calls.size()) {
+        const FinalCall* best = &result.final_calls[cluster_start];
+        size_t cluster_end = cluster_start + 1;
+        while (cluster_end < result.final_calls.size() &&
+               same_call_locus(result.final_calls[cluster_start], result.final_calls[cluster_end])) {
+            if (prefer_new_call(result.final_calls[cluster_end], *best)) {
+                best = &result.final_calls[cluster_end];
+            }
+            ++cluster_end;
+        }
+        deduped.push_back(*best);
+        cluster_start = cluster_end;
+    }
+
+    result.final_calls = std::move(deduped);
+
+    result.final_te_certain = 0;
+    result.final_te_uncertain = 0;
+    result.final_non_te = 0;
+    result.final_high_confidence = 0;
+    result.final_low_confidence = 0;
+    for (const auto& call : result.final_calls) {
+        if (call.te_status == "TE_CERTAIN") {
+            result.final_te_certain += 1;
+        } else if (call.te_status == "TE_UNCERTAIN") {
+            result.final_te_uncertain += 1;
+        } else {
+            result.final_non_te += 1;
+        }
+        if (call.confidence == "LOW") {
+            result.final_low_confidence += 1;
+        } else {
+            result.final_high_confidence += 1;
+        }
+    }
+}
+
+TeFinalEvidenceDecision apply_te_evidence_gates(
+    FinalCall& call,
+    const PipelineConfig& config) {
+    TeFinalEvidenceDecision decision;
+
+    BpSourceCountSummary bp_counts;
+    parse_bp_source_counts(call.bp_source_counts, bp_counts);
+    const int32_t split_like = bp_counts.split + bp_counts.indel;
+    const bool split_indel_dominant =
+        split_like > 0 && split_like >= std::max(0, bp_counts.clip);
+
+    const bool anchor_fail =
+        call.te_qc.find("ANCHOR_FAIL_") != std::string::npos ||
+        has_qc_token(call.te_qc, "ANCHOR_NO_CORE_RESULT");
+    const bool weak_no_tsd = call.tsd_type == "NONE" && !split_indel_dominant;
+    const bool weak_uncertain_tsd = call.tsd_type == "UNCERTAIN" && !split_indel_dominant;
+    const bool weak_tsd = weak_no_tsd || weak_uncertain_tsd;
+    const bool named_te =
+        !call.te_name.empty() &&
+        call.te_name != "UNK";
+    const double rescue_identity_min = std::clamp(config.te_rescue_median_identity_min, 0.0, 1.0);
+    const bool low_te_identity =
+        named_te &&
+        call.te_median_identity < rescue_identity_min;
+
+    const double margin_min = std::clamp(config.te_certain_posterior_margin_min, 0.0, 1.0);
+    const bool low_margin =
+        !call.te_top2_name.empty() &&
+        call.te_posterior_top2 > 0.0 &&
+        call.te_posterior_margin < margin_min;
+    const double same_family_margin_max = std::clamp(
+        std::max(config.te_same_family_ambiguity_margin_max, margin_min),
+        0.0,
+        1.0);
+    const bool family_ambiguous =
+        !call.te_top1_name.empty() &&
+        !call.te_top2_name.empty() &&
+        call.te_posterior_top2 > 0.0 &&
+        call.te_top1_name != call.te_top2_name &&
+        normalize_te_family(call.te_top1_name) == normalize_te_family(call.te_top2_name) &&
+        call.te_posterior_margin < same_family_margin_max;
+
+    double penalty = 0.0;
+    if (anchor_fail) {
+        decision.force_te_uncertain = true;
+        penalty += std::max(0.0, config.te_confidence_anchor_fail_penalty);
+        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_ANCHOR");
+    }
+    if (weak_no_tsd) {
+        decision.force_te_uncertain = true;
+        penalty += std::max(0.0, config.te_confidence_no_tsd_penalty);
+        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_NO_TSD");
+    }
+    if (weak_uncertain_tsd) {
+        decision.force_te_uncertain = true;
+        penalty += std::max(0.0, config.te_confidence_no_tsd_penalty);
+        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_TSD_UNCERTAIN");
+    }
+    if (low_margin) {
+        decision.force_te_uncertain = true;
+        penalty += std::max(0.0, config.te_confidence_low_margin_penalty);
+        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_LOW_MARGIN");
+    }
+    if (family_ambiguous) {
+        decision.force_te_uncertain = true;
+        penalty += 0.5 * std::max(0.0, config.te_confidence_low_margin_penalty);
+        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_FAMILY_AMBIGUOUS");
+    }
+    if (low_te_identity) {
+        decision.force_non_te = true;
+        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_LOW_IDENTITY");
+    }
+    if (config.te_force_non_te_on_anchor_weak_tsd &&
+        anchor_fail &&
+        weak_tsd) {
+        decision.force_non_te = true;
+        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_ANCHOR_WEAK_TSD");
+    }
+
+    if (config.te_force_non_te_on_combined_weakness &&
+        anchor_fail &&
+        weak_no_tsd &&
+        low_margin) {
+        decision.force_non_te = true;
+        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_COMBINED_WEAKNESS");
+    }
+
+    if (penalty > 0.0) {
+        call.te_confidence_prob =
+            std::clamp(call.te_confidence_prob - penalty, 0.0, 1.0);
+    }
+    const double conf_certain_min = std::clamp(config.te_confidence_prob_certain_min, 0.0, 1.0);
+    const double conf_uncertain_min = std::clamp(
+        std::min(config.te_confidence_prob_uncertain_min, conf_certain_min),
+        0.0,
+        1.0);
+    if (decision.force_te_uncertain) {
+        const double uncertain_cap = std::clamp(
+            0.5 * (conf_certain_min + conf_uncertain_min),
+            conf_uncertain_min,
+            std::max(0.0, conf_certain_min - 1e-6));
+        call.te_confidence_prob = std::min(call.te_confidence_prob, uncertain_cap);
+    }
+    if (decision.force_non_te || low_te_identity) {
+        const double fail_cap = std::clamp(
+            0.5 * conf_uncertain_min,
+            0.0,
+            1.0);
+        call.te_confidence_prob = std::min(call.te_confidence_prob, fail_cap);
+    }
+
+    return decision;
+}
+
 std::vector<ComponentCall> LinearBinComponentModule::build(
     const std::vector<const bam1_t*>& bin_records,
     const std::string& chrom,
@@ -1426,12 +1749,25 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
             }
         }
 
-        for (const auto& point : evidence_bundle.points) {
-            if (point.read_index >= assigned_window.size() ||
-                assigned_window[point.read_index] != static_cast<int32_t>(wi)) {
-                continue;
+        const auto better_point = [&](const EvidencePoint* candidate, const EvidencePoint* incumbent) {
+            if (candidate == nullptr) {
+                return false;
             }
+            if (incumbent == nullptr) {
+                return true;
+            }
+            const int32_t candidate_dist = std::abs(candidate->pos - windows[wi].center);
+            const int32_t incumbent_dist = std::abs(incumbent->pos - windows[wi].center);
+            if (candidate_dist != incumbent_dist) {
+                return candidate_dist < incumbent_dist;
+            }
+            if (candidate->weight != incumbent->weight) {
+                return candidate->weight > incumbent->weight;
+            }
+            return candidate->pos < incumbent->pos;
+        };
 
+        const auto append_point = [&](const EvidencePoint& point) {
             anchor_points.push_back({point.pos, point.weight});
             switch (point.kind) {
                 case EvidenceKind::kSoftClip:
@@ -1462,6 +1798,51 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
                 candidate.ins_len = point.signal_len;
             }
             call.breakpoint_candidates.push_back(std::move(candidate));
+        };
+
+        for (size_t read_idx : call.read_indices) {
+            if (read_idx >= evidence_by_read.size()) {
+                continue;
+            }
+            const auto& read_points = evidence_by_read[read_idx];
+            const EvidencePoint* best_softclip = nullptr;
+            const EvidencePoint* best_indel = nullptr;
+            const EvidencePoint* best_sa_hint = nullptr;
+            for (const EvidencePoint* point : read_points) {
+                if (!point || point->read_index >= assigned_window.size()) {
+                    continue;
+                }
+                if (assigned_window[point->read_index] != static_cast<int32_t>(wi)) {
+                    continue;
+                }
+                switch (point->kind) {
+                    case EvidenceKind::kSoftClip:
+                        if (better_point(point, best_softclip)) {
+                            best_softclip = point;
+                        }
+                        break;
+                    case EvidenceKind::kIndel:
+                        if (better_point(point, best_indel)) {
+                            best_indel = point;
+                        }
+                        break;
+                    case EvidenceKind::kSAHint:
+                        if (better_point(point, best_sa_hint)) {
+                            best_sa_hint = point;
+                        }
+                        break;
+                }
+            }
+
+            if (best_softclip != nullptr) {
+                append_point(*best_softclip);
+            }
+            if (best_indel != nullptr) {
+                append_point(*best_indel);
+            }
+            if (best_sa_hint != nullptr) {
+                append_point(*best_sa_hint);
+            }
         }
 
         if (!anchor_points.empty()) {
@@ -1824,12 +2205,12 @@ EvidenceFeatures Pipeline::collect_evidence(
     features.anchor_consensus_ok = anchor_report.has_result && !anchor_report.fail_theta_uncertain;
 
     std::unordered_set<size_t> alt_support_set;
-    std::vector<int32_t> split_bp_positions;
-    std::vector<int32_t> clip_bp_positions;
-    std::vector<int32_t> indel_bp_positions;
-    split_bp_positions.reserve(component.breakpoint_candidates.size());
-    clip_bp_positions.reserve(component.breakpoint_candidates.size());
-    indel_bp_positions.reserve(component.breakpoint_candidates.size());
+    std::unordered_map<size_t, int32_t> split_bp_by_read;
+    std::unordered_map<size_t, int32_t> clip_bp_by_read;
+    std::unordered_map<size_t, int32_t> indel_bp_by_read;
+    split_bp_by_read.reserve(component.breakpoint_candidates.size());
+    clip_bp_by_read.reserve(component.breakpoint_candidates.size());
+    indel_bp_by_read.reserve(component.breakpoint_candidates.size());
 
     for (const auto& bp : component.breakpoint_candidates) {
         alt_support_set.insert(bp.read_index);
@@ -1837,15 +2218,27 @@ EvidenceFeatures Pipeline::collect_evidence(
             continue;
         }
         if ((bp.class_mask & kCandidateSplitSaSupplementary) != 0) {
-            split_bp_positions.push_back(bp.pos);
+            update_best_bp_by_read(
+                split_bp_by_read,
+                bp.read_index,
+                bp.pos,
+                component.anchor_pos);
             continue;
         }
         if ((bp.class_mask & kCandidateLongInsertion) != 0) {
-            indel_bp_positions.push_back(bp.pos);
+            update_best_bp_by_read(
+                indel_bp_by_read,
+                bp.read_index,
+                bp.pos,
+                component.anchor_pos);
             continue;
         }
         if ((bp.class_mask & kCandidateSoftClip) != 0) {
-            clip_bp_positions.push_back(bp.pos);
+            update_best_bp_by_read(
+                clip_bp_by_read,
+                bp.read_index,
+                bp.pos,
+                component.anchor_pos);
         }
     }
 
@@ -1854,17 +2247,60 @@ EvidenceFeatures Pipeline::collect_evidence(
             continue;
         }
         if (frag.source == InsertionFragmentSource::kSplitSa) {
-            split_bp_positions.push_back(frag.ref_junc_pos);
+            update_best_bp_by_read(
+                split_bp_by_read,
+                frag.read_index,
+                frag.ref_junc_pos,
+                component.anchor_pos);
         } else if (frag.source == InsertionFragmentSource::kCigarInsertion) {
-            indel_bp_positions.push_back(frag.ref_junc_pos);
+            update_best_bp_by_read(
+                indel_bp_by_read,
+                frag.read_index,
+                frag.ref_junc_pos,
+                component.anchor_pos);
         } else if (is_softclip_source(frag.source)) {
-            clip_bp_positions.push_back(frag.ref_junc_pos);
+            update_best_bp_by_read(
+                clip_bp_by_read,
+                frag.read_index,
+                frag.ref_junc_pos,
+                component.anchor_pos);
         }
+    }
+
+    std::vector<int32_t> split_bp_positions;
+    std::vector<int32_t> split_like_bp_positions;
+    std::vector<int32_t> clip_bp_positions;
+    std::vector<int32_t> indel_bp_positions;
+    split_bp_positions.reserve(split_bp_by_read.size());
+    split_like_bp_positions.reserve(split_bp_by_read.size() + indel_bp_by_read.size());
+    clip_bp_positions.reserve(clip_bp_by_read.size());
+    indel_bp_positions.reserve(indel_bp_by_read.size());
+    for (const auto& row : split_bp_by_read) {
+        split_bp_positions.push_back(row.second);
+        split_like_bp_positions.push_back(row.second);
+    }
+    for (const auto& row : clip_bp_by_read) {
+        clip_bp_positions.push_back(row.second);
+    }
+    for (const auto& row : indel_bp_by_read) {
+        indel_bp_positions.push_back(row.second);
+        split_like_bp_positions.push_back(row.second);
     }
 
     features.bp_source_split_count = static_cast<int32_t>(split_bp_positions.size());
     features.bp_source_clip_count = static_cast<int32_t>(clip_bp_positions.size());
     features.bp_source_indel_count = static_cast<int32_t>(indel_bp_positions.size());
+    features.split_breakpoint_mad = mad_from_positions(split_bp_positions);
+    features.split_like_breakpoint_mad = mad_from_positions(split_like_bp_positions);
+    features.clip_breakpoint_mad = mad_from_positions(clip_bp_positions);
+    features.indel_breakpoint_mad = mad_from_positions(indel_bp_positions);
+
+    const int32_t split_core = median_i32(split_like_bp_positions);
+    const int32_t clip_core = median_i32(clip_bp_positions);
+    if (split_core >= 0 && clip_core >= 0) {
+        features.split_clip_core_delta =
+            static_cast<double>(std::abs(split_core - clip_core));
+    }
 
     if (alt_support_set.empty()) {
         alt_support_set.insert(
@@ -1882,10 +2318,13 @@ EvidenceFeatures Pipeline::collect_evidence(
     }
 
     std::vector<int32_t> breakpoint_positions;
-    if (!split_bp_positions.empty()) {
-        breakpoint_positions = split_bp_positions;
-    } else if (!indel_bp_positions.empty() || !clip_bp_positions.empty()) {
-        breakpoint_positions.reserve(indel_bp_positions.size() + clip_bp_positions.size());
+    if (!split_bp_positions.empty() || !indel_bp_positions.empty() || !clip_bp_positions.empty()) {
+        breakpoint_positions.reserve(
+            split_bp_positions.size() + indel_bp_positions.size() + clip_bp_positions.size());
+        breakpoint_positions.insert(
+            breakpoint_positions.end(),
+            split_bp_positions.begin(),
+            split_bp_positions.end());
         breakpoint_positions.insert(
             breakpoint_positions.end(),
             indel_bp_positions.begin(),
@@ -1998,7 +2437,8 @@ EvidenceFeatures Pipeline::collect_evidence(
             continue;
         }
         ++softclip_total;
-        if (is_low_complexity_softclip(frag, config_)) {
+        if (is_low_complexity_softclip(frag, config_) ||
+            is_low_quality_softclip_anchor(frag, config_)) {
             ++softclip_low_complex;
         }
     }
@@ -2018,7 +2458,27 @@ EvidenceFeatures Pipeline::collect_evidence(
 
     features.min_support_required = min_support;
     features.pass_min_support = features.alt_support_reads >= min_support;
-    features.pass_breakpoint_mad = features.breakpoint_mad <= std::max(0.0, config_.evidence_breakpoint_mad_max);
+    BreakpointConsistencyInput breakpoint_input;
+    breakpoint_input.split_count = features.bp_source_split_count;
+    breakpoint_input.clip_count = features.bp_source_clip_count;
+    breakpoint_input.indel_count = features.bp_source_indel_count;
+    breakpoint_input.all_breakpoint_mad = features.breakpoint_mad;
+    breakpoint_input.split_breakpoint_mad = features.split_breakpoint_mad;
+    breakpoint_input.split_like_breakpoint_mad = features.split_like_breakpoint_mad;
+    breakpoint_input.clip_breakpoint_mad = features.clip_breakpoint_mad;
+    breakpoint_input.indel_breakpoint_mad = features.indel_breakpoint_mad;
+    breakpoint_input.split_clip_core_delta = features.split_clip_core_delta;
+    BreakpointConsistencyParams breakpoint_params;
+    breakpoint_params.breakpoint_mad_max = config_.evidence_breakpoint_mad_max;
+    breakpoint_params.clip_breakpoint_mad_max = config_.evidence_clip_breakpoint_mad_max;
+    breakpoint_params.split_clip_core_delta_max = config_.evidence_split_clip_core_delta_max;
+    breakpoint_params.tight_split_like_breakpoint_mad_max =
+        0.5 * std::max(0.0, config_.evidence_breakpoint_mad_max);
+    const BreakpointConsistencyDecision breakpoint_decision =
+        evaluate_breakpoint_consistency(breakpoint_input, breakpoint_params);
+    features.pass_breakpoint_mad = breakpoint_decision.pass_breakpoint_mad;
+    features.pass_split_clip_consistency = breakpoint_decision.pass_split_clip_consistency;
+    features.breakpoint_inconsistency_penalty = breakpoint_decision.placeability_penalty;
     features.pass_low_complexity = features.low_complex_softclip_frac <=
         std::clamp(config_.evidence_low_complex_softclip_frac_max, 0.0, 1.0);
     // Stage-A weak gate: do not require TE label; allow insertion evidence to carry candidates.
@@ -2031,6 +2491,7 @@ EvidenceFeatures Pipeline::collect_evidence(
     features.hard_filtered =
         !(features.pass_min_support &&
           features.pass_breakpoint_mad &&
+          features.pass_split_clip_consistency &&
           features.pass_low_complexity &&
           features.pass_te_consistency);
 
@@ -2171,7 +2632,8 @@ PlaceabilityReport Pipeline::score_placeability(
         (1.0 * evidence.te_median_identity) +
         (0.7 * anchor_bonus) -
         (1.2 * evidence.ambiguous_frac) -
-        (0.8 * evidence.low_complex_softclip_frac);
+        (0.8 * evidence.low_complex_softclip_frac) -
+        (0.9 * evidence.breakpoint_inconsistency_penalty);
 
     const double p = std::clamp(sigmoid(z - config_.evidence_logit_bias), 0.0, 1.0);
     const double q = -10.0 * std::log10(std::max(1e-9, 1.0 - p));

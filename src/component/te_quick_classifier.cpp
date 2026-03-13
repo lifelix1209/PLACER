@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -145,17 +146,78 @@ double at_fraction(const std::string& seq) {
     return static_cast<double>(at) / static_cast<double>(total);
 }
 
+double shannon_entropy_acgt(const std::string& seq) {
+    int32_t counts[4] = {0, 0, 0, 0};
+    int32_t total = 0;
+    for (char c : seq) {
+        switch (c) {
+            case 'A':
+                counts[0] += 1;
+                total += 1;
+                break;
+            case 'C':
+                counts[1] += 1;
+                total += 1;
+                break;
+            case 'G':
+                counts[2] += 1;
+                total += 1;
+                break;
+            case 'T':
+                counts[3] += 1;
+                total += 1;
+                break;
+            default:
+                break;
+        }
+    }
+    if (total <= 0) {
+        return 0.0;
+    }
+
+    double entropy = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        if (counts[i] <= 0) {
+            continue;
+        }
+        const double p = static_cast<double>(counts[i]) / static_cast<double>(total);
+        entropy -= p * std::log2(p);
+    }
+    return entropy;
+}
+
+double kmer_uniqueness_ratio(const std::string& seq, int32_t k) {
+    if (k <= 0 || static_cast<int32_t>(seq.size()) < k) {
+        return 0.0;
+    }
+    int32_t total = 0;
+    std::unordered_set<uint64_t> uniq;
+    uniq.reserve(seq.size());
+    for_each_valid_kmer(seq, k, [&](int32_t /*start*/, uint64_t key) {
+        uniq.insert(key);
+        total += 1;
+    });
+    if (total <= 0) {
+        return 0.0;
+    }
+    return static_cast<double>(uniq.size()) / static_cast<double>(total);
+}
+
 bool is_low_complexity_softclip(
     const InsertionFragment& fragment,
     const std::string& seq,
     double at_fraction_min,
-    int32_t homopolymer_run_min) {
+    int32_t homopolymer_run_min,
+    double entropy_min,
+    double kmer_uniqueness_min) {
     if (!is_softclip_source(fragment.source) || seq.empty()) {
         return false;
     }
 
     return at_fraction(seq) >= at_fraction_min ||
-           max_homopolymer_run(seq) >= homopolymer_run_min;
+           max_homopolymer_run(seq) >= homopolymer_run_min ||
+           shannon_entropy_acgt(seq) < std::max(0.0, entropy_min) ||
+           kmer_uniqueness_ratio(seq, 5) < std::clamp(kmer_uniqueness_min, 0.0, 1.0);
 }
 
 double semiglobal_edit_identity(const std::string& query, const std::string& target) {
@@ -402,6 +464,10 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
         std::clamp(config_.te_softclip_low_complexity_at_frac_min, 0.0, 1.0);
     const int32_t low_complexity_homopolymer_min =
         std::max(1, config_.te_softclip_low_complexity_homopolymer_min);
+    const double low_complexity_entropy_min =
+        std::max(0.0, config_.te_softclip_entropy_min);
+    const double low_complexity_kmer_uniqueness_min =
+        std::clamp(config_.te_softclip_kmer_uniqueness_min, 0.0, 1.0);
     const int32_t rescue_topn = std::max(1, config_.te_low_kmer_rescue_topn);
     const int32_t rescue_min_frag_len = std::max(1, config_.te_low_kmer_rescue_min_frag_len);
     const double rescue_identity_min =
@@ -423,7 +489,9 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
                 frag,
                 seq,
                 low_complexity_at_fraction_min,
-                low_complexity_homopolymer_min)) {
+                low_complexity_homopolymer_min,
+                low_complexity_entropy_min,
+                low_complexity_kmer_uniqueness_min)) {
             if (write_tsv) {
                 tsv_buffer << hit.fragment_id << "\t" << hit.te_name << "\t" << hit.fragment_len << "\t"
                            << hit.hit_kmers << "\t" << hit.total_kmers << "\t"

@@ -211,6 +211,12 @@ int main(int argc, char** argv) {
         if (placer::env_try_double("PLACER_TE_ONE_SIDED_BREAKPOINT_MAD_MAX", v)) {
             config.te_one_sided_breakpoint_mad_max = std::max(0.0, v);
         }
+        if (placer::env_try_double("PLACER_TE_MIXED_MIN_NON_SOFTCLIP_FRAC", v)) {
+            config.te_mixed_min_non_softclip_frac = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_MIXED_CLIP_DOMINANT_RATIO", v)) {
+            config.te_mixed_clip_dominant_ratio = std::max(0.0, v);
+        }
         if (placer::env_try_double("PLACER_SHORT_INS_KMER_RELAX_IDENTITY", v)) {
             config.short_ins_kmer_relax_identity = std::clamp(v, 0.0, 1.0);
         }
@@ -249,6 +255,9 @@ int main(int argc, char** argv) {
         if (placer::env_try_int32("PLACER_PURE_SOFTCLIP_MIN_FRAGMENTS", i)) {
             config.te_pure_softclip_min_fragments = std::max(1, i);
         }
+        if (placer::env_try_int32("PLACER_TE_SOFTCLIP_MIN_ANCHOR_LEN", i)) {
+            config.te_softclip_min_anchor_len = std::max(1, i);
+        }
         if (placer::env_try_bool("PLACER_TE_LOW_KMER_RESCUE_ENABLE", b)) {
             config.te_low_kmer_rescue_enable = b;
         }
@@ -263,6 +272,9 @@ int main(int argc, char** argv) {
         }
         if (placer::env_try_int32("PLACER_TE_NO_SOFTCLIP_MIN_FRAGMENTS", i)) {
             config.te_no_softclip_min_fragments = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_MIXED_MIN_NON_SOFTCLIP_READS", i)) {
+            config.te_mixed_min_non_softclip_reads = std::max(1, i);
         }
         if (placer::env_try_bool("PLACER_SHORT_INS_ENABLE", b)) {
             config.short_ins_enable = b;
@@ -300,6 +312,15 @@ int main(int argc, char** argv) {
 
         if (placer::env_try_double("PLACER_TE_SOFTCLIP_LOW_COMPLEXITY_AT_FRAC_MIN", v)) {
             config.te_softclip_low_complexity_at_frac_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_SOFTCLIP_MIN_ENTROPY", v)) {
+            config.te_softclip_entropy_min = std::max(0.0, v);
+        }
+        if (placer::env_try_double("PLACER_TE_SOFTCLIP_MIN_KMER_UNIQUENESS", v)) {
+            config.te_softclip_kmer_uniqueness_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_SOFTCLIP_MAX_NM_PER_BP", v)) {
+            config.te_softclip_max_nm_per_bp = std::max(0.0, v);
         }
         if (placer::env_try_double("PLACER_TSD_BG_P_MAX", v)) {
             config.tsd_bg_p_max = std::clamp(v, 0.0, 1.0);
@@ -349,6 +370,21 @@ int main(int argc, char** argv) {
         if (placer::env_try_double("PLACER_TE_CONF_UNCERTAIN_MIN", v)) {
             config.te_confidence_prob_uncertain_min = std::clamp(v, 0.0, 1.0);
         }
+        if (placer::env_try_double("PLACER_TE_CERTAIN_POST_MARGIN_MIN", v)) {
+            config.te_certain_posterior_margin_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_SAME_FAMILY_AMBIG_MARGIN_MAX", v)) {
+            config.te_same_family_ambiguity_margin_max = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_ANCHOR_FAIL_PENALTY", v)) {
+            config.te_confidence_anchor_fail_penalty = std::max(0.0, v);
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_NO_TSD_PENALTY", v)) {
+            config.te_confidence_no_tsd_penalty = std::max(0.0, v);
+        }
+        if (placer::env_try_double("PLACER_TE_CONF_LOW_MARGIN_PENALTY", v)) {
+            config.te_confidence_low_margin_penalty = std::max(0.0, v);
+        }
         if (placer::env_try_string("PLACER_BOOTSTRAP_FASTA_PATH", s)) {
             config.bootstrap_consensus_fasta_path = s;
         }
@@ -363,6 +399,12 @@ int main(int argc, char** argv) {
         }
         if (placer::env_try_double("PLACER_EVIDENCE_BREAKPOINT_MAD_MAX", v)) {
             config.evidence_breakpoint_mad_max = std::max(0.0, v);
+        }
+        if (placer::env_try_double("PLACER_EVIDENCE_CLIP_BREAKPOINT_MAD_MAX", v)) {
+            config.evidence_clip_breakpoint_mad_max = std::max(0.0, v);
+        }
+        if (placer::env_try_double("PLACER_EVIDENCE_SPLIT_CLIP_CORE_DELTA_MAX", v)) {
+            config.evidence_split_clip_core_delta_max = std::max(0.0, v);
         }
         if (placer::env_try_double("PLACER_EVIDENCE_LOW_COMPLEX_SOFTCLIP_FRAC_MAX", v)) {
             config.evidence_low_complex_softclip_frac_max = std::clamp(v, 0.0, 1.0);
@@ -384,6 +426,12 @@ int main(int argc, char** argv) {
         }
         if (placer::env_try_bool("PLACER_TE_FAIL_ON_TSD_INCONSISTENT", b)) {
             config.te_fail_on_tsd_inconsistent = b;
+        }
+        if (placer::env_try_bool("PLACER_TE_FORCE_NON_TE_COMBINED_WEAKNESS", b)) {
+            config.te_force_non_te_on_combined_weakness = b;
+        }
+        if (placer::env_try_bool("PLACER_TE_FORCE_NON_TE_ANCHOR_WEAK_TSD", b)) {
+            config.te_force_non_te_on_anchor_weak_tsd = b;
         }
         if (placer::env_try_double("PLACER_GENOTYPE_ERROR_RATE", v)) {
             config.genotype_error_rate = std::clamp(v, 1e-4, 0.25);

@@ -65,6 +65,12 @@ struct EvidenceFeatures {
     int32_t evidence_point_count = 0;
 
     double breakpoint_mad = 0.0;
+    double split_breakpoint_mad = 0.0;
+    double split_like_breakpoint_mad = 0.0;
+    double clip_breakpoint_mad = 0.0;
+    double indel_breakpoint_mad = 0.0;
+    double split_clip_core_delta = 0.0;
+    double breakpoint_inconsistency_penalty = 0.0;
     int32_t bp_source_split_count = 0;
     int32_t bp_source_clip_count = 0;
     int32_t bp_source_indel_count = 0;
@@ -78,6 +84,7 @@ struct EvidenceFeatures {
     int32_t min_support_required = 0;
     bool pass_min_support = true;
     bool pass_breakpoint_mad = true;
+    bool pass_split_clip_consistency = true;
     bool pass_low_complexity = true;
     bool pass_te_consistency = true;
     bool hard_filtered = false;
@@ -326,6 +333,9 @@ struct PipelineConfig {
     int32_t te_no_softclip_min_fragments = 2;
     double te_no_softclip_identity_min = 0.20;
     double te_one_sided_breakpoint_mad_max = 40.0;
+    int32_t te_mixed_min_non_softclip_reads = 4;
+    double te_mixed_min_non_softclip_frac = 0.35;
+    double te_mixed_clip_dominant_ratio = 2.0;
     bool short_ins_enable = true;
     int32_t short_ins_min_len = 35;
     int32_t short_ins_max_len = 300;
@@ -333,6 +343,10 @@ struct PipelineConfig {
     double short_ins_kmer_relax_identity = 0.15;
     double te_softclip_low_complexity_at_frac_min = 0.90;
     int32_t te_softclip_low_complexity_homopolymer_min = 80;
+    double te_softclip_entropy_min = 1.25;
+    double te_softclip_kmer_uniqueness_min = 0.35;
+    int32_t te_softclip_min_anchor_len = 20;
+    double te_softclip_max_nm_per_bp = 0.12;
     int32_t te_pure_softclip_min_reads = 6;
     int32_t te_pure_softclip_min_fragments = 6;
     double te_pure_softclip_min_identity = 0.35;
@@ -352,6 +366,13 @@ struct PipelineConfig {
     double te_confidence_rescue_penalty = 0.35;
     double te_confidence_prob_certain_min = 0.85;
     double te_confidence_prob_uncertain_min = 0.35;
+    double te_certain_posterior_margin_min = 0.25;
+    double te_same_family_ambiguity_margin_max = 0.30;
+    double te_confidence_anchor_fail_penalty = 0.18;
+    double te_confidence_no_tsd_penalty = 0.10;
+    double te_confidence_low_margin_penalty = 0.16;
+    bool te_force_non_te_on_combined_weakness = true;
+    bool te_force_non_te_on_anchor_weak_tsd = true;
     bool te_fail_on_tsd_inconsistent = false;
     // Optional low-confidence fallback acceptance for exploratory analysis.
     bool emit_low_confidence_calls = false;
@@ -395,6 +416,8 @@ struct PipelineConfig {
     double evidence_min_support_alpha = 0.08;
     double evidence_min_support_lambda = 0.75;
     double evidence_breakpoint_mad_max = 80.0;
+    double evidence_clip_breakpoint_mad_max = 120.0;
+    double evidence_split_clip_core_delta_max = 150.0;
     double evidence_low_complex_softclip_frac_max = 0.80;
     double evidence_tier1_prob = 0.90;
     double evidence_tier2_prob = 0.60;
@@ -436,6 +459,17 @@ struct PipelineResult {
 
     std::vector<FinalCall> final_calls;
 };
+
+void finalize_final_calls(PipelineResult& result);
+
+struct TeFinalEvidenceDecision {
+    bool force_te_uncertain = false;
+    bool force_non_te = false;
+};
+
+TeFinalEvidenceDecision apply_te_evidence_gates(
+    FinalCall& call,
+    const PipelineConfig& config);
 
 class LinearBinComponentModule final {
 public:

@@ -63,5 +63,24 @@ int main() {
     assert(!decision_fail.pass);
     assert(decision_fail.qc == "FAIL_SPLIT_INDEL_INCONSISTENT");
 
+    ClusterTECall te_low_identity;
+    te_low_identity.te_name = "L1:L1HS";
+    te_low_identity.fragment_count = 2;
+    te_low_identity.vote_fraction = 1.0;
+    te_low_identity.median_identity = 0.05;
+
+    AssemblyCall assembly_low_identity;
+    assembly_low_identity.qc_pass = true;
+    assembly_low_identity.identity_est = 0.98;
+    assembly_low_identity.consensus_len = 900;
+
+    const auto decision_low_identity = evaluate_post_assembly_te_decision(
+        te_low_identity,
+        assembly_low_identity,
+        component_pass,
+        config);
+    assert(!decision_low_identity.pass);
+    assert(decision_low_identity.qc == "FAIL_LOW_TE_SUPPORT");
+
     return 0;
 }
