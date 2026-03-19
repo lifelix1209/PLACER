@@ -108,7 +108,7 @@ struct TSDDetector::Impl {
 
 TSDDetector::TSDDetector(PipelineConfig config)
     : config_(std::move(config)) {
-    if (!config_.tsd_enable || config_.reference_fasta_path.empty()) {
+    if (config_.reference_fasta_path.empty()) {
         return;
     }
     auto impl = std::make_shared<Impl>(config_.reference_fasta_path);
@@ -118,7 +118,21 @@ TSDDetector::TSDDetector(PipelineConfig config)
 }
 
 bool TSDDetector::is_enabled() const {
-    return static_cast<bool>(impl_) && config_.tsd_enable;
+    return can_fetch_reference() && config_.tsd_enable;
+}
+
+bool TSDDetector::can_fetch_reference() const {
+    return static_cast<bool>(impl_);
+}
+
+std::string TSDDetector::fetch_window(
+    const std::string& chrom,
+    int32_t start,
+    int32_t end) const {
+    if (!impl_) {
+        return {};
+    }
+    return impl_->fetch(chrom, start, end);
 }
 
 TsdDetection TSDDetector::detect(

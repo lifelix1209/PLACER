@@ -240,6 +240,21 @@ struct ReadReferenceSpan {
     int32_t end = -1;
 };
 
+struct SequenceClosureEvidence {
+    bool enabled = false;
+    bool pass = false;
+    bool certain = false;
+    bool force_non_te = false;
+    int32_t left_anchor_reads = 0;
+    int32_t right_anchor_reads = 0;
+    int32_t dual_anchor_reads = 0;
+    int32_t total_anchor_reads = 0;
+    int32_t empty_span_reads = 0;
+    int32_t split_like_support_reads = 0;
+    double mean_anchor_identity = 0.0;
+    std::string qc = "SEQ_CLOSURE_DISABLED";
+};
+
 struct FinalCall {
     std::string chrom;
     int32_t tid = -1;
@@ -284,6 +299,23 @@ struct FinalCall {
 
     int32_t tier = 3;
     int32_t support_reads = 0;
+    int32_t softclip_support_reads = 0;
+    int32_t split_sa_support_reads = 0;
+    int32_t indel_support_reads = 0;
+    int32_t split_like_support_reads = 0;
+    int32_t support_low_mapq_reads = 0;
+    double support_low_mapq_frac = 0.0;
+    bool seq_closure_enabled = false;
+    bool seq_closure_pass = false;
+    bool seq_closure_certain = false;
+    bool seq_closure_force_non_te = false;
+    int32_t seq_closure_left_anchor_reads = 0;
+    int32_t seq_closure_right_anchor_reads = 0;
+    int32_t seq_closure_dual_anchor_reads = 0;
+    int32_t seq_closure_total_anchor_reads = 0;
+    int32_t seq_closure_empty_span_reads = 0;
+    double seq_closure_mean_anchor_identity = 0.0;
+    std::string seq_closure_qc = "SEQ_CLOSURE_DISABLED";
     std::string genotype = "./.";
     double af = 0.0;
     int32_t gq = 0;
@@ -374,6 +406,17 @@ struct PipelineConfig {
     bool te_force_non_te_on_combined_weakness = true;
     bool te_force_non_te_on_anchor_weak_tsd = true;
     bool te_fail_on_tsd_inconsistent = false;
+    bool te_sequence_closure_enable = true;
+    int32_t te_sequence_closure_flank_bases = 48;
+    int32_t te_sequence_closure_min_anchor_len = 24;
+    double te_sequence_closure_min_anchor_identity = 0.72;
+    int32_t te_sequence_closure_min_side_reads = 1;
+    int32_t te_sequence_closure_min_total_reads = 2;
+    int32_t te_sequence_closure_min_dual_reads = 1;
+    int32_t te_sequence_closure_split_like_rescue_min_reads = 3;
+    int32_t te_sequence_closure_empty_window = 25;
+    double te_sequence_closure_max_empty_ratio_pass = 3.0;
+    double te_sequence_closure_max_empty_ratio_certain = 1.5;
     // Optional low-confidence fallback acceptance for exploratory analysis.
     bool emit_low_confidence_calls = false;
     int32_t low_conf_min_support_reads = 2;
@@ -559,6 +602,11 @@ public:
     explicit TSDDetector(PipelineConfig config);
 
     bool is_enabled() const;
+    bool can_fetch_reference() const;
+    std::string fetch_window(
+        const std::string& chrom,
+        int32_t start,
+        int32_t end) const;
     TsdDetection detect(
         const std::string& chrom,
         int32_t left_bp,
@@ -627,6 +675,12 @@ private:
         const std::vector<InsertionFragment>& fragments,
         const std::vector<FragmentTEHit>& hits,
         const ClusterTECall& te_call) const;
+
+    SequenceClosureEvidence build_sequence_closure_evidence(
+        const ComponentCall& component,
+        const std::vector<const bam1_t*>& bin_records,
+        const std::vector<ReadReferenceSpan>& read_spans,
+        const std::vector<InsertionFragment>& fragments) const;
 
     PlaceabilityReport score_placeability(
         const AssemblyCall& assembly,

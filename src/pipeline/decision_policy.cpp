@@ -186,6 +186,74 @@ BreakpointConsistencyDecision evaluate_breakpoint_consistency(
     return decision;
 }
 
+SequenceClosureDecision evaluate_sequence_closure(
+    const SequenceClosureInput& input,
+    const SequenceClosureParams& params) {
+    SequenceClosureDecision decision;
+    if (!input.enabled) {
+        return decision;
+    }
+
+    const int32_t min_side_reads = std::max(1, params.min_side_reads);
+    const int32_t min_total_anchor_reads = std::max(2, params.min_total_anchor_reads);
+    const int32_t min_dual_anchor_reads = std::max(1, params.min_dual_anchor_reads);
+    const int32_t split_like_rescue_min_reads = std::max(1, params.split_like_rescue_min_reads);
+    const int32_t left_anchor_reads = std::max(0, input.left_anchor_reads);
+    const int32_t right_anchor_reads = std::max(0, input.right_anchor_reads);
+    const int32_t dual_anchor_reads = std::max(0, input.dual_anchor_reads);
+    const int32_t total_anchor_reads = std::max(0, input.total_anchor_reads);
+    const int32_t empty_span_reads = std::max(0, input.empty_span_reads);
+    const int32_t split_like_support_reads = std::max(0, input.split_like_support_reads);
+    const double empty_ratio =
+        static_cast<double>(empty_span_reads) /
+        static_cast<double>(std::max(1, total_anchor_reads));
+
+    const bool left_ok = left_anchor_reads >= min_side_reads;
+    const bool right_ok = right_anchor_reads >= min_side_reads;
+    const bool total_ok = total_anchor_reads >= min_total_anchor_reads;
+    const bool dual_ok = dual_anchor_reads >= min_dual_anchor_reads;
+    const bool split_like_rescue = split_like_support_reads >= split_like_rescue_min_reads;
+    const double max_empty_span_ratio_pass = std::max(0.0, params.max_empty_span_ratio_pass);
+    const double max_empty_span_ratio_certain = std::max(
+        0.0,
+        std::min(params.max_empty_span_ratio_certain, max_empty_span_ratio_pass));
+
+    if (!left_ok && !right_ok) {
+        decision.qc = "SEQ_CLOSURE_FAIL_NO_ANCHORS";
+        decision.force_non_te = empty_span_reads >= std::max(2, min_total_anchor_reads);
+        return decision;
+    }
+    if (!left_ok || !right_ok) {
+        decision.qc = "SEQ_CLOSURE_FAIL_MISSING_SIDE";
+        decision.force_non_te =
+            total_anchor_reads < min_side_reads &&
+            empty_span_reads > total_anchor_reads;
+        return decision;
+    }
+    if (!total_ok) {
+        decision.qc = "SEQ_CLOSURE_FAIL_LOW_SUPPORT";
+        decision.force_non_te =
+            empty_span_reads > total_anchor_reads &&
+            !split_like_rescue;
+        return decision;
+    }
+    if (empty_ratio > max_empty_span_ratio_pass && !split_like_rescue) {
+        decision.qc = "SEQ_CLOSURE_FAIL_EMPTY_DOMINANT";
+        decision.force_non_te = true;
+        return decision;
+    }
+
+    decision.pass = true;
+    if ((dual_ok || split_like_rescue) &&
+        empty_ratio <= max_empty_span_ratio_certain) {
+        decision.certain = true;
+        decision.qc = "SEQ_CLOSURE_CERTAIN";
+    } else {
+        decision.qc = "SEQ_CLOSURE_WEAK";
+    }
+    return decision;
+}
+
 PostAssemblyTeDecision evaluate_post_assembly_te_decision(
     const ClusterTECall& te_call,
     const AssemblyCall& assembly,

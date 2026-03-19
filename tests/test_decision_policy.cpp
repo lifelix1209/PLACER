@@ -230,10 +230,87 @@ int main() {
     }
 
     {
+        SequenceClosureInput in;
+        in.enabled = true;
+        in.left_anchor_reads = 2;
+        in.right_anchor_reads = 2;
+        in.dual_anchor_reads = 1;
+        in.total_anchor_reads = 3;
+        in.empty_span_reads = 1;
+        in.split_like_support_reads = 3;
+
+        SequenceClosureParams p;
+        p.min_side_reads = 1;
+        p.min_total_anchor_reads = 2;
+        p.min_dual_anchor_reads = 1;
+        p.split_like_rescue_min_reads = 3;
+        p.max_empty_span_ratio_pass = 3.0;
+        p.max_empty_span_ratio_certain = 1.5;
+
+        const auto d = evaluate_sequence_closure(in, p);
+        assert(d.pass);
+        assert(d.certain);
+        assert(!d.force_non_te);
+        assert(d.qc == "SEQ_CLOSURE_CERTAIN");
+    }
+
+    {
+        SequenceClosureInput in;
+        in.enabled = true;
+        in.left_anchor_reads = 2;
+        in.right_anchor_reads = 1;
+        in.dual_anchor_reads = 0;
+        in.total_anchor_reads = 2;
+        in.empty_span_reads = 4;
+        in.split_like_support_reads = 1;
+
+        SequenceClosureParams p;
+        p.min_side_reads = 1;
+        p.min_total_anchor_reads = 2;
+        p.min_dual_anchor_reads = 1;
+        p.split_like_rescue_min_reads = 3;
+        p.max_empty_span_ratio_pass = 3.0;
+        p.max_empty_span_ratio_certain = 1.5;
+
+        const auto d = evaluate_sequence_closure(in, p);
+        assert(d.pass);
+        assert(!d.certain);
+        assert(!d.force_non_te);
+        assert(d.qc == "SEQ_CLOSURE_WEAK");
+    }
+
+    {
+        SequenceClosureInput in;
+        in.enabled = true;
+        in.left_anchor_reads = 0;
+        in.right_anchor_reads = 0;
+        in.dual_anchor_reads = 0;
+        in.total_anchor_reads = 0;
+        in.empty_span_reads = 5;
+        in.split_like_support_reads = 0;
+
+        SequenceClosureParams p;
+        p.min_side_reads = 1;
+        p.min_total_anchor_reads = 2;
+        p.min_dual_anchor_reads = 1;
+        p.split_like_rescue_min_reads = 3;
+
+        const auto d = evaluate_sequence_closure(in, p);
+        assert(!d.pass);
+        assert(!d.certain);
+        assert(d.force_non_te);
+        assert(d.qc == "SEQ_CLOSURE_FAIL_NO_ANCHORS");
+    }
+
+    {
         FinalCall call;
         call.te_qc = "PASS_CLASSIC|ANCHOR_FAIL_THETA_UNCERTAIN";
         call.tsd_type = "NONE";
         call.bp_source_counts = "split:1,clip:6,indel:0";
+        call.softclip_support_reads = 6;
+        call.split_sa_support_reads = 1;
+        call.indel_support_reads = 0;
+        call.split_like_support_reads = 1;
         call.te_top1_name = "L1:L1HS";
         call.te_top2_name = "L1:L1PA2";
         call.te_posterior_top2 = 0.31;
@@ -264,6 +341,10 @@ int main() {
         call.te_qc = "PASS_CLASSIC|ANCHOR_PASS";
         call.tsd_type = "NONE";
         call.bp_source_counts = "split:4,clip:2,indel:1";
+        call.softclip_support_reads = 2;
+        call.split_sa_support_reads = 4;
+        call.indel_support_reads = 1;
+        call.split_like_support_reads = 5;
         call.te_top1_name = "ALU:Ya5";
         call.te_top2_name = "ALU:Yb8";
         call.te_posterior_top2 = 0.12;
@@ -285,6 +366,10 @@ int main() {
         call.te_qc = "PASS_CLASSIC|ANCHOR_PASS";
         call.tsd_type = "DEL";
         call.bp_source_counts = "split:5,clip:1,indel:1";
+        call.softclip_support_reads = 1;
+        call.split_sa_support_reads = 5;
+        call.indel_support_reads = 1;
+        call.split_like_support_reads = 6;
         call.te_top1_name = "Gypsy:Gypsy-95";
         call.te_top2_name = "Gypsy:Gypsy-40";
         call.te_posterior_top2 = 0.26;
@@ -308,6 +393,10 @@ int main() {
         call.te_qc = "PASS_CLASSIC|ANCHOR_NO_CORE_RESULT";
         call.tsd_type = "DEL";
         call.bp_source_counts = "split:2,clip:1,indel:1";
+        call.softclip_support_reads = 1;
+        call.split_sa_support_reads = 2;
+        call.indel_support_reads = 1;
+        call.split_like_support_reads = 3;
         call.te_top1_name = "ALU:Ya5";
         call.te_top2_name = "ALU:Yb8";
         call.te_posterior_top2 = 0.12;
@@ -335,6 +424,10 @@ int main() {
         call.te_qc = "PASS_SPLIT_INDEL_RESCUE|ANCHOR_PASS";
         call.tsd_type = "DEL";
         call.bp_source_counts = "split:6,clip:0,indel:4";
+        call.softclip_support_reads = 0;
+        call.split_sa_support_reads = 6;
+        call.indel_support_reads = 4;
+        call.split_like_support_reads = 10;
         call.te_confidence_prob = 0.91;
 
         PipelineConfig config;
@@ -353,6 +446,10 @@ int main() {
         call.te_qc = "PASS_ASM_RESCUE|ANCHOR_PASS";
         call.tsd_type = "UNCERTAIN";
         call.bp_source_counts = "split:0,clip:5,indel:0";
+        call.softclip_support_reads = 5;
+        call.split_sa_support_reads = 0;
+        call.indel_support_reads = 0;
+        call.split_like_support_reads = 0;
         call.te_confidence_prob = 0.81;
 
         PipelineConfig config;
@@ -365,6 +462,102 @@ int main() {
         assert(!d.force_non_te);
         assert(call.te_confidence_prob <= 0.60);
         assert(call.te_qc.find("TE_FORCE_UNCERTAIN_TSD_UNCERTAIN") != std::string::npos);
+    }
+
+    {
+        FinalCall call;
+        call.te_qc = "PASS_ASM_RESCUE|ANCHOR_PASS";
+        call.tsd_type = "NONE";
+        call.bp_source_counts = "split:1,clip:7,indel:0";
+        call.softclip_support_reads = 7;
+        call.split_sa_support_reads = 1;
+        call.indel_support_reads = 0;
+        call.split_like_support_reads = 1;
+        call.te_top1_name = "Gypsy:Gypsy-95";
+        call.te_top2_name = "ERV1:ERV1-5";
+        call.te_posterior_top2 = 0.20;
+        call.te_posterior_margin = 0.14;
+        call.te_confidence_prob = 0.91;
+
+        PipelineConfig config;
+        config.te_certain_posterior_margin_min = 0.20;
+        config.te_confidence_prob_uncertain_min = 0.35;
+
+        const auto d = apply_te_evidence_gates(call, config);
+        assert(d.force_te_uncertain);
+        assert(d.force_non_te);
+        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_CLIP_DOMINANT_WEAK_STRUCTURAL") != std::string::npos);
+        assert(call.te_qc.find("TE_FORCE_NON_TE_CLIP_DOMINANT_LOW_MARGIN") != std::string::npos);
+        assert(call.te_confidence_prob <= 0.175);
+    }
+
+    {
+        FinalCall call;
+        call.te_qc = "PASS_ASM_RESCUE|ANCHOR_PASS";
+        call.tsd_type = "NONE";
+        call.bp_source_counts = "split:0,clip:6,indel:0";
+        call.softclip_support_reads = 6;
+        call.split_sa_support_reads = 0;
+        call.indel_support_reads = 0;
+        call.split_like_support_reads = 0;
+        call.support_low_mapq_reads = 3;
+        call.support_low_mapq_frac = 0.50;
+        call.te_confidence_prob = 0.88;
+
+        PipelineConfig config;
+        config.te_confidence_prob_uncertain_min = 0.35;
+
+        const auto d = apply_te_evidence_gates(call, config);
+        assert(d.force_te_uncertain);
+        assert(d.force_non_te);
+        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_CLIP_DOMINANT_WEAK_STRUCTURAL") != std::string::npos);
+        assert(call.te_qc.find("TE_FORCE_NON_TE_CLIP_DOMINANT_LOW_MAPQ") != std::string::npos);
+        assert(call.te_confidence_prob <= 0.175);
+    }
+
+    {
+        FinalCall call;
+        call.te_qc = "PASS_CLASSIC|ANCHOR_PASS";
+        call.tsd_type = "DEL";
+        call.bp_source_counts = "split:4,clip:1,indel:2";
+        call.softclip_support_reads = 1;
+        call.split_sa_support_reads = 4;
+        call.indel_support_reads = 2;
+        call.split_like_support_reads = 6;
+        call.seq_closure_enabled = true;
+        call.seq_closure_pass = false;
+        call.seq_closure_qc = "SEQ_CLOSURE_FAIL_MISSING_SIDE";
+        call.te_confidence_prob = 0.91;
+
+        PipelineConfig config;
+
+        const auto d = apply_te_evidence_gates(call, config);
+        assert(d.force_te_uncertain);
+        assert(!d.force_non_te);
+        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_SEQUENCE_CLOSURE_FAIL") != std::string::npos);
+    }
+
+    {
+        FinalCall call;
+        call.te_qc = "PASS_CLASSIC|ANCHOR_PASS";
+        call.tsd_type = "NONE";
+        call.bp_source_counts = "split:0,clip:5,indel:0";
+        call.softclip_support_reads = 5;
+        call.split_sa_support_reads = 0;
+        call.indel_support_reads = 0;
+        call.split_like_support_reads = 0;
+        call.seq_closure_enabled = true;
+        call.seq_closure_pass = false;
+        call.seq_closure_force_non_te = true;
+        call.seq_closure_qc = "SEQ_CLOSURE_FAIL_EMPTY_DOMINANT";
+        call.te_confidence_prob = 0.84;
+
+        PipelineConfig config;
+
+        const auto d = apply_te_evidence_gates(call, config);
+        assert(d.force_te_uncertain);
+        assert(d.force_non_te);
+        assert(call.te_qc.find("TE_FORCE_NON_TE_SEQUENCE_CLOSURE_FAIL") != std::string::npos);
     }
 
     {

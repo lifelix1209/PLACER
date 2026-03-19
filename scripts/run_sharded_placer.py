@@ -450,7 +450,7 @@ def merge_shard_results(
         if mode == "region":
             out.write(f"region_size_bp\t{region_size}\n")
             out.write(f"region_overlap_bp\t{overlap_bp}\n")
-        out.write("schema_version\t0.0.2-sharded\n")
+        out.write("schema_version\t0.0.4-sharded\n")
         out.write("\n")
         out.write("#" + "\t".join(base_header) + "\n")
         for row in deduped:
@@ -736,4 +736,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

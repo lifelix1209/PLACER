@@ -89,6 +89,36 @@ BreakpointConsistencyDecision evaluate_breakpoint_consistency(
     const BreakpointConsistencyInput& input,
     const BreakpointConsistencyParams& params);
 
+struct SequenceClosureInput {
+    bool enabled = false;
+    int32_t left_anchor_reads = 0;
+    int32_t right_anchor_reads = 0;
+    int32_t dual_anchor_reads = 0;
+    int32_t total_anchor_reads = 0;
+    int32_t empty_span_reads = 0;
+    int32_t split_like_support_reads = 0;
+};
+
+struct SequenceClosureParams {
+    int32_t min_side_reads = 1;
+    int32_t min_total_anchor_reads = 2;
+    int32_t min_dual_anchor_reads = 1;
+    int32_t split_like_rescue_min_reads = 3;
+    double max_empty_span_ratio_pass = 3.0;
+    double max_empty_span_ratio_certain = 1.5;
+};
+
+struct SequenceClosureDecision {
+    bool pass = false;
+    bool certain = false;
+    bool force_non_te = false;
+    std::string qc = "SEQ_CLOSURE_DISABLED";
+};
+
+SequenceClosureDecision evaluate_sequence_closure(
+    const SequenceClosureInput& input,
+    const SequenceClosureParams& params);
+
 struct PostAssemblyTeDecision {
     bool pass = false;
     bool force_te_uncertain = false;

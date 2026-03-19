@@ -95,7 +95,7 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
     out << "final_high_confidence\t" << result.final_high_confidence << "\n";
     out << "final_low_confidence\t" << result.final_low_confidence << "\n";
     out << "bootstrap_exported_calls\t" << result.bootstrap_exported_calls << "\n";
-    out << "schema_version\t0.0.2\n";
+    out << "schema_version\t0.0.4\n";
 
     out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_multik_support\tte_rescue_frac\tte_fragments"
         << "\tte_theta\tte_mad_fwd\tte_mad_rev\tte_bp_core\tte_bp_win_start\tte_bp_win_end"
@@ -103,7 +103,13 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
         << "\tbp_source_counts\tbp_fallback_used\tinsertion_qc\tte_qc"
         << "\ttsd_type\ttsd_len\ttsd_seq\ttsd_bg_p"
         << "\tte_status\tte_top1_name\tte_top2_name\tte_post_top1\tte_post_top2\tte_post_margin\tte_conf_prob\tconfidence"
-        << "\ttier\tsupport_reads\tgt\taf\tgq\tasm_mode\tasm_input_fragments\tasm_used_fragments"
+        << "\ttier\tsupport_reads\tsoftclip_support_reads\tsplit_sa_support_reads\tindel_support_reads"
+        << "\tsplit_like_support_reads\tsupport_low_mapq_reads\tsupport_low_mapq_frac"
+        << "\tseq_closure_enabled\tseq_closure_pass\tseq_closure_certain"
+        << "\tseq_closure_left_anchor_reads\tseq_closure_right_anchor_reads"
+        << "\tseq_closure_dual_anchor_reads\tseq_closure_total_anchor_reads"
+        << "\tseq_closure_empty_span_reads\tseq_closure_mean_anchor_identity\tseq_closure_qc"
+        << "\tgt\taf\tgq\tasm_mode\tasm_input_fragments\tasm_used_fragments"
         << "\tasm_consensus_len\tasm_identity_est\tasm_qc\n";
     for (const auto& call : result.final_calls) {
         out << call.chrom << "\t"
@@ -146,6 +152,22 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
             << call.confidence << "\t"
             << call.tier << "\t"
             << call.support_reads << "\t"
+            << call.softclip_support_reads << "\t"
+            << call.split_sa_support_reads << "\t"
+            << call.indel_support_reads << "\t"
+            << call.split_like_support_reads << "\t"
+            << call.support_low_mapq_reads << "\t"
+            << call.support_low_mapq_frac << "\t"
+            << (call.seq_closure_enabled ? 1 : 0) << "\t"
+            << (call.seq_closure_pass ? 1 : 0) << "\t"
+            << (call.seq_closure_certain ? 1 : 0) << "\t"
+            << call.seq_closure_left_anchor_reads << "\t"
+            << call.seq_closure_right_anchor_reads << "\t"
+            << call.seq_closure_dual_anchor_reads << "\t"
+            << call.seq_closure_total_anchor_reads << "\t"
+            << call.seq_closure_empty_span_reads << "\t"
+            << call.seq_closure_mean_anchor_identity << "\t"
+            << call.seq_closure_qc << "\t"
             << call.genotype << "\t"
             << call.af << "\t"
             << call.gq << "\t"
@@ -427,6 +449,9 @@ int main(int argc, char** argv) {
         if (placer::env_try_bool("PLACER_TE_FAIL_ON_TSD_INCONSISTENT", b)) {
             config.te_fail_on_tsd_inconsistent = b;
         }
+        if (placer::env_try_bool("PLACER_TE_SEQUENCE_CLOSURE_ENABLE", b)) {
+            config.te_sequence_closure_enable = b;
+        }
         if (placer::env_try_bool("PLACER_TE_FORCE_NON_TE_COMBINED_WEAKNESS", b)) {
             config.te_force_non_te_on_combined_weakness = b;
         }
@@ -451,8 +476,38 @@ int main(int argc, char** argv) {
         if (placer::env_try_int32("PLACER_ASSEMBLY_KMER_SIZE", i)) {
             config.assembly_kmer_size = std::max(5, i);
         }
+        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_FLANK_BASES", i)) {
+            config.te_sequence_closure_flank_bases = std::max(8, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_MIN_ANCHOR_LEN", i)) {
+            config.te_sequence_closure_min_anchor_len = std::max(8, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_MIN_SIDE_READS", i)) {
+            config.te_sequence_closure_min_side_reads = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_MIN_TOTAL_READS", i)) {
+            config.te_sequence_closure_min_total_reads = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_MIN_DUAL_READS", i)) {
+            config.te_sequence_closure_min_dual_reads = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_SPLIT_RESCUE_MIN_READS", i)) {
+            config.te_sequence_closure_split_like_rescue_min_reads = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_EMPTY_WINDOW", i)) {
+            config.te_sequence_closure_empty_window = std::max(1, i);
+        }
         if (placer::env_try_double("PLACER_ASSEMBLY_MIN_IDENTITY_EST", v)) {
             config.assembly_min_identity_est = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_SEQUENCE_CLOSURE_MIN_ANCHOR_IDENTITY", v)) {
+            config.te_sequence_closure_min_anchor_identity = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_SEQUENCE_CLOSURE_MAX_EMPTY_RATIO_PASS", v)) {
+            config.te_sequence_closure_max_empty_ratio_pass = std::max(0.0, v);
+        }
+        if (placer::env_try_double("PLACER_TE_SEQUENCE_CLOSURE_MAX_EMPTY_RATIO_CERTAIN", v)) {
+            config.te_sequence_closure_max_empty_ratio_certain = std::max(0.0, v);
         }
         config.te_rescue_vote_fraction_min = std::min(
             config.te_rescue_vote_fraction_min,
@@ -468,6 +523,15 @@ int main(int argc, char** argv) {
         config.assembly_poa_min_reads = std::min(
             config.assembly_poa_min_reads,
             config.assembly_poa_max_reads);
+        config.te_sequence_closure_min_anchor_len = std::min(
+            config.te_sequence_closure_min_anchor_len,
+            config.te_sequence_closure_flank_bases);
+        config.te_sequence_closure_min_total_reads = std::max(
+            config.te_sequence_closure_min_side_reads,
+            config.te_sequence_closure_min_total_reads);
+        config.te_sequence_closure_max_empty_ratio_certain = std::min(
+            config.te_sequence_closure_max_empty_ratio_certain,
+            config.te_sequence_closure_max_empty_ratio_pass);
     }
 
     try {

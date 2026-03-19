@@ -514,6 +514,67 @@ std::string upper_acgt(const std::string& s) {
     return out;
 }
 
+double edit_identity(const std::string& lhs, const std::string& rhs) {
+    const int32_t n = static_cast<int32_t>(lhs.size());
+    const int32_t m = static_cast<int32_t>(rhs.size());
+    if (n <= 0 || m <= 0) {
+        return 0.0;
+    }
+
+    std::vector<int32_t> prev(static_cast<size_t>(m + 1), 0);
+    std::vector<int32_t> curr(static_cast<size_t>(m + 1), 0);
+    for (int32_t j = 0; j <= m; ++j) {
+        prev[static_cast<size_t>(j)] = j;
+    }
+
+    for (int32_t i = 1; i <= n; ++i) {
+        curr[0] = i;
+        for (int32_t j = 1; j <= m; ++j) {
+            const int32_t sub_cost =
+                prev[static_cast<size_t>(j - 1)] +
+                ((lhs[static_cast<size_t>(i - 1)] == rhs[static_cast<size_t>(j - 1)]) ? 0 : 1);
+            const int32_t del_cost = prev[static_cast<size_t>(j)] + 1;
+            const int32_t ins_cost = curr[static_cast<size_t>(j - 1)] + 1;
+            curr[static_cast<size_t>(j)] = std::min({sub_cost, del_cost, ins_cost});
+        }
+        std::swap(prev, curr);
+    }
+
+    const int32_t dist = prev[static_cast<size_t>(m)];
+    const double denom = static_cast<double>(std::max(n, m));
+    return std::clamp(1.0 - (static_cast<double>(dist) / denom), 0.0, 1.0);
+}
+
+bool fragment_supports_left_anchor(const InsertionFragment& fragment) {
+    if (fragment.ref_junc_pos < 0) {
+        return false;
+    }
+    switch (fragment.source) {
+        case InsertionFragmentSource::kClipRefRight:
+        case InsertionFragmentSource::kCigarInsertion:
+            return true;
+        case InsertionFragmentSource::kSplitSa:
+            return fragment.ref_side == ReferenceSide::kRefLeft;
+        default:
+            return false;
+    }
+}
+
+bool fragment_supports_right_anchor(const InsertionFragment& fragment) {
+    if (fragment.ref_junc_pos < 0) {
+        return false;
+    }
+    switch (fragment.source) {
+        case InsertionFragmentSource::kClipRefLeft:
+        case InsertionFragmentSource::kCigarInsertion:
+            return true;
+        case InsertionFragmentSource::kSplitSa:
+            return fragment.ref_side == ReferenceSide::kRefRight;
+        default:
+            return false;
+    }
+}
+
 uint8_t nt_to_abpoa_code(char c) {
     switch (c) {
         case 'A': return 0;
@@ -707,6 +768,66 @@ std::string format_bp_source_counts(const EvidenceFeatures& evidence) {
            ",indel:" + std::to_string(std::max(0, evidence.bp_source_indel_count));
 }
 
+struct StructuralSupportSummary {
+    int32_t softclip_support_reads = 0;
+    int32_t split_sa_support_reads = 0;
+    int32_t indel_support_reads = 0;
+    int32_t split_like_support_reads = 0;
+    int32_t support_low_mapq_reads = 0;
+    double support_low_mapq_frac = 0.0;
+};
+
+StructuralSupportSummary summarize_structural_support(
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& bin_records) {
+    StructuralSupportSummary summary;
+
+    std::unordered_set<size_t> softclip_reads(
+        component.soft_clip_read_indices.begin(),
+        component.soft_clip_read_indices.end());
+    std::unordered_set<size_t> split_sa_reads(
+        component.split_sa_read_indices.begin(),
+        component.split_sa_read_indices.end());
+    std::unordered_set<size_t> indel_reads(
+        component.insertion_read_indices.begin(),
+        component.insertion_read_indices.end());
+    std::unordered_set<size_t> split_like_reads = split_sa_reads;
+    split_like_reads.insert(indel_reads.begin(), indel_reads.end());
+
+    std::unordered_set<size_t> all_support_reads = softclip_reads;
+    all_support_reads.insert(split_like_reads.begin(), split_like_reads.end());
+
+    summary.softclip_support_reads = static_cast<int32_t>(softclip_reads.size());
+    summary.split_sa_support_reads = static_cast<int32_t>(split_sa_reads.size());
+    summary.indel_support_reads = static_cast<int32_t>(indel_reads.size());
+    summary.split_like_support_reads = static_cast<int32_t>(split_like_reads.size());
+
+    int32_t support_reads_with_mapq = 0;
+    for (size_t read_idx : all_support_reads) {
+        if (read_idx >= bin_records.size() || !bin_records[read_idx]) {
+            continue;
+        }
+        ++support_reads_with_mapq;
+        if (bin_records[read_idx]->core.qual < 20) {
+            summary.support_low_mapq_reads += 1;
+        }
+    }
+    if (support_reads_with_mapq > 0) {
+        summary.support_low_mapq_frac =
+            static_cast<double>(summary.support_low_mapq_reads) /
+            static_cast<double>(support_reads_with_mapq);
+    }
+
+    return summary;
+}
+
+bool families_differ(const std::string& lhs, const std::string& rhs) {
+    if (lhs.empty() || rhs.empty()) {
+        return false;
+    }
+    return normalize_te_family(lhs) != normalize_te_family(rhs);
+}
+
 bool is_consensus_proxy_te_certain(
     const ClusterTECall& te_call,
     const AssemblyCall& assembly,
@@ -756,6 +877,28 @@ void apply_te_open_set_classification(
     }
     if (!decision.qc_proxy_tag.empty()) {
         call.te_qc += "|" + decision.qc_proxy_tag;
+    }
+
+    const double margin_min = std::clamp(config.te_certain_posterior_margin_min, 0.0, 1.0);
+    const bool cross_family_low_margin =
+        call.te_status == "TE_CERTAIN" &&
+        !call.te_top2_name.empty() &&
+        call.te_posterior_top2 > 0.0 &&
+        call.te_posterior_margin < margin_min &&
+        families_differ(call.te_top1_name, call.te_top2_name);
+    if (cross_family_low_margin) {
+        call.te_status = "TE_UNCERTAIN";
+        const double conf_certain_min = std::clamp(config.te_confidence_prob_certain_min, 0.0, 1.0);
+        const double conf_uncertain_min = std::clamp(
+            std::min(config.te_confidence_prob_uncertain_min, conf_certain_min),
+            0.0,
+            1.0);
+        const double uncertain_cap = std::clamp(
+            0.5 * (conf_certain_min + conf_uncertain_min),
+            conf_uncertain_min,
+            std::max(0.0, conf_certain_min - 1e-6));
+        call.te_confidence_prob = std::min(call.te_confidence_prob, uncertain_cap);
+        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_CROSS_FAMILY_LOW_MARGIN");
     }
 }
 
@@ -1523,11 +1666,14 @@ TeFinalEvidenceDecision apply_te_evidence_gates(
     const PipelineConfig& config) {
     TeFinalEvidenceDecision decision;
 
-    BpSourceCountSummary bp_counts;
-    parse_bp_source_counts(call.bp_source_counts, bp_counts);
-    const int32_t split_like = bp_counts.split + bp_counts.indel;
+    const int32_t softclip_support_reads = std::max(0, call.softclip_support_reads);
+    const int32_t split_like_support_reads = std::max(0, call.split_like_support_reads);
     const bool split_indel_dominant =
-        split_like > 0 && split_like >= std::max(0, bp_counts.clip);
+        split_like_support_reads > 0 &&
+        split_like_support_reads >= softclip_support_reads;
+    const bool clip_dominant =
+        softclip_support_reads >
+        (2 * std::max(1, split_like_support_reads));
 
     const bool anchor_fail =
         call.te_qc.find("ANCHOR_FAIL_") != std::string::npos ||
@@ -1548,6 +1694,13 @@ TeFinalEvidenceDecision apply_te_evidence_gates(
         !call.te_top2_name.empty() &&
         call.te_posterior_top2 > 0.0 &&
         call.te_posterior_margin < margin_min;
+    const bool weak_structural =
+        split_like_support_reads < 2 &&
+        call.tsd_type == "NONE";
+    const bool clip_dominant_low_mapq =
+        call.tsd_type == "NONE" &&
+        clip_dominant &&
+        call.support_low_mapq_frac >= 0.20;
     const double same_family_margin_max = std::clamp(
         std::max(config.te_same_family_ambiguity_margin_max, margin_min),
         0.0,
@@ -1576,10 +1729,24 @@ TeFinalEvidenceDecision apply_te_evidence_gates(
         penalty += std::max(0.0, config.te_confidence_no_tsd_penalty);
         append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_TSD_UNCERTAIN");
     }
+    if (call.seq_closure_enabled && !call.seq_closure_pass) {
+        decision.force_te_uncertain = true;
+        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_SEQUENCE_CLOSURE_FAIL");
+    }
+    if (call.seq_closure_enabled &&
+        call.seq_closure_pass &&
+        !call.seq_closure_certain) {
+        decision.force_te_uncertain = true;
+        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_SEQUENCE_CLOSURE_WEAK");
+    }
     if (low_margin) {
         decision.force_te_uncertain = true;
         penalty += std::max(0.0, config.te_confidence_low_margin_penalty);
         append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_LOW_MARGIN");
+    }
+    if (clip_dominant && weak_structural) {
+        decision.force_te_uncertain = true;
+        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_CLIP_DOMINANT_WEAK_STRUCTURAL");
     }
     if (family_ambiguous) {
         decision.force_te_uncertain = true;
@@ -1603,6 +1770,18 @@ TeFinalEvidenceDecision apply_te_evidence_gates(
         low_margin) {
         decision.force_non_te = true;
         append_qc_token(call.te_qc, "TE_FORCE_NON_TE_COMBINED_WEAKNESS");
+    }
+    if (clip_dominant && weak_structural && low_margin) {
+        decision.force_non_te = true;
+        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_CLIP_DOMINANT_LOW_MARGIN");
+    }
+    if (clip_dominant_low_mapq) {
+        decision.force_non_te = true;
+        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_CLIP_DOMINANT_LOW_MAPQ");
+    }
+    if (call.seq_closure_enabled && call.seq_closure_force_non_te) {
+        decision.force_non_te = true;
+        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_SEQUENCE_CLOSURE_FAIL");
     }
 
     if (penalty > 0.0) {
@@ -2601,6 +2780,200 @@ AssemblyCall Pipeline::assemble_component(
     return call;
 }
 
+SequenceClosureEvidence Pipeline::build_sequence_closure_evidence(
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& bin_records,
+    const std::vector<ReadReferenceSpan>& read_spans,
+    const std::vector<InsertionFragment>& fragments) const {
+    SequenceClosureEvidence evidence;
+    if (!config_.te_sequence_closure_enable) {
+        return evidence;
+    }
+
+    evidence.enabled = true;
+    if (!tsd_detector_.can_fetch_reference()) {
+        evidence.enabled = false;
+        evidence.qc = "SEQ_CLOSURE_NO_REFERENCE";
+        return evidence;
+    }
+
+    const int32_t flank_bases = std::max(1, config_.te_sequence_closure_flank_bases);
+    const int32_t min_anchor_len = std::max(1, config_.te_sequence_closure_min_anchor_len);
+    const double min_anchor_identity = std::clamp(
+        config_.te_sequence_closure_min_anchor_identity,
+        0.0,
+        1.0);
+
+    std::unordered_map<size_t, double> best_left_identity;
+    std::unordered_map<size_t, double> best_right_identity;
+    best_left_identity.reserve(fragments.size());
+    best_right_identity.reserve(fragments.size());
+
+    auto extract_left_anchor = [&](const ReadView& read, const InsertionFragment& fragment) {
+        if (!fragment_supports_left_anchor(fragment) || fragment.start <= 0) {
+            return std::string();
+        }
+        const int32_t len = std::min(flank_bases, fragment.start);
+        if (len < min_anchor_len) {
+            return std::string();
+        }
+        return upper_acgt(read.decode_subsequence(fragment.start - len, len));
+    };
+
+    auto extract_right_anchor = [&](const ReadView& read, const InsertionFragment& fragment) {
+        if (!fragment_supports_right_anchor(fragment)) {
+            return std::string();
+        }
+        const int32_t insert_end = fragment.start + fragment.length;
+        const int32_t available = std::max(0, read.seq_len() - insert_end);
+        const int32_t len = std::min(flank_bases, available);
+        if (len < min_anchor_len) {
+            return std::string();
+        }
+        return upper_acgt(read.decode_subsequence(insert_end, len));
+    };
+
+    auto fetch_left_ref = [&](const InsertionFragment& fragment, int32_t len) {
+        return tsd_detector_.fetch_window(fragment.chrom, fragment.ref_junc_pos - len, fragment.ref_junc_pos);
+    };
+
+    auto fetch_right_ref = [&](const InsertionFragment& fragment, int32_t len) {
+        return tsd_detector_.fetch_window(fragment.chrom, fragment.ref_junc_pos, fragment.ref_junc_pos + len);
+    };
+
+    auto anchored_context = [&](const std::string& seq, bool left, size_t len) {
+        if (len == 0 || seq.empty() || len > seq.size()) {
+            return std::string();
+        }
+        if (left) {
+            return seq.substr(seq.size() - len, len);
+        }
+        return seq.substr(0, len);
+    };
+
+    for (const auto& fragment : fragments) {
+        if (fragment.read_index >= bin_records.size() || !bin_records[fragment.read_index]) {
+            continue;
+        }
+        ReadView read(bin_records[fragment.read_index]);
+
+        const std::string left_anchor = extract_left_anchor(read, fragment);
+        if (!left_anchor.empty()) {
+            const std::string left_ref = fetch_left_ref(
+                fragment,
+                static_cast<int32_t>(left_anchor.size()));
+            const size_t usable_len = std::min(left_anchor.size(), left_ref.size());
+            if (static_cast<int32_t>(usable_len) >= min_anchor_len) {
+                const std::string lhs = anchored_context(left_anchor, true, usable_len);
+                const std::string rhs = anchored_context(left_ref, true, usable_len);
+                const double identity = edit_identity(lhs, rhs);
+                if (identity >= min_anchor_identity) {
+                    auto& slot = best_left_identity[fragment.read_index];
+                    slot = std::max(slot, identity);
+                }
+            }
+        }
+
+        const std::string right_anchor = extract_right_anchor(read, fragment);
+        if (!right_anchor.empty()) {
+            const std::string right_ref = fetch_right_ref(
+                fragment,
+                static_cast<int32_t>(right_anchor.size()));
+            const size_t usable_len = std::min(right_anchor.size(), right_ref.size());
+            if (static_cast<int32_t>(usable_len) >= min_anchor_len) {
+                const std::string lhs = anchored_context(right_anchor, false, usable_len);
+                const std::string rhs = anchored_context(right_ref, false, usable_len);
+                const double identity = edit_identity(lhs, rhs);
+                if (identity >= min_anchor_identity) {
+                    auto& slot = best_right_identity[fragment.read_index];
+                    slot = std::max(slot, identity);
+                }
+            }
+        }
+    }
+
+    std::unordered_set<size_t> anchor_reads;
+    anchor_reads.reserve(best_left_identity.size() + best_right_identity.size());
+
+    double sum_identity = 0.0;
+    int32_t matched_anchor_sides = 0;
+    for (const auto& row : best_left_identity) {
+        anchor_reads.insert(row.first);
+        sum_identity += row.second;
+        matched_anchor_sides += 1;
+    }
+    for (const auto& row : best_right_identity) {
+        anchor_reads.insert(row.first);
+        sum_identity += row.second;
+        matched_anchor_sides += 1;
+    }
+
+    evidence.left_anchor_reads = static_cast<int32_t>(best_left_identity.size());
+    evidence.right_anchor_reads = static_cast<int32_t>(best_right_identity.size());
+    evidence.total_anchor_reads = static_cast<int32_t>(anchor_reads.size());
+    evidence.mean_anchor_identity = matched_anchor_sides > 0
+        ? (sum_identity / static_cast<double>(matched_anchor_sides))
+        : 0.0;
+
+    for (const auto& row : best_left_identity) {
+        if (best_right_identity.find(row.first) != best_right_identity.end()) {
+            evidence.dual_anchor_reads += 1;
+        }
+    }
+
+    std::unordered_set<size_t> split_like_reads(
+        component.split_sa_read_indices.begin(),
+        component.split_sa_read_indices.end());
+    split_like_reads.insert(
+        component.insertion_read_indices.begin(),
+        component.insertion_read_indices.end());
+    evidence.split_like_support_reads = static_cast<int32_t>(split_like_reads.size());
+
+    std::unordered_set<size_t> support_reads(
+        component.read_indices.begin(),
+        component.read_indices.end());
+    const int32_t empty_window = std::max(1, config_.te_sequence_closure_empty_window);
+    const int32_t empty_start = component.anchor_pos - empty_window;
+    const int32_t empty_end = component.anchor_pos + empty_window;
+    for (size_t idx = 0; idx < read_spans.size(); ++idx) {
+        const auto& span = read_spans[idx];
+        if (!span.valid || span.tid != component.tid) {
+            continue;
+        }
+        if (span.start > empty_start || span.end < empty_end) {
+            continue;
+        }
+        if (support_reads.find(idx) != support_reads.end()) {
+            continue;
+        }
+        evidence.empty_span_reads += 1;
+    }
+
+    SequenceClosureInput input;
+    input.enabled = true;
+    input.left_anchor_reads = evidence.left_anchor_reads;
+    input.right_anchor_reads = evidence.right_anchor_reads;
+    input.dual_anchor_reads = evidence.dual_anchor_reads;
+    input.total_anchor_reads = evidence.total_anchor_reads;
+    input.empty_span_reads = evidence.empty_span_reads;
+    input.split_like_support_reads = evidence.split_like_support_reads;
+
+    SequenceClosureParams params;
+    params.min_side_reads = config_.te_sequence_closure_min_side_reads;
+    params.min_total_anchor_reads = config_.te_sequence_closure_min_total_reads;
+    params.min_dual_anchor_reads = config_.te_sequence_closure_min_dual_reads;
+    params.split_like_rescue_min_reads = config_.te_sequence_closure_split_like_rescue_min_reads;
+    params.max_empty_span_ratio_pass = config_.te_sequence_closure_max_empty_ratio_pass;
+    params.max_empty_span_ratio_certain = config_.te_sequence_closure_max_empty_ratio_certain;
+
+    const SequenceClosureDecision decision = evaluate_sequence_closure(input, params);
+    evidence.pass = decision.pass;
+    evidence.certain = decision.certain;
+    evidence.force_non_te = decision.force_non_te;
+    evidence.qc = decision.qc;
+    return evidence;
+}
+
 PlaceabilityReport Pipeline::score_placeability(
     const AssemblyCall& assembly,
     const EvidenceFeatures& evidence) const {
@@ -2804,6 +3177,10 @@ void Pipeline::process_bin_records(
 
         GenotypeCall genotype = genotype_call(assembly, placeability);
         result.genotype_calls += 1;
+        const StructuralSupportSummary structural_support =
+            summarize_structural_support(component, bin_records);
+        const SequenceClosureEvidence sequence_closure =
+            build_sequence_closure_evidence(component, bin_records, read_spans, fragments);
 
         FinalCall call;
         call.chrom = component.chrom;
@@ -2858,6 +3235,24 @@ void Pipeline::process_bin_records(
         } else {
             call.confidence = "HIGH";
         }
+        call.softclip_support_reads = structural_support.softclip_support_reads;
+        call.split_sa_support_reads = structural_support.split_sa_support_reads;
+        call.indel_support_reads = structural_support.indel_support_reads;
+        call.split_like_support_reads = structural_support.split_like_support_reads;
+        call.support_low_mapq_reads = structural_support.support_low_mapq_reads;
+        call.support_low_mapq_frac = structural_support.support_low_mapq_frac;
+        call.seq_closure_enabled = sequence_closure.enabled;
+        call.seq_closure_pass = sequence_closure.pass;
+        call.seq_closure_certain = sequence_closure.certain;
+        call.seq_closure_force_non_te = sequence_closure.force_non_te;
+        call.seq_closure_left_anchor_reads = sequence_closure.left_anchor_reads;
+        call.seq_closure_right_anchor_reads = sequence_closure.right_anchor_reads;
+        call.seq_closure_dual_anchor_reads = sequence_closure.dual_anchor_reads;
+        call.seq_closure_total_anchor_reads = sequence_closure.total_anchor_reads;
+        call.seq_closure_empty_span_reads = sequence_closure.empty_span_reads;
+        call.seq_closure_mean_anchor_identity = sequence_closure.mean_anchor_identity;
+        call.seq_closure_qc = sequence_closure.qc;
+        append_qc_token(call.te_qc, sequence_closure.qc.c_str());
         apply_te_open_set_classification(call, te_call_eval, assembly, te_decision, config_);
 
         call.tier = placeability.tier;
