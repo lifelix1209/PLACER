@@ -19,9 +19,10 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 SUMMARY_INT_KEYS = [
@@ -76,6 +77,167 @@ class ShardResult:
     elapsed_s: float
 
 
+@dataclasses.dataclass
+class ShardProgressState:
+    state: str
+    stage: str
+    submitted_s: float
+    started_s: float
+    stage_started_s: float
+    updated_s: float
+    note: str = ""
+    elapsed_s: float = 0.0
+    rows: int = 0
+
+
+def format_duration(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours > 0:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if minutes > 0:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def format_progress_bar(done: int, total: int, width: int = 28) -> str:
+    denom = max(1, total)
+    filled = min(width, int(width * max(0, done) / denom))
+    return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
+
+
+class ProgressTracker:
+    def __init__(self, shards: Sequence[ShardSpec]) -> None:
+        now = time.time()
+        self._created_s = now
+        self._lock = threading.Lock()
+        self._state: Dict[str, ShardProgressState] = {
+            spec.label: ShardProgressState(
+                state="queued",
+                stage="queued",
+                submitted_s=now,
+                started_s=0.0,
+                stage_started_s=now,
+                updated_s=now,
+                note=spec.region,
+            )
+            for spec in shards
+        }
+
+    def update_stage(self, spec: ShardSpec, stage: str, note: str = "") -> None:
+        now = time.time()
+        with self._lock:
+            rec = self._state[spec.label]
+            if rec.started_s <= 0.0:
+                rec.started_s = now
+            rec.state = "running"
+            rec.stage = stage
+            rec.stage_started_s = now
+            rec.updated_s = now
+            if note:
+                rec.note = note
+
+    def mark_done(self, spec: ShardSpec, rows: int, elapsed_s: float) -> None:
+        now = time.time()
+        with self._lock:
+            rec = self._state[spec.label]
+            if rec.started_s <= 0.0:
+                rec.started_s = now
+            rec.state = "done"
+            rec.stage = "done"
+            rec.stage_started_s = now
+            rec.updated_s = now
+            rec.elapsed_s = elapsed_s
+            rec.rows = rows
+            rec.note = f"rows={rows}"
+
+    def mark_failed(self, spec: ShardSpec, message: str) -> None:
+        now = time.time()
+        with self._lock:
+            rec = self._state[spec.label]
+            if rec.started_s <= 0.0:
+                rec.started_s = now
+            rec.state = "failed"
+            rec.stage = "failed"
+            rec.stage_started_s = now
+            rec.updated_s = now
+            if message:
+                rec.note = message
+
+    def counts(self) -> Dict[str, int]:
+        with self._lock:
+            done = 0
+            failed = 0
+            running = 0
+            queued = 0
+            for rec in self._state.values():
+                if rec.state == "done":
+                    done += 1
+                elif rec.state == "failed":
+                    failed += 1
+                elif rec.state == "running":
+                    running += 1
+                else:
+                    queued += 1
+        return {
+            "done": done,
+            "failed": failed,
+            "running": running,
+            "queued": queued,
+        }
+
+    def render(self, total: int, max_active: int = 4) -> str:
+        now = time.time()
+        with self._lock:
+            done = 0
+            failed = 0
+            running = 0
+            queued = 0
+            for rec in self._state.values():
+                if rec.state == "done":
+                    done += 1
+                elif rec.state == "failed":
+                    failed += 1
+                elif rec.state == "running":
+                    running += 1
+                else:
+                    queued += 1
+            counts = {
+                "done": done,
+                "failed": failed,
+                "running": running,
+                "queued": queued,
+            }
+            active = [
+                (label, rec)
+                for label, rec in self._state.items()
+                if rec.state == "running"
+            ]
+        finished = counts["done"] + counts["failed"]
+        bar = format_progress_bar(finished, total)
+        line = (
+            f"[sharded] progress {bar} {finished}/{max(1, total)} "
+            f"done={counts['done']} running={counts['running']} "
+            f"queued={counts['queued']} failed={counts['failed']} "
+            f"elapsed={format_duration(now - self._created_s)}"
+        )
+        if not active:
+            return line
+
+        active.sort(key=lambda item: item[1].stage_started_s)
+        stage_counts: Dict[str, int] = {}
+        for _, rec in active:
+            stage_counts[rec.stage] = stage_counts.get(rec.stage, 0) + 1
+        stage_text = ",".join(f"{name}={count}" for name, count in sorted(stage_counts.items()))
+
+        samples: List[str] = []
+        for label, rec in active[:max_active]:
+            stage_age = format_duration(now - rec.stage_started_s)
+            samples.append(f"{label}:{rec.stage}:{stage_age}")
+        return f"{line} | stages={stage_text} | active={' ; '.join(samples)}"
+
+
 def run_command(
     cmd: Sequence[str],
     *,
@@ -83,16 +245,18 @@ def run_command(
     env: Optional[Dict[str, str]] = None,
     stdout_path: Optional[Path] = None,
     stderr_path: Optional[Path] = None,
+    append: bool = False,
 ) -> None:
     stdout_fh = None
     stderr_fh = None
     try:
+        file_mode = "a" if append else "w"
         if stdout_path is not None:
             stdout_path.parent.mkdir(parents=True, exist_ok=True)
-            stdout_fh = stdout_path.open("w", encoding="utf-8")
+            stdout_fh = stdout_path.open(file_mode, encoding="utf-8")
         if stderr_path is not None:
             stderr_path.parent.mkdir(parents=True, exist_ok=True)
-            stderr_fh = stderr_path.open("w", encoding="utf-8")
+            stderr_fh = stderr_path.open(file_mode, encoding="utf-8")
         subprocess.run(
             list(cmd),
             cwd=str(cwd) if cwd else None,
@@ -468,6 +632,7 @@ def run_single_shard(
     shard_root: Path,
     samtools_threads: int,
     extra_env: Dict[str, str],
+    progress_cb: Optional[Callable[[ShardSpec, str, str], None]] = None,
 ) -> ShardResult:
     t0 = time.time()
     workdir = shard_root / spec.label
@@ -479,59 +644,78 @@ def run_single_shard(
     run_stdout = workdir / "placer.stdout.log"
     run_stderr = workdir / "placer.stderr.log"
 
-    run_command(
-        [
-            samtools_bin,
-            "view",
-            "-@",
-            str(max(1, samtools_threads)),
-            "-b",
-            "-o",
-            str(shard_bam),
-            str(bam),
-            spec.region,
-        ],
-        stdout_path=extract_stdout,
-        stderr_path=extract_stderr,
-    )
-    run_command(
-        [
-            samtools_bin,
-            "index",
-            "-@",
-            str(max(1, samtools_threads)),
-            str(shard_bam),
-        ],
-        stdout_path=extract_stdout,
-        stderr_path=extract_stderr,
-    )
+    for log_path in (extract_stdout, extract_stderr, run_stdout, run_stderr):
+        if log_path.exists():
+            log_path.unlink()
 
-    cmd = [str(placer_bin), str(shard_bam), str(ref)]
-    if te is not None:
-        cmd.append(str(te))
-    env = os.environ.copy()
-    env.update(extra_env)
-    run_command(
-        cmd,
-        cwd=workdir,
-        env=env,
-        stdout_path=run_stdout,
-        stderr_path=run_stderr,
-    )
+    def update(stage: str, note: str = "") -> None:
+        if progress_cb is not None:
+            progress_cb(spec, stage, note)
 
-    scientific = workdir / "scientific.txt"
-    if not scientific.exists():
-        raise RuntimeError(f"scientific.txt not generated for shard {spec.label}")
+    try:
+        update("extract", spec.region)
+        run_command(
+            [
+                samtools_bin,
+                "view",
+                "-@",
+                str(max(1, samtools_threads)),
+                "-b",
+                "-o",
+                str(shard_bam),
+                str(bam),
+                spec.region,
+            ],
+            stdout_path=extract_stdout,
+            stderr_path=extract_stderr,
+        )
+        update("index", shard_bam.name)
+        run_command(
+            [
+                samtools_bin,
+                "index",
+                "-@",
+                str(max(1, samtools_threads)),
+                str(shard_bam),
+            ],
+            stdout_path=extract_stdout,
+            stderr_path=extract_stderr,
+            append=True,
+        )
 
-    summary, _, rows = parse_scientific(scientific)
-    return ShardResult(
-        spec=spec,
-        workdir=workdir,
-        scientific_path=scientific,
-        summary=summary,
-        n_rows_raw=len(rows),
-        elapsed_s=time.time() - t0,
-    )
+        cmd = [str(placer_bin), str(shard_bam), str(ref)]
+        if te is not None:
+            cmd.append(str(te))
+        env = os.environ.copy()
+        env.update(extra_env)
+        update("placer", spec.core_region)
+        run_command(
+            cmd,
+            cwd=workdir,
+            env=env,
+            stdout_path=run_stdout,
+            stderr_path=run_stderr,
+        )
+
+        scientific = workdir / "scientific.txt"
+        if not scientific.exists():
+            raise RuntimeError(f"scientific.txt not generated for shard {spec.label}")
+
+        summary, _, rows = parse_scientific(scientific)
+        elapsed_s = time.time() - t0
+        update("postprocess", f"rows={len(rows)}")
+        return ShardResult(
+            spec=spec,
+            workdir=workdir,
+            scientific_path=scientific,
+            summary=summary,
+            n_rows_raw=len(rows),
+            elapsed_s=elapsed_s,
+        )
+    except Exception as exc:
+        if progress_cb is not None:
+            progress_cb(spec, "failed", str(exc))
+        raise
 
 
 def parse_env_kv(env_args: Sequence[str]) -> Dict[str, str]:
@@ -593,6 +777,12 @@ def main() -> int:
     parser.add_argument("--samtools-threads", type=int, default=1)
     parser.add_argument("--dedup-bp", type=int, default=50)
     parser.add_argument("--outdir", default="sharded_placer_out")
+    parser.add_argument(
+        "--progress-heartbeat-s",
+        type=float,
+        default=30.0,
+        help="Print a progress heartbeat if no shard completes within this many seconds.",
+    )
     parser.add_argument(
         "--env",
         action="append",
@@ -661,11 +851,15 @@ def main() -> int:
     extra_env = parse_env_kv(args.env)
     outdir.mkdir(parents=True, exist_ok=True)
     shard_root.mkdir(parents=True, exist_ok=True)
+    tracker = ProgressTracker(shards)
 
     print(
         f"[sharded] mode={args.mode} contigs={len(contigs)} shards={len(shards)} "
         f"workers={max(1, args.workers)}"
+        f" heartbeat={max(0.0, args.progress_heartbeat_s):.1f}s",
+        flush=True,
     )
+    print(tracker.render(len(shards)), flush=True)
 
     shard_results: List[ShardResult] = []
     failures: List[Tuple[ShardSpec, str]] = []
@@ -681,25 +875,49 @@ def main() -> int:
             shard_root=shard_root,
             samtools_threads=max(1, args.samtools_threads),
             extra_env=extra_env,
+            progress_cb=tracker.update_stage,
         )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
         future_to_spec = {ex.submit(_submit_one, spec): spec for spec in shards}
-        done = 0
         total = len(shards)
-        for fut in concurrent.futures.as_completed(future_to_spec):
-            spec = future_to_spec[fut]
-            done += 1
-            try:
-                result = fut.result()
-                shard_results.append(result)
-                print(
-                    f"[sharded] done {done}/{total} {spec.label} "
-                    f"rows={result.n_rows_raw} time={result.elapsed_s:.2f}s"
-                )
-            except Exception as exc:  # noqa: BLE001
-                failures.append((spec, str(exc)))
-                print(f"[sharded] FAIL {spec.label}: {exc}", file=sys.stderr)
+        pending = set(future_to_spec)
+        heartbeat_s = max(0.0, args.progress_heartbeat_s)
+        while pending:
+            timeout = heartbeat_s if heartbeat_s > 0.0 else None
+            done_futs, pending = concurrent.futures.wait(
+                pending,
+                timeout=timeout,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            if not done_futs:
+                print(tracker.render(total), flush=True)
+                continue
+            for fut in done_futs:
+                spec = future_to_spec[fut]
+                try:
+                    result = fut.result()
+                    shard_results.append(result)
+                    tracker.mark_done(spec, result.n_rows_raw, result.elapsed_s)
+                    counts = tracker.counts()
+                    finished = counts["done"] + counts["failed"]
+                    print(
+                        f"[sharded] done {format_progress_bar(finished, total)} "
+                        f"{finished}/{total} {spec.label} "
+                        f"rows={result.n_rows_raw} time={result.elapsed_s:.2f}s",
+                        flush=True,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    failures.append((spec, str(exc)))
+                    tracker.mark_failed(spec, str(exc))
+                    counts = tracker.counts()
+                    finished = counts["done"] + counts["failed"]
+                    print(
+                        f"[sharded] FAIL {format_progress_bar(finished, total)} "
+                        f"{finished}/{total} {spec.label}: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
     if failures:
         print(f"[sharded] {len(failures)} shard(s) failed; abort merge", file=sys.stderr)
@@ -729,8 +947,8 @@ def main() -> int:
             if bai_path.exists():
                 bai_path.unlink()
 
-    print(f"[sharded] merged scientific: {merged_scientific}")
-    print(f"[sharded] manifest: {manifest_path}")
+    print(f"[sharded] merged scientific: {merged_scientific}", flush=True)
+    print(f"[sharded] manifest: {manifest_path}", flush=True)
     return 0
 
 
