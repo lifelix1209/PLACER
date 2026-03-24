@@ -113,8 +113,62 @@ int main() {
             bp,
             bp);
 
-        assert(!segmentation.pass);
-        assert(segmentation.qc_reason == "LEFT_FLANK_AMBIGUOUS");
+        assert(segmentation.pass);
+        assert(segmentation.qc_reason == "PASS_EVENT_SEGMENTATION");
+        assert(segmentation.left_ref_start == 250);
+        assert(segmentation.left_ref_end == 320);
+        assert(segmentation.right_ref_start == 320);
+        assert(segmentation.right_ref_end == 390);
+    }
+
+    {
+        const std::string reference = build_reference(720);
+        write_fasta(fasta_path, reference);
+
+        const int32_t bp = 260;
+        const std::string left = reference.substr(190, 70);
+        const std::string insert = "CCGTTACCGTTACCGTTACCGTTAACCGGTTA";
+        const std::string right = reference.substr(260, 70);
+        const EventSegmentation segmentation = run_segmentation(
+            fasta_path,
+            std::string("GG") + left + insert + right,
+            bp,
+            bp);
+
+        assert(segmentation.pass);
+        assert(segmentation.qc_reason == "PASS_EVENT_SEGMENTATION");
+        assert(segmentation.left_flank_seq == left);
+        assert(segmentation.insert_seq == insert);
+        assert(segmentation.right_flank_seq == right);
+        assert(segmentation.left_ref_start == 190);
+        assert(segmentation.left_ref_end == 260);
+        assert(segmentation.right_ref_start == 260);
+        assert(segmentation.right_ref_end == 330);
+    }
+
+    {
+        const std::string reference = build_reference(760);
+        write_fasta(fasta_path, reference);
+
+        const int32_t bp = 300;
+        const std::string left = reference.substr(230, 70);
+        const std::string insert = "TTAACCGGTTAACCGGTTCCAATTAACCGGTT";
+        const std::string right = reference.substr(300, 70);
+        const EventSegmentation segmentation = run_segmentation(
+            fasta_path,
+            left + insert + right + std::string("ACGTACGTACGTACGTACGT"),
+            bp,
+            bp);
+
+        assert(segmentation.pass);
+        assert(segmentation.qc_reason == "PASS_EVENT_SEGMENTATION");
+        assert(segmentation.left_flank_seq == left);
+        assert(segmentation.insert_seq == insert);
+        assert(segmentation.right_flank_seq == right);
+        assert(segmentation.left_ref_start == 230);
+        assert(segmentation.left_ref_end == 300);
+        assert(segmentation.right_ref_start == 300);
+        assert(segmentation.right_ref_end == 370);
     }
 
     std::remove(fasta_path.c_str());

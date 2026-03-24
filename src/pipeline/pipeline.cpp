@@ -8,7 +8,6 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <limits>
 #include <mutex>
@@ -55,6 +54,7 @@ constexpr int32_t kEventConsensusMinAnchorBp = 50;
 constexpr int32_t kEventSegmentationMinFlankAlignBp = 50;
 constexpr double kEventSegmentationMinFlankIdentity = 0.90;
 constexpr int32_t kEventSegmentationBreakpointSlackBp = 200;
+constexpr int32_t kEventSegmentationEndpointSlackBp = 32;
 constexpr int32_t kEventSegmentationMinInsertBp = 1;
 constexpr int32_t kEventSegmentationMaxFlankQueryBp = 120;
 constexpr double kEventSegmentationUniquenessMargin = 0.02;
@@ -86,6 +86,13 @@ struct ReadSignalSummary {
 struct EvidenceBundle {
     std::vector<EvidencePoint> points;
     std::vector<ReadSignalSummary> read_summaries;
+};
+
+struct ReadWindowAssignmentScore {
+    bool valid = false;
+    int32_t specificity_rank = std::numeric_limits<int32_t>::max();
+    double specificity_score = 0.0;
+    double total_score = 0.0;
 };
 
 struct LocalFetchedReads {
@@ -175,12 +182,12 @@ struct EventFlankPlacement {
     int32_t ref_end = -1;
     int32_t align_len = 0;
     int32_t breakpoint_delta = std::numeric_limits<int32_t>::max();
+    int32_t endpoint_offset = std::numeric_limits<int32_t>::max();
     double identity = 0.0;
 };
 
 struct EventFlankSearchResult {
     std::vector<EventFlankPlacement> candidates;
-    bool had_threshold_hit = false;
 };
 
 enum class SaHintSide : uint8_t {
@@ -229,6 +236,55 @@ int bool_as_int(bool value) {
     return value ? 1 : 0;
 }
 
+int32_t evidence_specificity_rank(EvidenceKind kind) {
+    switch (kind) {
+        case EvidenceKind::kIndel:
+            return 0;
+        case EvidenceKind::kSoftClip:
+            return 1;
+        case EvidenceKind::kSAHint:
+            return 2;
+    }
+    return std::numeric_limits<int32_t>::max();
+}
+
+void accumulate_read_window_assignment_score(
+    const EvidencePoint& point,
+    double point_score,
+    ReadWindowAssignmentScore& score) {
+    score.valid = true;
+    score.total_score += point_score;
+
+    const int32_t specificity_rank = evidence_specificity_rank(point.kind);
+    if (specificity_rank < score.specificity_rank) {
+        score.specificity_rank = specificity_rank;
+        score.specificity_score = point_score;
+        return;
+    }
+    if (specificity_rank == score.specificity_rank &&
+        point_score > score.specificity_score) {
+        score.specificity_score = point_score;
+    }
+}
+
+bool better_read_window_assignment_score(
+    const ReadWindowAssignmentScore& lhs,
+    const ReadWindowAssignmentScore& rhs) {
+    if (!lhs.valid) {
+        return false;
+    }
+    if (!rhs.valid) {
+        return true;
+    }
+    if (lhs.specificity_rank != rhs.specificity_rank) {
+        return lhs.specificity_rank < rhs.specificity_rank;
+    }
+    if (lhs.specificity_score != rhs.specificity_score) {
+        return lhs.specificity_score > rhs.specificity_score;
+    }
+    return lhs.total_score > rhs.total_score;
+}
+
 bool better_event_flank_placement(
     const EventFlankPlacement& lhs,
     const EventFlankPlacement& rhs) {
@@ -240,6 +296,9 @@ bool better_event_flank_placement(
     }
     if (lhs.breakpoint_delta != rhs.breakpoint_delta) {
         return lhs.breakpoint_delta < rhs.breakpoint_delta;
+    }
+    if (lhs.endpoint_offset != rhs.endpoint_offset) {
+        return lhs.endpoint_offset < rhs.endpoint_offset;
     }
     if (lhs.ref_start != rhs.ref_start) {
         return lhs.ref_start < rhs.ref_start;
@@ -388,6 +447,126 @@ std::vector<std::string> sorted_string_set(const std::unordered_set<std::string>
 
 std::string upper_acgt(const std::string& s);
 
+std::string collect_aligned_query_bases_before(
+    const ReadView& read,
+    int32_t query_limit,
+    int32_t max_bases) {
+    if (query_limit <= 0 || max_bases <= 0) {
+        return {};
+    }
+
+    const uint32_t* cigar = read.cigar();
+    const int32_t n_cigar = read.n_cigar();
+    if (!cigar || n_cigar <= 0) {
+        return {};
+    }
+
+    struct QueryMatchSpan {
+        int32_t start = 0;
+        int32_t end = 0;
+    };
+    std::vector<QueryMatchSpan> spans;
+    spans.reserve(static_cast<size_t>(n_cigar));
+
+    int32_t query_pos = 0;
+    for (int32_t ci = 0; ci < n_cigar; ++ci) {
+        const int op = bam_cigar_op(cigar[ci]);
+        const int32_t len = static_cast<int32_t>(bam_cigar_oplen(cigar[ci]));
+        if (len <= 0) {
+            continue;
+        }
+        if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
+            spans.push_back({query_pos, query_pos + len});
+            query_pos += len;
+            continue;
+        }
+        if ((bam_cigar_type(op) & 1) != 0) {
+            query_pos += len;
+        }
+    }
+
+    std::string out;
+    out.reserve(static_cast<size_t>(max_bases));
+    int32_t remaining = max_bases;
+    for (auto it = spans.rbegin(); it != spans.rend() && remaining > 0; ++it) {
+        if (it->start >= query_limit) {
+            continue;
+        }
+        const int32_t take_end = std::min(it->end, query_limit);
+        const int32_t available = take_end - it->start;
+        if (available <= 0) {
+            continue;
+        }
+        const int32_t take_len = std::min(remaining, available);
+        const int32_t take_start = take_end - take_len;
+        const std::string chunk = upper_acgt(read.decode_subsequence(take_start, take_len));
+        if (static_cast<int32_t>(chunk.size()) != take_len) {
+            return {};
+        }
+        out.insert(0, chunk);
+        remaining -= take_len;
+    }
+
+    if (remaining > 0) {
+        return {};
+    }
+    return out;
+}
+
+std::string collect_aligned_query_bases_after(
+    const ReadView& read,
+    int32_t query_start,
+    int32_t max_bases) {
+    if (query_start < 0 || max_bases <= 0) {
+        return {};
+    }
+
+    const uint32_t* cigar = read.cigar();
+    const int32_t n_cigar = read.n_cigar();
+    if (!cigar || n_cigar <= 0) {
+        return {};
+    }
+
+    std::string out;
+    out.reserve(static_cast<size_t>(max_bases));
+    int32_t remaining = max_bases;
+    int32_t query_pos = 0;
+
+    for (int32_t ci = 0; ci < n_cigar && remaining > 0; ++ci) {
+        const int op = bam_cigar_op(cigar[ci]);
+        const int32_t len = static_cast<int32_t>(bam_cigar_oplen(cigar[ci]));
+        if (len <= 0) {
+            continue;
+        }
+
+        if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
+            const int32_t span_start = query_pos;
+            const int32_t span_end = query_pos + len;
+            if (span_end > query_start) {
+                const int32_t take_start = std::max(span_start, query_start);
+                const int32_t take_len = std::min(remaining, span_end - take_start);
+                const std::string chunk = upper_acgt(read.decode_subsequence(take_start, take_len));
+                if (static_cast<int32_t>(chunk.size()) != take_len) {
+                    return {};
+                }
+                out += chunk;
+                remaining -= take_len;
+            }
+            query_pos = span_end;
+            continue;
+        }
+
+        if ((bam_cigar_type(op) & 1) != 0) {
+            query_pos += len;
+        }
+    }
+
+    if (remaining > 0) {
+        return {};
+    }
+    return out;
+}
+
 std::string build_event_string_from_fragment(
     const bam1_t* record,
     const InsertionFragment& fragment) {
@@ -398,31 +577,74 @@ std::string build_event_string_from_fragment(
     ReadView read(record);
     const int32_t insert_start = fragment.start;
     const int32_t insert_end = fragment.start + fragment.length;
-    const int32_t right_available = read.seq_len() - insert_end;
-    if (insert_start < kEventConsensusMinAnchorBp ||
-        right_available < kEventConsensusMinAnchorBp) {
+    if (insert_end > read.seq_len()) {
         return {};
     }
 
-    const int32_t left_len = std::min(kEventConsensusFlankBp, insert_start);
-    const int32_t right_len = std::min(kEventConsensusFlankBp, right_available);
-    if (left_len < kEventConsensusMinAnchorBp ||
-        right_len < kEventConsensusMinAnchorBp) {
-        return {};
-    }
-
-    const std::string left_flank = upper_acgt(
-        read.decode_subsequence(insert_start - left_len, left_len));
     const std::string insert_seq = upper_acgt(fragment.sequence);
-    const std::string right_flank = upper_acgt(
-        read.decode_subsequence(insert_end, right_len));
-    if (left_flank.empty() || insert_seq.empty() || right_flank.empty()) {
+    if (insert_seq.empty()) {
         return {};
     }
-    return left_flank + insert_seq + right_flank;
+
+    const auto fetch_left_flank = [&](int32_t flank_len) {
+        if (flank_len <= 0) {
+            return std::string();
+        }
+        return collect_aligned_query_bases_before(read, insert_start, flank_len);
+    };
+    const auto fetch_right_flank = [&](int32_t flank_len) {
+        if (flank_len <= 0) {
+            return std::string();
+        }
+        return collect_aligned_query_bases_after(read, insert_end, flank_len);
+    };
+
+    switch (fragment.source) {
+        case InsertionFragmentSource::kClipRefLeft: {
+            const std::string right_flank = fetch_right_flank(kEventConsensusFlankBp);
+            if (static_cast<int32_t>(right_flank.size()) < kEventConsensusMinAnchorBp) {
+                return {};
+            }
+            return insert_seq + right_flank;
+        }
+        case InsertionFragmentSource::kClipRefRight: {
+            const std::string left_flank = fetch_left_flank(kEventConsensusFlankBp);
+            if (static_cast<int32_t>(left_flank.size()) < kEventConsensusMinAnchorBp) {
+                return {};
+            }
+            return left_flank + insert_seq;
+        }
+        case InsertionFragmentSource::kCigarInsertion:
+        case InsertionFragmentSource::kSplitSa: {
+            const std::string left_flank = fetch_left_flank(kEventConsensusFlankBp);
+            const std::string right_flank = fetch_right_flank(kEventConsensusFlankBp);
+            if (static_cast<int32_t>(left_flank.size()) < kEventConsensusMinAnchorBp ||
+                static_cast<int32_t>(right_flank.size()) < kEventConsensusMinAnchorBp) {
+                return {};
+            }
+            return left_flank + insert_seq + right_flank;
+        }
+        case InsertionFragmentSource::kUnknown:
+        default:
+            return {};
+    }
 }
 
-bool fragment_has_dual_context_event_string(
+bool fragment_supports_event_consensus(
+    const InsertionFragment& fragment) {
+    switch (fragment.source) {
+        case InsertionFragmentSource::kClipRefLeft:
+        case InsertionFragmentSource::kClipRefRight:
+        case InsertionFragmentSource::kCigarInsertion:
+        case InsertionFragmentSource::kSplitSa:
+            return true;
+        case InsertionFragmentSource::kUnknown:
+        default:
+            return false;
+    }
+}
+
+bool fragment_has_full_event_context(
     const InsertionFragment& fragment) {
     switch (fragment.source) {
         case InsertionFragmentSource::kCigarInsertion:
@@ -538,6 +760,196 @@ int32_t median_i32(std::vector<int32_t> values) {
         return values[mid];
     }
     return static_cast<int32_t>((static_cast<int64_t>(values[mid - 1]) + values[mid]) / 2);
+}
+
+std::vector<int32_t> anchor_local_breakpoint_cluster(
+    std::vector<int32_t> positions,
+    int32_t anchor_pos) {
+    constexpr int32_t kBreakpointClusterGapBp = 75;
+
+    if (positions.empty()) {
+        return {};
+    }
+    std::sort(positions.begin(), positions.end());
+
+    struct ClusterBounds {
+        size_t begin = 0;
+        size_t end = 0;
+        int32_t center = -1;
+    };
+    std::vector<ClusterBounds> clusters;
+    size_t cluster_begin = 0;
+    for (size_t i = 1; i <= positions.size(); ++i) {
+        const bool split_cluster =
+            i == positions.size() ||
+            (positions[i] - positions[i - 1]) > kBreakpointClusterGapBp;
+        if (!split_cluster) {
+            continue;
+        }
+
+        ClusterBounds cluster;
+        cluster.begin = cluster_begin;
+        cluster.end = i;
+        cluster.center = median_i32(std::vector<int32_t>(
+            positions.begin() + static_cast<std::ptrdiff_t>(cluster_begin),
+            positions.begin() + static_cast<std::ptrdiff_t>(i)));
+        clusters.push_back(cluster);
+        cluster_begin = i;
+    }
+
+    const ClusterBounds* best = nullptr;
+    for (const auto& cluster : clusters) {
+        if (!best) {
+            best = &cluster;
+            continue;
+        }
+        const int32_t cur_dist = std::abs(cluster.center - anchor_pos);
+        const int32_t best_dist = std::abs(best->center - anchor_pos);
+        if (cur_dist != best_dist) {
+            if (cur_dist < best_dist) {
+                best = &cluster;
+            }
+            continue;
+        }
+        const size_t cur_size = cluster.end - cluster.begin;
+        const size_t best_size = best->end - best->begin;
+        if (cur_size != best_size) {
+            if (cur_size > best_size) {
+                best = &cluster;
+            }
+            continue;
+        }
+        if (cluster.center < best->center) {
+            best = &cluster;
+        }
+    }
+
+    if (!best) {
+        return positions;
+    }
+    return std::vector<int32_t>(
+        positions.begin() + static_cast<std::ptrdiff_t>(best->begin),
+        positions.begin() + static_cast<std::ptrdiff_t>(best->end));
+}
+
+int32_t anchor_local_median_i32(
+    std::vector<int32_t> positions,
+    int32_t anchor_pos) {
+    return median_i32(anchor_local_breakpoint_cluster(std::move(positions), anchor_pos));
+}
+
+struct BreakpointHypothesis {
+    bool valid = false;
+    int32_t left = -1;
+    int32_t right = -1;
+    int32_t center = -1;
+    int32_t support = 0;
+    int32_t priority = std::numeric_limits<int32_t>::max();
+};
+
+int32_t breakpoint_hypothesis_support_weight(int32_t priority) {
+    switch (priority) {
+        case 0: return 8;  // fragment split
+        case 1: return 8;  // fragment indel
+        case 2: return 1;  // fragment clip pair
+        case 3: return 6;  // raw indel
+        case 4: return 1;  // raw clip pair
+        default: return 1;
+    }
+}
+
+int32_t breakpoint_hypothesis_score(const BreakpointHypothesis& hypothesis) {
+    return hypothesis.support * breakpoint_hypothesis_support_weight(hypothesis.priority);
+}
+
+BreakpointHypothesis make_single_breakpoint_hypothesis(
+    std::vector<int32_t> positions,
+    int32_t anchor_pos,
+    int32_t priority) {
+    BreakpointHypothesis hypothesis;
+    std::vector<int32_t> cluster = anchor_local_breakpoint_cluster(std::move(positions), anchor_pos);
+    if (cluster.empty()) {
+        return hypothesis;
+    }
+    const int32_t pos = median_i32(cluster);
+    hypothesis.valid = pos >= 0;
+    hypothesis.left = pos;
+    hypothesis.right = pos;
+    hypothesis.center = pos;
+    hypothesis.support = static_cast<int32_t>(cluster.size());
+    hypothesis.priority = priority;
+    return hypothesis;
+}
+
+BreakpointHypothesis make_paired_breakpoint_hypothesis(
+    std::vector<int32_t> left_positions,
+    std::vector<int32_t> right_positions,
+    int32_t anchor_pos,
+    int32_t priority) {
+    BreakpointHypothesis hypothesis;
+    std::vector<int32_t> left_cluster = anchor_local_breakpoint_cluster(
+        std::move(left_positions),
+        anchor_pos);
+    std::vector<int32_t> right_cluster = anchor_local_breakpoint_cluster(
+        std::move(right_positions),
+        anchor_pos);
+    if (left_cluster.empty() && right_cluster.empty()) {
+        return hypothesis;
+    }
+
+    const int32_t left = !left_cluster.empty()
+        ? median_i32(left_cluster)
+        : median_i32(right_cluster);
+    const int32_t right = !right_cluster.empty()
+        ? median_i32(right_cluster)
+        : median_i32(left_cluster);
+    if (left < 0 || right < 0) {
+        return hypothesis;
+    }
+
+    hypothesis.valid = true;
+    hypothesis.left = std::min(left, right);
+    hypothesis.right = std::max(left, right);
+    hypothesis.center =
+        static_cast<int32_t>(
+            (static_cast<int64_t>(hypothesis.left) + hypothesis.right) / 2);
+    hypothesis.support =
+        static_cast<int32_t>(left_cluster.size() + right_cluster.size());
+    hypothesis.priority = priority;
+    return hypothesis;
+}
+
+bool better_breakpoint_hypothesis(
+    const BreakpointHypothesis& candidate,
+    const BreakpointHypothesis& incumbent,
+    int32_t anchor_pos) {
+    if (!candidate.valid) {
+        return false;
+    }
+    if (!incumbent.valid) {
+        return true;
+    }
+
+    const int32_t candidate_score = breakpoint_hypothesis_score(candidate);
+    const int32_t incumbent_score = breakpoint_hypothesis_score(incumbent);
+    if (candidate_score != incumbent_score) {
+        return candidate_score > incumbent_score;
+    }
+    const int32_t candidate_dist = std::abs(candidate.center - anchor_pos);
+    const int32_t incumbent_dist = std::abs(incumbent.center - anchor_pos);
+    if (candidate_dist != incumbent_dist) {
+        return candidate_dist < incumbent_dist;
+    }
+    if (candidate.support != incumbent.support) {
+        return candidate.support > incumbent.support;
+    }
+    if (candidate.priority != incumbent.priority) {
+        return candidate.priority < incumbent.priority;
+    }
+    if (candidate.left != incumbent.left) {
+        return candidate.left < incumbent.left;
+    }
+    return candidate.right < incumbent.right;
 }
 
 double mad_from_positions(const std::vector<int32_t>& positions) {
@@ -1007,36 +1419,39 @@ std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
         }
     }
 
-    if (!fragment_split_left_positions.empty() || !fragment_split_right_positions.empty()) {
-        const int32_t left = !fragment_split_left_positions.empty()
-            ? median_i32(fragment_split_left_positions)
-            : median_i32(fragment_split_right_positions);
-        const int32_t right = !fragment_split_right_positions.empty()
-            ? median_i32(fragment_split_right_positions)
-            : median_i32(fragment_split_left_positions);
-        return {std::min(left, right), std::max(left, right)};
-    }
+    BreakpointHypothesis best;
+    const auto consider = [&](const BreakpointHypothesis& hypothesis) {
+        if (better_breakpoint_hypothesis(hypothesis, best, component.anchor_pos)) {
+            best = hypothesis;
+        }
+    };
 
-    if (!fragment_indel_positions.empty()) {
-        const int32_t pos = median_i32(fragment_indel_positions);
-        return {pos, pos};
-    }
+    consider(make_paired_breakpoint_hypothesis(
+        fragment_split_left_positions,
+        fragment_split_right_positions,
+        component.anchor_pos,
+        0));
+    consider(make_single_breakpoint_hypothesis(
+        fragment_indel_positions,
+        component.anchor_pos,
+        1));
+    consider(make_paired_breakpoint_hypothesis(
+        fragment_clip_left_positions,
+        fragment_clip_right_positions,
+        component.anchor_pos,
+        2));
+    consider(make_single_breakpoint_hypothesis(
+        raw_indel_positions,
+        component.anchor_pos,
+        3));
+    consider(make_paired_breakpoint_hypothesis(
+        raw_clip_left_positions,
+        raw_clip_right_positions,
+        component.anchor_pos,
+        4));
 
-    if (!fragment_clip_left_positions.empty() && !fragment_clip_right_positions.empty()) {
-        const int32_t left = median_i32(fragment_clip_left_positions);
-        const int32_t right = median_i32(fragment_clip_right_positions);
-        return {std::min(left, right), std::max(left, right)};
-    }
-
-    if (!raw_indel_positions.empty()) {
-        const int32_t pos = median_i32(raw_indel_positions);
-        return {pos, pos};
-    }
-
-    if (!raw_clip_left_positions.empty() && !raw_clip_right_positions.empty()) {
-        const int32_t left = median_i32(raw_clip_left_positions);
-        const int32_t right = median_i32(raw_clip_right_positions);
-        return {std::min(left, right), std::max(left, right)};
+    if (best.valid) {
+        return {best.left, best.right};
     }
 
     return {std::max(0, component.anchor_pos), std::max(0, component.anchor_pos)};
@@ -1210,6 +1625,9 @@ EvidenceBundle extract_evidence_points(
         if (view.tid() != expected_tid) {
             continue;
         }
+        if ((view.flag() & BAM_FSUPPLEMENTARY) != 0) {
+            continue;
+        }
 
         ReadSignalSummary summary;
         summary.read_id = std::string(view.qname());
@@ -1364,6 +1782,46 @@ std::vector<CandidateWindow> build_density_windows(
         }
     }
 
+    // Preserve direct long-indel loci even when nearby clip-driven density
+    // dominates the smoothed histogram. These points are breakpoint-specific
+    // enough to seed their own candidate windows.
+    std::vector<const EvidencePoint*> indel_points;
+    indel_points.reserve(evidence.size());
+    for (const auto& point : evidence) {
+        if (point.kind == EvidenceKind::kIndel) {
+            indel_points.push_back(&point);
+        }
+    }
+    std::sort(indel_points.begin(), indel_points.end(), [](const EvidencePoint* a, const EvidencePoint* b) {
+        if (a == nullptr || b == nullptr) {
+            return a < b;
+        }
+        return a->pos < b->pos;
+    });
+    size_t indel_cluster_begin = 0;
+    while (indel_cluster_begin < indel_points.size()) {
+        size_t indel_cluster_end = indel_cluster_begin + 1;
+        while (indel_cluster_end < indel_points.size() &&
+               std::abs(indel_points[indel_cluster_end]->pos -
+                        indel_points[indel_cluster_end - 1]->pos) <= kPeakMergeDistance) {
+            ++indel_cluster_end;
+        }
+
+        double total_weight = 0.0;
+        double weighted_pos = 0.0;
+        for (size_t i = indel_cluster_begin; i < indel_cluster_end; ++i) {
+            total_weight += indel_points[i]->weight;
+            weighted_pos += indel_points[i]->weight * static_cast<double>(indel_points[i]->pos);
+        }
+        if (total_weight >= kPeakMinWeight) {
+            DensityPeak peak;
+            peak.pos = static_cast<int32_t>(std::llround(weighted_pos / total_weight));
+            peak.weight = total_weight;
+            peaks.push_back(peak);
+        }
+        indel_cluster_begin = indel_cluster_end;
+    }
+
     if (peaks.empty()) {
         std::vector<std::pair<int32_t, double>> pos_weights;
         pos_weights.reserve(evidence.size());
@@ -1509,8 +1967,14 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
     std::unordered_set<std::string> left_clip_qnames;
     std::unordered_set<std::string> right_clip_qnames;
 
-    const int32_t span_start = std::max(0, evidence.bp_left - 25);
-    const int32_t span_end = std::max(span_start, evidence.bp_right + 25);
+    const int32_t alt_signal_start = std::max(
+        0,
+        std::min(seed_bounds.first, evidence.bp_left) - 25);
+    const int32_t alt_signal_end = std::max(
+        alt_signal_start,
+        std::max(seed_bounds.second, evidence.bp_right) + 25);
+    const int32_t ref_span_start = std::max(0, evidence.bp_left - 25);
+    const int32_t ref_span_end = std::max(ref_span_start, evidence.bp_right + 25);
     for (size_t read_idx = 0; read_idx < local_records.size(); ++read_idx) {
         const bam1_t* record = local_records[read_idx];
         if (!record) {
@@ -1528,8 +1992,8 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
 
         const LocalEventSignal signal = classify_local_event_signal(
             record,
-            span_start,
-            span_end);
+            alt_signal_start,
+            alt_signal_end);
         if (signal.split) {
             split_qnames.insert(qname);
         }
@@ -1546,8 +2010,8 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
 
     for (const auto& fragment : fragments) {
         if (fragment.read_id.empty() ||
-            fragment.ref_junc_pos < span_start ||
-            fragment.ref_junc_pos > span_end) {
+            fragment.ref_junc_pos < alt_signal_start ||
+            fragment.ref_junc_pos > alt_signal_end) {
             continue;
         }
         switch (fragment.source) {
@@ -1575,8 +2039,10 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
 
     std::unordered_set<std::string> alt_qnames = split_qnames;
     alt_qnames.insert(indel_qnames.begin(), indel_qnames.end());
-    const bool paired_clip_support = !left_clip_qnames.empty() && !right_clip_qnames.empty();
-    if (paired_clip_support) {
+    const bool clip_support_has_partner =
+        !alt_qnames.empty() ||
+        (!left_clip_qnames.empty() && !right_clip_qnames.empty());
+    if (clip_support_has_partner) {
         alt_qnames.insert(left_clip_qnames.begin(), left_clip_qnames.end());
         alt_qnames.insert(right_clip_qnames.begin(), right_clip_qnames.end());
     }
@@ -1591,7 +2057,7 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
         if (!span.valid || span.tid != component.tid) {
             continue;
         }
-        if (span.start > span_start || span.end < span_end) {
+        if (span.start > ref_span_start || span.end < ref_span_end) {
             continue;
         }
         if (read_idx >= local_records.size() || !local_records[read_idx]) {
@@ -1605,7 +2071,7 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
         if (qname.empty() || alt_qnames.find(qname) != alt_qnames.end()) {
             continue;
         }
-        if (read_has_local_event_signal(record, span_start, span_end)) {
+        if (read_has_local_event_signal(record, alt_signal_start, alt_signal_end)) {
             continue;
         }
         if (record->core.qual >= 20) {
@@ -1661,13 +2127,15 @@ EventConsensus Pipeline::build_event_consensus(
         }
     }
 
-    std::unordered_map<std::string, std::string> event_by_qname;
-    event_by_qname.reserve(fragments.size());
+    std::unordered_map<std::string, std::string> full_event_by_qname;
+    std::unordered_map<std::string, std::string> partial_event_by_qname;
+    full_event_by_qname.reserve(fragments.size());
+    partial_event_by_qname.reserve(fragments.size());
 
     for (const auto& fragment : fragments) {
         if (fragment.read_id.empty() ||
             support_qnames.find(fragment.read_id) == support_qnames.end() ||
-            !fragment_has_dual_context_event_string(fragment) ||
+            !fragment_supports_event_consensus(fragment) ||
             !fragment_is_local_to_event(fragment, event_evidence.bp_left, event_evidence.bp_right)) {
             continue;
         }
@@ -1681,12 +2149,19 @@ EventConsensus Pipeline::build_event_consensus(
         if (event_string.empty()) {
             continue;
         }
+        auto& event_by_qname = fragment_has_full_event_context(fragment)
+            ? full_event_by_qname
+            : partial_event_by_qname;
         auto it = event_by_qname.find(fragment.read_id);
         if (it == event_by_qname.end() || event_string.size() > it->second.size()) {
             event_by_qname[fragment.read_id] = event_string;
         }
     }
 
+    const bool use_full_context = !full_event_by_qname.empty();
+    const auto& event_by_qname = use_full_context
+        ? full_event_by_qname
+        : partial_event_by_qname;
     std::vector<std::string> event_strings;
     event_strings.reserve(event_by_qname.size());
     for (const auto& row : event_by_qname) {
@@ -1695,10 +2170,13 @@ EventConsensus Pipeline::build_event_consensus(
 
     consensus.input_event_reads = static_cast<int32_t>(event_strings.size());
     if (consensus.input_event_reads <= 0) {
-        consensus.qc_reason = "NO_DUAL_CONTEXT_EVENT_READS";
+        consensus.qc_reason = "NO_EVENT_STRING_READS";
         return consensus;
     }
-    if (consensus.input_event_reads < std::max(1, config_.event_consensus_poa_min_reads)) {
+    const int32_t min_event_reads = use_full_context
+        ? 1
+        : std::max(1, config_.event_consensus_poa_min_reads);
+    if (consensus.input_event_reads < min_event_reads) {
         consensus.qc_reason = "INSUFFICIENT_EVENT_READS";
         return consensus;
     }
@@ -1794,7 +2272,8 @@ EventSegmentation Pipeline::segment_event_consensus(
         bool is_left,
         int32_t breakpoint,
         int32_t ref_window_start,
-        const std::string& ref_window) {
+        const std::string& ref_window,
+        int32_t query_endpoint_slack) {
         EventFlankSearchResult result;
         if (ref_window.empty()) {
             return result;
@@ -1808,45 +2287,67 @@ EventSegmentation Pipeline::segment_event_consensus(
         for (int32_t align_len = max_flank_query_len;
              align_len >= kEventSegmentationMinFlankAlignBp;
              --align_len) {
-            const int32_t query_start = is_left ? 0 : (consensus_len - align_len);
-            const std::string query = consensus.substr(
-                static_cast<size_t>(query_start),
-                static_cast<size_t>(align_len));
+            const int32_t max_query_start = consensus_len - align_len;
+            if (max_query_start < 0) {
+                continue;
+            }
+
+            const int32_t endpoint_slack = std::max(0, std::min(
+                query_endpoint_slack,
+                max_query_start));
+            const int32_t query_lo = is_left
+                ? 0
+                : std::max(0, max_query_start - endpoint_slack);
+            const int32_t query_hi = is_left
+                ? std::min(max_query_start, endpoint_slack)
+                : max_query_start;
 
             std::vector<EventFlankPlacement> placements;
             placements.reserve(
-                static_cast<size_t>(std::max(0, search_hi - search_lo + 1)));
+                static_cast<size_t>(std::max(0, search_hi - search_lo + 1)) *
+                static_cast<size_t>(std::max(1, query_hi - query_lo + 1)));
 
-            for (int32_t anchor_pos = search_lo; anchor_pos <= search_hi; ++anchor_pos) {
-                const int32_t ref_start = is_left ? (anchor_pos - align_len) : anchor_pos;
-                const int32_t ref_end = is_left ? anchor_pos : (anchor_pos + align_len);
-                if (ref_start < ref_window_start || ref_end > ref_window_end) {
-                    continue;
+            for (int32_t query_start = query_lo; query_start <= query_hi; ++query_start) {
+                const std::string query = consensus.substr(
+                    static_cast<size_t>(query_start),
+                    static_cast<size_t>(align_len));
+                const int32_t endpoint_offset = is_left
+                    ? query_start
+                    : (consensus_len - (query_start + align_len));
+
+                for (int32_t anchor_pos = search_lo; anchor_pos <= search_hi; ++anchor_pos) {
+                    const int32_t ref_start = is_left ? (anchor_pos - align_len) : anchor_pos;
+                    const int32_t ref_end = is_left ? anchor_pos : (anchor_pos + align_len);
+                    if (ref_start < ref_window_start || ref_end > ref_window_end) {
+                        continue;
+                    }
+
+                    const size_t offset = static_cast<size_t>(ref_start - ref_window_start);
+                    const std::string ref_seq = ref_window.substr(
+                        offset,
+                        static_cast<size_t>(align_len));
+                    if (static_cast<int32_t>(ref_seq.size()) != align_len) {
+                        continue;
+                    }
+
+                    const double identity = edit_identity(query, ref_seq);
+                    if (identity + 1e-9 < kEventSegmentationMinFlankIdentity) {
+                        continue;
+                    }
+
+                    EventFlankPlacement placement;
+                    placement.query_start = query_start;
+                    placement.query_end = query_start + align_len;
+                    placement.ref_start = ref_start;
+                    placement.ref_end = ref_end;
+                    placement.align_len = align_len;
+                    placement.identity = identity;
+                    placement.breakpoint_delta = is_left
+                        ? std::abs(ref_end - breakpoint)
+                        : std::abs(ref_start - breakpoint);
+                    placement.endpoint_offset = endpoint_offset;
+                    placements.push_back(placement);
                 }
-
-                const size_t offset = static_cast<size_t>(ref_start - ref_window_start);
-                const std::string ref_seq = ref_window.substr(offset, static_cast<size_t>(align_len));
-                if (static_cast<int32_t>(ref_seq.size()) != align_len) {
-                    continue;
-                }
-
-                const double identity = edit_identity(query, ref_seq);
-                if (identity + 1e-9 < kEventSegmentationMinFlankIdentity) {
-                    continue;
-                }
-
-                result.had_threshold_hit = true;
-                EventFlankPlacement placement;
-                placement.query_start = query_start;
-                placement.query_end = query_start + align_len;
-                placement.ref_start = ref_start;
-                placement.ref_end = ref_end;
-                placement.align_len = align_len;
-                placement.identity = identity;
-                placement.breakpoint_delta = is_left
-                    ? std::abs(ref_end - breakpoint)
-                    : std::abs(ref_start - breakpoint);
-                placements.push_back(placement);
             }
 
             if (placements.empty()) {
@@ -1857,26 +2358,14 @@ EventSegmentation Pipeline::segment_event_consensus(
                 placements.begin(),
                 placements.end(),
                 better_event_flank_placement);
-            const EventFlankPlacement& best = placements.front();
-
-            bool ambiguous = false;
-            for (size_t idx = 1; idx < placements.size(); ++idx) {
-                const EventFlankPlacement& alt = placements[idx];
-                if (alt.ref_start == best.ref_start && alt.ref_end == best.ref_end) {
-                    continue;
+            const double best_identity = placements.front().identity;
+            for (const auto& placement : placements) {
+                if ((placement.identity + kEventSegmentationUniquenessMargin) < best_identity) {
+                    break;
                 }
-                if ((alt.identity + kEventSegmentationUniquenessMargin) >= best.identity) {
-                    ambiguous = true;
-                }
-                break;
+                result.candidates.push_back(placement);
             }
-            if (ambiguous) {
-                continue;
-            }
-
-            result.candidates.push_back(best);
         }
-
         std::sort(
             result.candidates.begin(),
             result.candidates.end(),
@@ -1884,27 +2373,41 @@ EventSegmentation Pipeline::segment_event_consensus(
         return result;
     };
 
-    const EventFlankSearchResult left_search = collect_candidates(
+    EventFlankSearchResult left_search = collect_candidates(
         true,
         bp_left,
         left_window_start,
-        left_ref_window);
+        left_ref_window,
+        0);
+    if (left_search.candidates.empty() && kEventSegmentationEndpointSlackBp > 0) {
+        left_search = collect_candidates(
+            true,
+            bp_left,
+            left_window_start,
+            left_ref_window,
+            kEventSegmentationEndpointSlackBp);
+    }
     if (left_search.candidates.empty()) {
-        segmentation.qc_reason = left_search.had_threshold_hit
-            ? "LEFT_FLANK_AMBIGUOUS"
-            : "NO_LEFT_FLANK_MATCH";
+        segmentation.qc_reason = "NO_LEFT_FLANK_MATCH";
         return segmentation;
     }
 
-    const EventFlankSearchResult right_search = collect_candidates(
+    EventFlankSearchResult right_search = collect_candidates(
         false,
         bp_right,
         right_window_start,
-        right_ref_window);
+        right_ref_window,
+        0);
+    if (right_search.candidates.empty() && kEventSegmentationEndpointSlackBp > 0) {
+        right_search = collect_candidates(
+            false,
+            bp_right,
+            right_window_start,
+            right_ref_window,
+            kEventSegmentationEndpointSlackBp);
+    }
     if (right_search.candidates.empty()) {
-        segmentation.qc_reason = right_search.had_threshold_hit
-            ? "RIGHT_FLANK_AMBIGUOUS"
-            : "NO_RIGHT_FLANK_MATCH";
+        segmentation.qc_reason = "NO_RIGHT_FLANK_MATCH";
         return segmentation;
     }
 
@@ -2065,12 +2568,12 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
         }
 
         int32_t best_window = -1;
-        double best_score = 0.0;
-        double second_score = 0.0;
+        ReadWindowAssignmentScore best_score;
+        ReadWindowAssignmentScore second_score;
 
         for (size_t wi = 0; wi < windows.size(); ++wi) {
             const auto& window = windows[wi];
-            double score = 0.0;
+            ReadWindowAssignmentScore score;
             for (const EvidencePoint* point : read_points) {
                 if (!point) {
                     continue;
@@ -2080,22 +2583,30 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
                     (point->pos >= window.start && point->pos <= window.end)
                     ? 1.0
                     : std::exp(-static_cast<double>(dist) / kReadAssignDecayBp);
-                score += point->weight * proximity;
+                accumulate_read_window_assignment_score(
+                    *point,
+                    point->weight * proximity,
+                    score);
             }
 
-            if (score > best_score) {
+            if (better_read_window_assignment_score(score, best_score)) {
                 second_score = best_score;
                 best_score = score;
                 best_window = static_cast<int32_t>(wi);
-            } else if (score > second_score) {
+            } else if (better_read_window_assignment_score(score, second_score)) {
                 second_score = score;
             }
         }
 
-        if (best_window < 0 || best_score < kReadAssignMinScore) {
+        if (best_window < 0 ||
+            !best_score.valid ||
+            best_score.specificity_score < kReadAssignMinScore) {
             continue;
         }
-        if (second_score >= best_score * kReadAmbiguousRatio) {
+        if (second_score.valid &&
+            best_score.specificity_rank == second_score.specificity_rank &&
+            second_score.specificity_score >=
+                best_score.specificity_score * kReadAmbiguousRatio) {
             ambiguous_count[static_cast<size_t>(best_window)] += 1;
             continue;
         }
@@ -2121,27 +2632,6 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
         call.peak_weight = windows[wi].peak_weight;
 
         std::vector<std::pair<int32_t, double>> anchor_points;
-        for (size_t read_idx = 0; read_idx < assigned_window.size(); ++read_idx) {
-            if (assigned_window[read_idx] != static_cast<int32_t>(wi)) {
-                continue;
-            }
-
-            call.read_indices.push_back(read_idx);
-            if (read_idx >= evidence_bundle.read_summaries.size()) {
-                continue;
-            }
-
-            const auto& summary = evidence_bundle.read_summaries[read_idx];
-            if (summary.max_soft_clip >= kSoftClipSignalMin) {
-                call.soft_clip_read_indices.push_back(read_idx);
-            }
-            if (summary.has_sa_or_supp) {
-                call.split_sa_read_indices.push_back(read_idx);
-            }
-            if (summary.max_ins >= kLongInsertionSignalMin) {
-                call.insertion_read_indices.push_back(read_idx);
-            }
-        }
 
         const auto better_point = [&](const EvidencePoint* candidate, const EvidencePoint* incumbent) {
             if (candidate == nullptr) {
@@ -2194,7 +2684,17 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
             call.breakpoint_candidates.push_back(std::move(candidate));
         };
 
-        for (size_t read_idx : call.read_indices) {
+        const auto point_is_local_to_window = [&](const EvidencePoint* point) {
+            if (point == nullptr) {
+                return false;
+            }
+            return point->pos >= windows[wi].start && point->pos <= windows[wi].end;
+        };
+
+        for (size_t read_idx = 0; read_idx < assigned_window.size(); ++read_idx) {
+            if (assigned_window[read_idx] != static_cast<int32_t>(wi)) {
+                continue;
+            }
             if (read_idx >= evidence_by_read.size()) {
                 continue;
             }
@@ -2207,6 +2707,9 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
                     continue;
                 }
                 if (assigned_window[point->read_index] != static_cast<int32_t>(wi)) {
+                    continue;
+                }
+                if (!point_is_local_to_window(point)) {
                     continue;
                 }
                 switch (point->kind) {
@@ -2228,13 +2731,21 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
                 }
             }
 
+            if (best_softclip == nullptr && best_indel == nullptr && best_sa_hint == nullptr) {
+                continue;
+            }
+
+            call.read_indices.push_back(read_idx);
             if (best_softclip != nullptr) {
+                call.soft_clip_read_indices.push_back(read_idx);
                 append_point(*best_softclip);
             }
             if (best_indel != nullptr) {
+                call.insertion_read_indices.push_back(read_idx);
                 append_point(*best_indel);
             }
             if (best_sa_hint != nullptr) {
+                call.split_sa_read_indices.push_back(read_idx);
                 append_point(*best_sa_hint);
             }
         }
@@ -2857,18 +3368,6 @@ void Pipeline::process_bin_records(
                     << " consensus_len=" << event_consensus.consensus_len
                     << " consensus_ends=" << summarize_seq_ends(event_consensus.consensus_seq);
                 emit_pipeline_log_line(oss.str());
-
-                std::ofstream event_debug_out("event_debug.tsv", std::ios::out | std::ios::app);
-                if (event_debug_out.is_open()) {
-                    event_debug_out
-                        << component.chrom << "\t"
-                        << component.anchor_pos << "\t"
-                        << event_evidence.bp_left << "\t"
-                        << event_evidence.bp_right << "\t"
-                        << event_consensus.consensus_len << "\t"
-                        << event_segmentation.qc_reason << "\t"
-                        << event_consensus.consensus_seq << "\n";
-                }
             }
             log_component(
                 event_segmentation.qc_reason.c_str(),

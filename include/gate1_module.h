@@ -13,6 +13,7 @@ struct Gate1SignalConfig {
 
     // Signal criteria
     int32_t long_soft_clip_min = 100;
+    int32_t long_insertion_min = 50;
 
     // Fallback background retention when no signal is present.
     int32_t background_mapq_min = 20;

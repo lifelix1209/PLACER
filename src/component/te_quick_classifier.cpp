@@ -24,6 +24,9 @@ constexpr int32_t kInsertSequenceMinLen = 80;
 constexpr double kInsertSequenceMinIdentity = 0.80;
 constexpr double kInsertSequenceMinQueryCoverage = 0.80;
 constexpr double kInsertSequenceMinCrossFamilyMargin = 0.10;
+constexpr double kInsertSequenceUnknownMinIdentity = 0.55;
+constexpr double kInsertSequenceUnknownMinQueryCoverage = 0.60;
+constexpr double kInsertSequenceShortlistSupportWeight = 0.06;
 
 struct TeEntry {
     std::string name;
@@ -1040,16 +1043,39 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         std::string te_name;
         TeNameParts name_parts;
         LocalAlignmentSummary alignment;
+        double shortlist_support = 0.0;
+        double family_score = 0.0;
     };
-    struct FamilyBestScore {
-        std::string family = "NA";
-        double score = 0.0;
+    struct FamilyBestHit {
+        BestAlignmentHit best_alignment_hit;
+        BestAlignmentHit best_family_score_hit;
+        bool have_alignment_hit = false;
+        bool have_family_score_hit = false;
+    };
+    auto better_alignment_hit = [](const BestAlignmentHit& lhs, const BestAlignmentHit& rhs) {
+        if (lhs.alignment.score != rhs.alignment.score) {
+            return lhs.alignment.score > rhs.alignment.score;
+        }
+        if (lhs.alignment.identity != rhs.alignment.identity) {
+            return lhs.alignment.identity > rhs.alignment.identity;
+        }
+        if (lhs.alignment.query_coverage != rhs.alignment.query_coverage) {
+            return lhs.alignment.query_coverage > rhs.alignment.query_coverage;
+        }
+        if (lhs.shortlist_support != rhs.shortlist_support) {
+            return lhs.shortlist_support > rhs.shortlist_support;
+        }
+        return lhs.te_name < rhs.te_name;
+    };
+    auto better_family_score_hit = [&](const BestAlignmentHit& lhs, const BestAlignmentHit& rhs) {
+        if (lhs.family_score != rhs.family_score) {
+            return lhs.family_score > rhs.family_score;
+        }
+        return better_alignment_hit(lhs, rhs);
     };
 
-    BestAlignmentHit best_hit;
-    bool have_best_hit = false;
-    std::unordered_map<std::string, FamilyBestScore> best_family_scores;
-    best_family_scores.reserve(ranked.size());
+    std::unordered_map<std::string, FamilyBestHit> family_best_hits;
+    family_best_hits.reserve(ranked.size());
 
     for (const auto& row : ranked) {
         const int32_t te_id = row.first;
@@ -1077,72 +1103,103 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         const TeNameParts name_parts = parse_te_name_parts(
             te_names_[static_cast<size_t>(te_id)]);
 
-        const auto better_hit = [&](const BestAlignmentHit& lhs, const BestAlignmentHit& rhs) {
-            if (lhs.alignment.score != rhs.alignment.score) {
-                return lhs.alignment.score > rhs.alignment.score;
-            }
-            if (lhs.alignment.identity != rhs.alignment.identity) {
-                return lhs.alignment.identity > rhs.alignment.identity;
-            }
-            if (lhs.alignment.query_coverage != rhs.alignment.query_coverage) {
-                return lhs.alignment.query_coverage > rhs.alignment.query_coverage;
-            }
-            return lhs.te_name < rhs.te_name;
-        };
-
         BestAlignmentHit hit;
         hit.name_parts = name_parts;
         hit.te_name = name_parts.exact_name;
         hit.alignment = alignment;
-        if (!have_best_hit || better_hit(hit, best_hit)) {
-            best_hit = hit;
-            have_best_hit = true;
-        }
+        hit.shortlist_support = row.second;
+        // Base-level alignment remains primary; shortlist support only nudges
+        // family competition when multiple templates align similarly well.
+        hit.family_score =
+            alignment.score *
+            (1.0 + (kInsertSequenceShortlistSupportWeight * hit.shortlist_support));
 
-        auto family_it = best_family_scores.find(name_parts.family_key);
-        if (family_it == best_family_scores.end() ||
-            alignment.score > family_it->second.score) {
-            FamilyBestScore family_best;
-            family_best.family = name_parts.family;
-            family_best.score = alignment.score;
-            best_family_scores[name_parts.family_key] = family_best;
+        auto& family_best = family_best_hits[name_parts.family_key];
+        if (!family_best.have_alignment_hit ||
+            better_alignment_hit(hit, family_best.best_alignment_hit)) {
+            family_best.best_alignment_hit = hit;
+            family_best.have_alignment_hit = true;
+        }
+        if (!family_best.have_family_score_hit ||
+            better_family_score_hit(hit, family_best.best_family_score_hit)) {
+            family_best.best_family_score_hit = hit;
+            family_best.have_family_score_hit = true;
         }
     }
 
-    if (!have_best_hit) {
+    if (family_best_hits.empty()) {
         evidence.qc_reason = "NO_TE_ALIGNMENT_MATCH";
         return evidence;
     }
 
-    evidence.best_family = best_hit.name_parts.family;
-    evidence.best_subfamily = best_hit.name_parts.subfamily;
-    evidence.best_identity = best_hit.alignment.identity;
-    evidence.best_query_coverage = best_hit.alignment.query_coverage;
-    evidence.best_score = best_hit.alignment.score;
-
-    const std::string best_family_key = best_hit.name_parts.family_key;
-    for (const auto& kv : best_family_scores) {
-        if (kv.first == best_family_key) {
+    const FamilyBestHit* best_family = nullptr;
+    std::string best_family_key;
+    for (const auto& kv : family_best_hits) {
+        if (!kv.second.have_alignment_hit || !kv.second.have_family_score_hit) {
             continue;
         }
-        if (kv.second.score > evidence.second_score ||
-            (kv.second.score == evidence.second_score &&
-             (evidence.second_family == "NA" || kv.second.family < evidence.second_family))) {
-            evidence.second_family = kv.second.family;
-            evidence.second_score = kv.second.score;
+        if (!best_family ||
+            better_family_score_hit(
+                kv.second.best_family_score_hit,
+                best_family->best_family_score_hit)) {
+            best_family = &kv.second;
+            best_family_key = kv.first;
+        }
+    }
+    if (!best_family) {
+        evidence.qc_reason = "NO_TE_ALIGNMENT_MATCH";
+        return evidence;
+    }
+
+    evidence.best_family = best_family->best_alignment_hit.name_parts.family;
+    evidence.best_subfamily = best_family->best_alignment_hit.name_parts.subfamily;
+    evidence.best_identity = best_family->best_alignment_hit.alignment.identity;
+    evidence.best_query_coverage = best_family->best_alignment_hit.alignment.query_coverage;
+    evidence.best_score = best_family->best_family_score_hit.family_score;
+
+    for (const auto& kv : family_best_hits) {
+        if (kv.first == best_family_key ||
+            !kv.second.have_alignment_hit ||
+            !kv.second.have_family_score_hit) {
+            continue;
+        }
+        const BestAlignmentHit& family_hit = kv.second.best_family_score_hit;
+        if (family_hit.family_score > evidence.second_score ||
+            (family_hit.family_score == evidence.second_score &&
+             (evidence.second_family == "NA" ||
+              kv.second.best_alignment_hit.name_parts.family < evidence.second_family))) {
+            evidence.second_family = kv.second.best_alignment_hit.name_parts.family;
+            evidence.second_score = family_hit.family_score;
         }
     }
     evidence.cross_family_margin = std::max(0.0, evidence.best_score - evidence.second_score);
 
-    if (evidence.best_identity + 1e-9 < kInsertSequenceMinIdentity) {
+    const bool pass_identity = evidence.best_identity + 1e-9 >= kInsertSequenceMinIdentity;
+    const bool pass_query_coverage =
+        evidence.best_query_coverage + 1e-9 >= kInsertSequenceMinQueryCoverage;
+    const bool pass_cross_family_margin =
+        evidence.cross_family_margin + 1e-9 >= kInsertSequenceMinCrossFamilyMargin;
+    const bool supports_unknown_call =
+        evidence.best_identity + 1e-9 >= kInsertSequenceUnknownMinIdentity &&
+        evidence.best_query_coverage + 1e-9 >= kInsertSequenceUnknownMinQueryCoverage;
+
+    if ((!pass_identity || !pass_query_coverage) && supports_unknown_call) {
+        evidence.best_family = "UNKNOWN";
+        evidence.best_subfamily = "UNKNOWN";
+        evidence.pass = true;
+        evidence.qc_reason = "PASS_INSERT_TE_ALIGNMENT_UNKNOWN";
+        return evidence;
+    }
+
+    if (!pass_identity) {
         evidence.qc_reason = "TE_ALIGNMENT_LOW_IDENTITY";
         return evidence;
     }
-    if (evidence.best_query_coverage + 1e-9 < kInsertSequenceMinQueryCoverage) {
+    if (!pass_query_coverage) {
         evidence.qc_reason = "TE_ALIGNMENT_LOW_QUERY_COVERAGE";
         return evidence;
     }
-    if (evidence.cross_family_margin + 1e-9 < kInsertSequenceMinCrossFamilyMargin) {
+    if (!pass_cross_family_margin) {
         evidence.qc_reason = "TE_ALIGNMENT_CROSS_FAMILY_AMBIGUOUS";
         return evidence;
     }

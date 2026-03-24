@@ -145,6 +145,27 @@ int main() {
     }
 
     {
+        const std::string deu = build_sequence(160, 509u);
+        const std::string dna_like = mutate_positions(
+            deu,
+            {10, 25, 40, 55, 70, 85, 100, 115, 130, 145});
+        write_te_fasta(
+            fasta_path,
+            {
+                {"5S-Deu-L2:5S-Deu-L2-3", deu},
+                {"DNA:NA-DNA-24", dna_like},
+            });
+
+        const TEAlignmentEvidence evidence = run_alignment(fasta_path, deu);
+        assert(evidence.pass);
+        assert(evidence.qc_reason == "PASS_INSERT_TE_ALIGNMENT");
+        assert(evidence.best_family == "5S-Deu-L2");
+        assert(evidence.best_subfamily == "5S-Deu-L2-3");
+        assert(evidence.second_family == "DNA");
+        assert(evidence.cross_family_margin >= 0.10);
+    }
+
+    {
         const std::string gypsy = build_sequence(120, 101u);
         write_te_fasta(
             fasta_path,
@@ -157,6 +178,31 @@ int main() {
             gypsy.substr(0, 60));
         assert(!evidence.pass);
         assert(evidence.qc_reason == "INSERT_SEQ_TOO_SHORT");
+    }
+
+    {
+        const std::string gypsy = build_sequence(160, 701u);
+        const std::string copia = build_sequence(160, 907u);
+        std::vector<size_t> block_mutations;
+        for (size_t pos = 30; pos < 70; ++pos) {
+            block_mutations.push_back(pos);
+        }
+        const std::string divergent_insert = mutate_positions(gypsy, block_mutations);
+        write_te_fasta(
+            fasta_path,
+            {
+                {"SubGypsyD#LTR/Gypsy", gypsy},
+                {"SubCopiaD#LTR/Copia", copia},
+            });
+
+        const TEAlignmentEvidence evidence = run_alignment(fasta_path, divergent_insert);
+        assert(evidence.pass);
+        assert(evidence.qc_reason == "PASS_INSERT_TE_ALIGNMENT_UNKNOWN");
+        assert(evidence.best_family == "UNKNOWN");
+        assert(evidence.best_subfamily == "UNKNOWN");
+        assert(evidence.best_identity >= 0.55);
+        assert(evidence.best_identity < 0.80);
+        assert(evidence.best_query_coverage >= 0.60);
     }
 
     std::remove(fasta_path.c_str());

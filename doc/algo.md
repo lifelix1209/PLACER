@@ -69,10 +69,25 @@ structural insertion evidence or sufficient mapping quality.
 
 This stage is proposal-only. It cannot emit final calls.
 
+Current semantics:
+
+- long `I` CIGAR segments are direct proposal signals, even when read-level
+  `MAPQ` is low
+- soft-clip-specific flank and global `NM` vetoes apply to clip-only proposal
+  reads, not to reads that already carry a direct long-insertion signal
+
 ### 3.2 Component Proposal
 
 `LinearBinComponentModule::build(...)` converts local evidence points into
 candidate windows and candidate loci.
+
+Current semantics:
+
+- read-to-window assignment prefers breakpoint-specific evidence over proxy
+  evidence
+- long `I` CIGAR evidence outranks soft clips, and soft clips outrank SA-only
+  hints
+- within the same evidence class, stronger local support still wins
 
 Each `ComponentCall` is only a proposal object:
 
@@ -120,7 +135,23 @@ The current evidence object is `EventReadEvidence`:
 - `support_qnames`
 - `ref_span_qnames`
 
+Current semantics:
+
+- breakpoint resolution still defines the narrow ref-span recount interval
+- alt-support recount may use the enclosing component breakpoint envelope so
+  nearby clip support is not dropped just because proxy breakpoints are less
+  precise than the winning direct-indel breakpoint
+
 This replaces the old generic evidence summary.
+
+Breakpoint recount is local to `ComponentCall::anchor_pos`.
+If recollection contains multiple breakpoint clusters, this stage compares
+breakpoint hypotheses built from split/indel/clip evidence and resolves the
+event breakpoint before recomputing `alt_struct_reads` and `ref_span_reads`.
+Candidate breakpoint hypotheses are ranked by breakpoint-bearing evidence
+strength first, then by anchor locality. Split/indel-derived hypotheses
+therefore outrank clip-only clusters when the latter are more abundant but less
+specific.
 
 ### 3.5 Event Existence
 
@@ -138,17 +169,22 @@ If the best genotype is reference or uninformative, the locus is rejected.
 ### 3.6 Event Consensus
 
 `build_event_consensus(...)` builds an event consensus from event strings that
-span both sides of the event.
+cover the event with full context when available, and otherwise falls back to
+one-sided clip-derived event strings for rescue.
 
 Implementation:
 
+- full-context event strings (`CIGAR` insertion / reliable split) are preferred
+  and clip-only strings do not mix into that POA once full-context strings
+  exist
+- if no full-context event strings exist, one-sided clip strings enter POA as a
+  rescue path
 - input is event strings, not insert-only fragments
 - abPOA builds the consensus
-- reads without dual event context do not enter the consensus
 
 Typical rejection reasons:
 
-- `NO_DUAL_CONTEXT_EVENT_READS`
+- `NO_EVENT_STRING_READS`
 - `INSUFFICIENT_EVENT_READS`
 - `EMPTY_EVENT_CONSENSUS`
 
@@ -169,6 +205,13 @@ It also records:
 
 The final path continues only when tripartite segmentation succeeds.
 
+Current semantics:
+
+- left/right flank candidates are scored independently
+- near-best repeated placements are carried forward
+- final disambiguation happens at the left/right pair level, not by single-side
+  early veto
+
 ### 3.8 Insert-Sequence TE Alignment
 
 `align_insert_seq_to_te(...)` calls
@@ -176,8 +219,10 @@ The final path continues only when tripartite segmentation succeeds.
 
 Current semantics:
 
-- k-mer index is used only to shortlist TE templates
-- final family/subfamily comes from alignment on `insert_seq`
+- k-mer index still builds the TE shortlist from the full `insert_seq`
+- final family ambiguity is resolved primarily by base-level `insert_seq`
+  alignment, with shortlist support used only as a bounded secondary prior
+- final subfamily comes from the best-aligned template inside the winning family
 - raw fragment votes do not decide final family
 
 Current hard conditions in this stage:

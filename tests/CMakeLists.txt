@@ -8,6 +8,14 @@ target_link_libraries(test_decision_policy PRIVATE placer_pipeline)
 
 add_test(NAME test_decision_policy COMMAND test_decision_policy)
 
+add_executable(test_gate1
+    test_gate1.cpp
+)
+target_include_directories(test_gate1 PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_gate1 PRIVATE placer_pipeline)
+
+add_test(NAME test_gate1 COMMAND test_gate1)
+
 add_executable(test_te_quick_classifier_multik
     test_te_quick_classifier_multik.cpp
 )
@@ -63,6 +71,14 @@ target_include_directories(test_ref_span_dominant_rejection PRIVATE ${CMAKE_SOUR
 target_link_libraries(test_ref_span_dominant_rejection PRIVATE placer_pipeline)
 
 add_test(NAME test_ref_span_dominant_rejection COMMAND test_ref_span_dominant_rejection)
+
+add_executable(test_component_locality
+    test_component_locality.cpp
+)
+target_include_directories(test_component_locality PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_component_locality PRIVATE placer_pipeline)
+
+add_test(NAME test_component_locality COMMAND test_component_locality)
 
 add_executable(test_denovo_cli
     test_denovo_cli.cpp

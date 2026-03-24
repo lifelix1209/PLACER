@@ -25,6 +25,7 @@ scientific.txt
 ins_fragments.fasta
 ins_fragment_hits.tsv
 tuning_results.tsv
+event_debug.tsv
 placer_out/
 benchmark_steller_out/
 benchmark_steller_sweep/

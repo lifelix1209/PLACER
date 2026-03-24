@@ -13,6 +13,7 @@ struct CigarSummary {
     int32_t max_match_block = 0;
 
     int32_t max_soft_clip = 0;
+    int32_t max_insertion = 0;
     int32_t leading_soft_clip = 0;
     int32_t trailing_soft_clip = 0;
 
@@ -67,6 +68,8 @@ CigarSummary summarize_cigar(const ReadView& read) {
 
         if (op == BAM_CSOFT_CLIP) {
             s.max_soft_clip = std::max(s.max_soft_clip, len);
+        } else if (op == BAM_CINS) {
+            s.max_insertion = std::max(s.max_insertion, len);
         }
     }
 
@@ -127,8 +130,10 @@ bool SignalFirstGate1Module::pass_preliminary(const ReadView& read) const {
     const bool has_supplementary = (flag & BAM_FSUPPLEMENTARY) != 0;
     const bool has_sa = read.has_sa_tag();
     const bool has_long_soft_clip = cigar.max_soft_clip >= config_.long_soft_clip_min;
+    const bool has_long_insertion = cigar.max_insertion >= config_.long_insertion_min;
 
-    const bool has_signal = has_supplementary || has_sa || has_long_soft_clip;
+    const bool has_signal =
+        has_supplementary || has_sa || has_long_soft_clip || has_long_insertion;
 
     if (!has_signal) {
         return read.mapq() > config_.background_mapq_min;
@@ -139,8 +144,10 @@ bool SignalFirstGate1Module::pass_preliminary(const ReadView& read) const {
         return false;
     }
 
-    // Fuse 2: for long soft-clips, require acceptable flank anchors.
-    if (has_long_soft_clip) {
+    // Fuse 2: for clip-only proposal reads, require acceptable clip-adjacent
+    // anchors. Reads with a direct long insertion signal should not be vetoed
+    // by an unrelated clip on the same noisy/chimeric alignment.
+    if (has_long_soft_clip && !has_long_insertion) {
         const bool leading_long = cigar.leading_soft_clip >= config_.long_soft_clip_min;
         const bool trailing_long = cigar.trailing_soft_clip >= config_.long_soft_clip_min;
 
@@ -152,13 +159,17 @@ bool SignalFirstGate1Module::pass_preliminary(const ReadView& read) const {
         }
     }
 
-    // Fuse 3: if NM exists, reject overly noisy alignments.
-    int64_t nm = -1;
-    if (read.get_int_tag("NM", nm) && cigar.total_match_bases > 0) {
-        const double nm_rate = static_cast<double>(nm) /
-            static_cast<double>(cigar.total_match_bases);
-        if (nm_rate > config_.max_nm_rate) {
-            return false;
+    // Fuse 3: for non-indel proposal reads, reject overly noisy alignments.
+    // Direct long insertion evidence is breakpoint-specific enough that global
+    // mismatch burden elsewhere on the read should not suppress it here.
+    if (!has_long_insertion) {
+        int64_t nm = -1;
+        if (read.get_int_tag("NM", nm) && cigar.total_match_bases > 0) {
+            const double nm_rate = static_cast<double>(nm) /
+                static_cast<double>(cigar.total_match_bases);
+            if (nm_rate > config_.max_nm_rate) {
+                return false;
+            }
         }
     }
 
