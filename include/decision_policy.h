@@ -6,130 +6,57 @@
 
 namespace placer {
 
-struct ClusterTECall;
-struct AssemblyCall;
-struct ComponentCall;
-struct PipelineConfig;
-
-struct InsertionEvidence {
-    int32_t tier = 3;
-    int32_t support_reads = 0;
+struct EventGenotypeInput {
+    int32_t alt_struct_reads = 0;
+    int32_t ref_span_reads = 0;
+    int32_t min_depth = 3;
+    int32_t min_gq = 20;
+    double error_rate = 0.02;
 };
 
-struct InsertionAcceptanceParams {
-    bool emit_low_confidence_calls = false;
-    int32_t low_conf_min_support_reads = 2;
-    int32_t low_conf_max_tier = 2;
-};
-
-struct InsertionAcceptanceDecision {
+struct EventGenotypeDecision {
+    std::string best_gt = "./.";
+    double allele_fraction = 0.0;
+    int32_t gq = 0;
     bool pass = false;
-    bool low_confidence = false;
 };
 
-InsertionAcceptanceDecision evaluate_insertion_acceptance(
-    const InsertionEvidence& evidence,
-    const InsertionAcceptanceParams& params);
+EventGenotypeDecision genotype_event_from_alt_vs_ref(
+    const EventGenotypeInput& input);
 
-struct TeOpenSetInput {
-    bool te_gate_pass = false;
-    bool te_gate_uncertain_path = false;
-    bool force_te_uncertain = false;
-    bool force_non_te = false;
-    bool has_proxy_signal = false;
-    bool proxy_certain = false;
-    double te_confidence_prob = 0.0;
+struct FinalBoundaryInput {
+    int32_t left_ref_start = -1;
+    int32_t left_ref_end = -1;
+    int32_t right_ref_start = -1;
+    int32_t right_ref_end = -1;
+    int32_t tsd_min_len = 3;
+    int32_t tsd_max_len = 50;
 };
 
-struct TeOpenSetParams {
-    double conf_certain_min = 0.85;
-    double conf_uncertain_min = 0.35;
-};
-
-struct TeOpenSetDecision {
-    std::string status = "NON_TE";
-    bool promote_top1_name = false;
-    bool add_te_gate_fail_tag = false;
-    std::string qc_proxy_tag;
-};
-
-TeOpenSetDecision classify_te_open_set(
-    const TeOpenSetInput& input,
-    const TeOpenSetParams& params);
-
-struct BreakpointConsistencyInput {
-    int32_t split_count = 0;
-    int32_t clip_count = 0;
-    int32_t indel_count = 0;
-    double all_breakpoint_mad = 0.0;
-    double split_breakpoint_mad = 0.0;
-    double split_like_breakpoint_mad = 0.0;
-    double clip_breakpoint_mad = 0.0;
-    double indel_breakpoint_mad = 0.0;
-    double split_clip_core_delta = 0.0;
-};
-
-struct BreakpointConsistencyParams {
-    double breakpoint_mad_max = 80.0;
-    double clip_breakpoint_mad_max = 120.0;
-    double split_clip_core_delta_max = 150.0;
-    double tight_split_like_breakpoint_mad_max = 40.0;
-    int32_t min_split_like_count = 1;
-    int32_t min_clip_count = 2;
-};
-
-struct BreakpointConsistencyDecision {
-    bool pass_breakpoint_mad = true;
-    bool pass_split_clip_consistency = true;
-    bool severe_inconsistency = false;
-    double placeability_penalty = 0.0;
-};
-
-BreakpointConsistencyDecision evaluate_breakpoint_consistency(
-    const BreakpointConsistencyInput& input,
-    const BreakpointConsistencyParams& params);
-
-struct SequenceClosureInput {
-    bool enabled = false;
-    int32_t left_anchor_reads = 0;
-    int32_t right_anchor_reads = 0;
-    int32_t dual_anchor_reads = 0;
-    int32_t total_anchor_reads = 0;
-    int32_t empty_span_reads = 0;
-    int32_t split_like_support_reads = 0;
-};
-
-struct SequenceClosureParams {
-    int32_t min_side_reads = 1;
-    int32_t min_total_anchor_reads = 2;
-    int32_t min_dual_anchor_reads = 1;
-    int32_t split_like_rescue_min_reads = 3;
-    double max_empty_span_ratio_pass = 3.0;
-    double max_empty_span_ratio_certain = 1.5;
-};
-
-struct SequenceClosureDecision {
+struct FinalBoundaryDecision {
     bool pass = false;
-    bool certain = false;
-    bool force_non_te = false;
-    std::string qc = "SEQ_CLOSURE_DISABLED";
+    std::string boundary_type = "REJECT";
+    int32_t boundary_len = 0;
+    std::string qc = "REJECT_BOUNDARY_UNSET";
 };
 
-SequenceClosureDecision evaluate_sequence_closure(
-    const SequenceClosureInput& input,
-    const SequenceClosureParams& params);
+FinalBoundaryDecision check_boundary_consistency(
+    const FinalBoundaryInput& input);
 
-struct PostAssemblyTeDecision {
+struct FinalTeAcceptanceInput {
+    bool event_existence_pass = false;
+    bool event_closure_pass = false;
+    bool te_sequence_pass = false;
+    bool boundary_pass = false;
+};
+
+struct FinalTeAcceptanceDecision {
     bool pass = false;
-    bool force_te_uncertain = false;
-    std::string qc = "FAIL_TE_CLASSIFICATION";
+    std::string qc = "REJECT_EVENT_EXISTENCE";
 };
 
-PostAssemblyTeDecision evaluate_post_assembly_te_decision(
-    const ClusterTECall& te_call,
-    const AssemblyCall& assembly,
-    const ComponentCall& component,
-    const PipelineConfig& config);
+FinalTeAcceptanceDecision evaluate_final_te_acceptance(
+    const FinalTeAcceptanceInput& input);
 
 }  // namespace placer
 

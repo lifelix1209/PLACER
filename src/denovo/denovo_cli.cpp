@@ -117,9 +117,6 @@ void write_denovo_usage(std::ostream& out) {
         << " [--out-prefix trio_denovo]\n\n"
         << "Options:\n"
         << "  --child-min-support-reads <int>\n"
-        << "  --child-max-tier <int>\n"
-        << "  --child-confidence <HIGH|UNCERTAIN|...>\n"
-        << "  --child-allow-uncertain\n"
         << "  --fetch-window <int>\n"
         << "  --default-match-window <int>\n"
         << "  --max-match-window <int>\n"
@@ -185,22 +182,14 @@ DenovoChildCandidate parse_child_candidate_row(
     candidate.chrom = get_field(fields, columns, "chrom");
     candidate.pos = get_int32_field(fields, columns, "pos");
     candidate.te_name = get_field(fields, columns, "te", "NA");
-    candidate.te_status = get_field(fields, columns, "te_status", "NON_TE");
-    candidate.confidence = get_field(fields, columns, "confidence", "NA");
-    candidate.tier = get_int32_field(fields, columns, "tier", 3);
     candidate.support_reads = get_int32_field(fields, columns, "support_reads", 0);
 
-    const int32_t ref_junc_min = get_int32_field(fields, columns, "te_ref_junc_min", -1);
-    const int32_t ref_junc_max = get_int32_field(fields, columns, "te_ref_junc_max", -1);
-    const int32_t bp_win_start = get_int32_field(fields, columns, "te_bp_win_start", -1);
-    const int32_t bp_win_end = get_int32_field(fields, columns, "te_bp_win_end", -1);
+    const int32_t bp_left = get_int32_field(fields, columns, "bp_left", -1);
+    const int32_t bp_right = get_int32_field(fields, columns, "bp_right", -1);
 
-    if (ref_junc_min >= 0 && ref_junc_max >= ref_junc_min) {
-        candidate.event_start = ref_junc_min;
-        candidate.event_end = ref_junc_max;
-    } else if (bp_win_start >= 0 && bp_win_end >= bp_win_start) {
-        candidate.event_start = bp_win_start;
-        candidate.event_end = bp_win_end;
+    if (bp_left >= 0 && bp_right >= bp_left) {
+        candidate.event_start = bp_left;
+        candidate.event_end = bp_right;
     } else {
         candidate.event_start = std::max(0, candidate.pos - config.default_match_window);
         candidate.event_end = candidate.pos + config.default_match_window;
@@ -215,28 +204,8 @@ bool candidate_passes_child_filters(const DenovoChildCandidate& candidate, const
         return false;
     }
 
-    if (to_upper_copy(candidate.te_status) == "NON_TE") {
-        return false;
-    }
-
     if (candidate.support_reads < config.child_min_support_reads) {
         return false;
-    }
-
-    if (candidate.tier > config.child_max_tier) {
-        return false;
-    }
-
-    const std::string confidence = to_upper_copy(candidate.confidence);
-    const std::string required = to_upper_copy(config.child_confidence);
-    if (!required.empty()) {
-        if (config.child_allow_uncertain && required == "HIGH") {
-            if (confidence != "HIGH" && confidence != "UNCERTAIN") {
-                return false;
-            }
-        } else if (confidence != required) {
-            return false;
-        }
     }
 
     return true;
@@ -248,8 +217,8 @@ void write_calls_file(const DenovoConfig& config, const DenovoResult& result) {
         throw std::runtime_error("Failed to open denovo calls output");
     }
 
-    out << "#chrom\tpos\tte\tchild_support_reads\tchild_confidence\tchild_tier"
-        << "\tchild_event_start\tchild_event_end\tparent_total_support_reads"
+    out << "#chrom\tpos\tte\tchild_support_reads\tchild_event_start\tchild_event_end"
+        << "\tparent_total_support_reads"
         << "\tparent_exact_te_reads\tparent_family_te_reads\tparent_ambiguous_signal_reads"
         << "\tparent_support_bams\tscanner_status\tstatus\tde_novo\n";
     for (const auto& call : result.calls) {
@@ -257,8 +226,6 @@ void write_calls_file(const DenovoConfig& config, const DenovoResult& result) {
             << call.child.pos << "\t"
             << call.child.te_name << "\t"
             << call.child.support_reads << "\t"
-            << call.child.confidence << "\t"
-            << call.child.tier << "\t"
             << call.child.event_start << "\t"
             << call.child.event_end << "\t"
             << call.parent_summary.total_support_reads << "\t"
@@ -351,12 +318,6 @@ bool parse_denovo_cli_args(
             } else if (arg == "--child-min-support-reads") {
                 config.child_min_support_reads =
                     std::max<int32_t>(1, std::stoi(require_value("--child-min-support-reads")));
-            } else if (arg == "--child-max-tier") {
-                config.child_max_tier = std::max<int32_t>(1, std::stoi(require_value("--child-max-tier")));
-            } else if (arg == "--child-confidence") {
-                config.child_confidence = require_value("--child-confidence");
-            } else if (arg == "--child-allow-uncertain") {
-                config.child_allow_uncertain = true;
             } else if (arg == "--fetch-window") {
                 config.fetch_window = std::max<int32_t>(1, std::stoi(require_value("--fetch-window")));
             } else if (arg == "--default-match-window") {
@@ -434,10 +395,7 @@ std::vector<DenovoChildCandidate> load_denovo_child_candidates(
         if (line.rfind("#chrom\t", 0) == 0) {
             header = split_tab_line(line);
             columns = build_column_map(header);
-            require_columns(
-                columns,
-                {"chrom", "pos", "te", "te_status", "confidence", "tier", "support_reads",
-                 "te_bp_win_start", "te_bp_win_end", "te_ref_junc_min", "te_ref_junc_max"});
+            require_columns(columns, {"chrom", "pos", "te", "support_reads", "bp_left", "bp_right"});
             continue;
         }
         if (line[0] == '#') {

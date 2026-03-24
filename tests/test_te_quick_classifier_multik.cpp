@@ -60,7 +60,7 @@ int main() {
         config.ins_fragment_hits_tsv_path.clear();
         config.te_kmer_size = 13;
         config.te_kmer_sizes_csv = "13";
-        config.te_median_identity_min = 0.95;  // force low-k rescue trigger
+        config.te_low_kmer_support_trigger = 0.95;  // force low-support rescue trigger
         config.te_low_kmer_rescue_enable = true;
         config.te_low_kmer_rescue_topn = 2;
         config.te_low_kmer_rescue_min_frag_len = 20;

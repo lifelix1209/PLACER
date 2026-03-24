@@ -30,11 +30,37 @@ SUMMARY_INT_KEYS = [
     "gate1_passed",
     "processed_bins",
     "components",
-    "evidence_rows",
-    "assemblies",
-    "placeability_calls",
+    "event_consensus_calls",
     "genotype_calls",
-    "bootstrap_exported_calls",
+    "final_pass_calls",
+]
+
+EXPECTED_SCIENTIFIC_HEADER = [
+    "chrom",
+    "pos",
+    "bp_left",
+    "bp_right",
+    "te",
+    "family",
+    "subfamily",
+    "strand",
+    "insert_len",
+    "support_reads",
+    "alt_struct_reads",
+    "ref_span_reads",
+    "low_mapq_ref_span_reads",
+    "gt",
+    "af",
+    "gq",
+    "best_te_identity",
+    "best_te_query_coverage",
+    "cross_family_margin",
+    "tsd_type",
+    "tsd_len",
+    "left_flank_align_len",
+    "right_flank_align_len",
+    "consensus_len",
+    "qc",
 ]
 
 
@@ -395,6 +421,16 @@ def parse_scientific(path: Path) -> Tuple[Dict[str, str], List[str], List[Dict[s
 
     if not header:
         raise RuntimeError(f"failed to parse table header from {path}")
+    if header != EXPECTED_SCIENTIFIC_HEADER:
+        missing = [col for col in EXPECTED_SCIENTIFIC_HEADER if col not in header]
+        unexpected = [col for col in header if col not in EXPECTED_SCIENTIFIC_HEADER]
+        problems: List[str] = []
+        if missing:
+            problems.append(f"missing={','.join(missing)}")
+        if unexpected:
+            problems.append(f"unexpected={','.join(unexpected)}")
+        detail = " ".join(problems) if problems else "column_order_mismatch"
+        raise RuntimeError(f"unexpected scientific.txt schema in {path}: {detail}")
     return summary, header, rows
 
 
@@ -412,27 +448,10 @@ def parse_float(value: str, default: float = 0.0) -> float:
         return default
 
 
-def normalize_te_family(te_name: str) -> str:
-    if not te_name or te_name in {"NA", "UNK"}:
-        return "UNK"
-    fam = te_name.split(":", 1)[0].upper()
-    if fam.startswith("ALU"):
-        return "ALU"
-    if fam.startswith("L1"):
-        return "L1"
-    if fam.startswith("SVA"):
-        return "SVA"
-    if fam.startswith("HERV"):
-        return "HERV"
-    return fam
-
-
 def same_call_locus(a: Dict[str, str], b: Dict[str, str], dedup_bp: int) -> bool:
     if a.get("chrom", "") != b.get("chrom", ""):
         return False
-    if abs(parse_int(a.get("pos", "-1"), -1) - parse_int(b.get("pos", "-1"), -1)) > dedup_bp:
-        return False
-    return normalize_te_family(a.get("te", "")) == normalize_te_family(b.get("te", ""))
+    return abs(parse_int(a.get("pos", "-1"), -1) - parse_int(b.get("pos", "-1"), -1)) <= dedup_bp
 
 
 def prefer_new_call(cur: Dict[str, str], incumbent: Dict[str, str]) -> bool:
@@ -441,38 +460,38 @@ def prefer_new_call(cur: Dict[str, str], incumbent: Dict[str, str]) -> bool:
     if cur_support != old_support:
         return cur_support > old_support
 
-    cur_tier = parse_int(cur.get("tier", "3"), 3)
-    old_tier = parse_int(incumbent.get("tier", "3"), 3)
-    if cur_tier != old_tier:
-        return cur_tier < old_tier
+    cur_gq = parse_int(cur.get("gq", "0"), 0)
+    old_gq = parse_int(incumbent.get("gq", "0"), 0)
+    if cur_gq != old_gq:
+        return cur_gq > old_gq
 
-    cur_conf = cur.get("confidence", "")
-    old_conf = incumbent.get("confidence", "")
-    if cur_conf != old_conf:
-        return cur_conf == "HIGH"
+    cur_margin = parse_float(cur.get("cross_family_margin", "0"), 0.0)
+    old_margin = parse_float(incumbent.get("cross_family_margin", "0"), 0.0)
+    if cur_margin != old_margin:
+        return cur_margin > old_margin
 
-    cur_status = cur.get("te_status", "")
-    old_status = incumbent.get("te_status", "")
-    if cur_status != old_status:
-        if cur_status == "TE_CERTAIN":
+    cur_te_identity = parse_float(cur.get("best_te_identity", "0"), 0.0)
+    old_te_identity = parse_float(incumbent.get("best_te_identity", "0"), 0.0)
+    if cur_te_identity != old_te_identity:
+        return cur_te_identity > old_te_identity
+
+    cur_te = cur.get("te", "")
+    old_te = incumbent.get("te", "")
+    if cur_te != old_te:
+        if old_te in {"", "UNK", "NA"}:
             return True
-        if old_status == "TE_CERTAIN":
+        if cur_te in {"", "UNK", "NA"}:
             return False
 
-    cur_prob = parse_float(cur.get("te_conf_prob", "0"), 0.0)
-    old_prob = parse_float(incumbent.get("te_conf_prob", "0"), 0.0)
-    if cur_prob != old_prob:
-        return cur_prob > old_prob
+    cur_consensus_len = parse_int(cur.get("consensus_len", "0"), 0)
+    old_consensus_len = parse_int(incumbent.get("consensus_len", "0"), 0)
+    if cur_consensus_len != old_consensus_len:
+        return cur_consensus_len > old_consensus_len
 
-    cur_asm_len = parse_int(cur.get("asm_consensus_len", "0"), 0)
-    old_asm_len = parse_int(incumbent.get("asm_consensus_len", "0"), 0)
-    if cur_asm_len != old_asm_len:
-        return cur_asm_len > old_asm_len
-
-    cur_asm_id = parse_float(cur.get("asm_identity_est", "0"), 0.0)
-    old_asm_id = parse_float(incumbent.get("asm_identity_est", "0"), 0.0)
-    if cur_asm_id != old_asm_id:
-        return cur_asm_id > old_asm_id
+    cur_query_coverage = parse_float(cur.get("best_te_query_coverage", "0"), 0.0)
+    old_query_coverage = parse_float(incumbent.get("best_te_query_coverage", "0"), 0.0)
+    if cur_query_coverage != old_query_coverage:
+        return cur_query_coverage > old_query_coverage
 
     return parse_int(cur.get("pos", "0"), 0) < parse_int(incumbent.get("pos", "0"), 0)
 
@@ -488,8 +507,8 @@ def dedup_calls(
         return (
             chrom_order.get(chrom, 10**9),
             parse_int(row.get("pos", "-1"), -1),
-            parse_int(row.get("window_start", "-1"), -1),
-            parse_int(row.get("window_end", "-1"), -1),
+            parse_int(row.get("bp_left", "-1"), -1),
+            parse_int(row.get("bp_right", "-1"), -1),
             chrom,
             row.get("te", ""),
         )
@@ -503,32 +522,6 @@ def dedup_calls(
             continue
         out.append(row)
     return out
-
-
-def count_te_status(rows: Iterable[Dict[str, str]]) -> Tuple[int, int, int]:
-    te_certain = 0
-    te_uncertain = 0
-    non_te = 0
-    for row in rows:
-        status = row.get("te_status", "NON_TE")
-        if status == "TE_CERTAIN":
-            te_certain += 1
-        elif status == "TE_UNCERTAIN":
-            te_uncertain += 1
-        else:
-            non_te += 1
-    return te_certain, te_uncertain, non_te
-
-
-def count_confidence(rows: Iterable[Dict[str, str]]) -> Tuple[int, int]:
-    high = 0
-    low = 0
-    for row in rows:
-        if row.get("confidence", "HIGH") == "LOW":
-            low += 1
-        else:
-            high += 1
-    return high, low
 
 
 def sum_summary_key(shards: Sequence[ShardResult], key: str) -> int:
@@ -575,19 +568,11 @@ def merge_shard_results(
     assert base_header is not None
     deduped = dedup_calls(merged_rows, chrom_order=chrom_order, dedup_bp=dedup_bp)
 
-    te_certain, te_uncertain, non_te = count_te_status(deduped)
-    high_conf, low_conf = count_confidence(deduped)
-
     if mode == "contig":
         summary_values = {k: sum_summary_key(shards, k) for k in SUMMARY_INT_KEYS}
     else:
         summary_values = {k: -1 for k in SUMMARY_INT_KEYS}
-
-    summary_values["final_te_certain"] = te_certain
-    summary_values["final_te_uncertain"] = te_uncertain
-    summary_values["final_non_te"] = non_te
-    summary_values["final_high_confidence"] = high_conf
-    summary_values["final_low_confidence"] = low_conf
+    summary_values["final_pass_calls"] = len(deduped)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as out:
@@ -597,16 +582,9 @@ def merge_shard_results(
             "gate1_passed",
             "processed_bins",
             "components",
-            "evidence_rows",
-            "assemblies",
-            "placeability_calls",
+            "event_consensus_calls",
             "genotype_calls",
-            "final_te_certain",
-            "final_te_uncertain",
-            "final_non_te",
-            "final_high_confidence",
-            "final_low_confidence",
-            "bootstrap_exported_calls",
+            "final_pass_calls",
         ]:
             out.write(f"{key}\t{summary_values.get(key, 0)}\n")
         out.write(f"merge_mode\t{mode}\n")
@@ -614,7 +592,7 @@ def merge_shard_results(
         if mode == "region":
             out.write(f"region_size_bp\t{region_size}\n")
             out.write(f"region_overlap_bp\t{overlap_bp}\n")
-        out.write("schema_version\t0.0.4-sharded\n")
+        out.write("schema_version\t1.0.0-sharded\n")
         out.write("\n")
         out.write("#" + "\t".join(base_header) + "\n")
         for row in deduped:
@@ -731,6 +709,37 @@ def parse_env_kv(env_args: Sequence[str]) -> Dict[str, str]:
     return out
 
 
+def maybe_build_repo_placer(placer_arg: str, build_if_needed: bool) -> Path:
+    requested = Path(placer_arg)
+    requested_abs = (requested if requested.is_absolute() else Path.cwd() / requested).resolve()
+    if not build_if_needed:
+        return requested_abs
+
+    repo_root = Path(__file__).resolve().parent.parent
+    repo_binary = (repo_root / "build" / "placer").resolve()
+    if requested_abs != repo_binary:
+        return requested_abs
+
+    build_helper = repo_root / "scripts" / "build_latest_placer.sh"
+    if not build_helper.exists():
+        return requested_abs
+
+    print("[sharded] checking repo build before shard runs", file=sys.stderr, flush=True)
+    cp = subprocess.run(
+        [str(build_helper)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    if cp.stderr:
+        print(cp.stderr, file=sys.stderr, end="", flush=True)
+
+    built_bin = cp.stdout.strip()
+    if not built_bin:
+        raise RuntimeError("build_latest_placer.sh did not return a binary path")
+    return Path(built_bin).resolve()
+
+
 def write_manifest(path: Path, shards: Sequence[ShardResult]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as out:
@@ -778,6 +787,19 @@ def main() -> int:
     parser.add_argument("--dedup-bp", type=int, default=50)
     parser.add_argument("--outdir", default="sharded_placer_out")
     parser.add_argument(
+        "--build-if-needed",
+        dest="build_if_needed",
+        action="store_true",
+        default=True,
+        help="Auto-build build/placer before running shards when using the repo binary path.",
+    )
+    parser.add_argument(
+        "--no-build-if-needed",
+        dest="build_if_needed",
+        action="store_false",
+        help="Skip the pre-run build freshness check.",
+    )
+    parser.add_argument(
         "--progress-heartbeat-s",
         type=float,
         default=30.0,
@@ -799,7 +821,7 @@ def main() -> int:
     bam = Path(args.bam).resolve()
     ref = Path(args.ref).resolve()
     te = Path(args.te).resolve() if args.te else None
-    placer_bin = Path(args.placer).resolve()
+    placer_bin = maybe_build_repo_placer(args.placer, args.build_if_needed)
     outdir = Path(args.outdir).resolve()
     shard_root = outdir / "shards"
     merged_scientific = outdir / "scientific.sharded.txt"

@@ -67,7 +67,16 @@ PLACER_INS_FRAGMENT_HITS_TSV_PATH=ins_fragment_hits.tsv \
 ./build/placer <input.bam> <ref.fa> [te.fa]
 ```
 
-`scientific.txt` includes a dedicated `insertion_qc` field (separate from `te_qc`).
+`scientific.txt` now contains only final PASS TE insertion calls. The row schema is:
+
+- `chrom`, `pos`, `bp_left`, `bp_right`
+- `te`, `family`, `subfamily`, `strand`, `insert_len`
+- `support_reads`, `alt_struct_reads`, `ref_span_reads`, `low_mapq_ref_span_reads`
+- `gt`, `af`, `gq`
+- `best_te_identity`, `best_te_query_coverage`, `cross_family_margin`
+- `tsd_type`, `tsd_len`
+- `left_flank_align_len`, `right_flank_align_len`, `consensus_len`
+- `qc`
 
 ## Sharded Run (Large BAM)
 
@@ -103,89 +112,29 @@ PLACER_PARALLEL_QUEUE_MAX_TASKS=64 \
 ./build/placer <input.bam> <ref.fa> <te.fa>
 ```
 
-## Real-Data Tuning (ONT)
+## Tuning
 
-Current default TE-classification settings are tuned for noisy long-read data:
+Current pipeline semantics:
 
-- `te_kmer_size = 13`
-- `te_vote_fraction_min = 0.40`
-- `te_median_identity_min = 0.30`
-- `te_rescue_vote_fraction_min = 0.25`
-- `te_rescue_median_identity_min = 0.20`
+- Candidate discovery is only a proposal layer.
+- Final output requires event-level structural evidence, event consensus, tripartite segmentation, insert-sequence TE alignment, boundary consistency, and non-reference genotype.
+- `scientific.txt` and `scientific.sharded.txt` share the same call columns.
 
-Pipeline behavior:
-
-- Stage A (pre-assembly): weak TE gate to avoid early false negatives.
-- Stage B (post-assembly): final TE decision combines vote support and assembly identity.
-
-Useful environment overrides:
+Useful environment overrides for the current main path:
 
 ```bash
 PLACER_TE_KMER_SIZE=13 \
-PLACER_TE_VOTE_FRACTION_MIN=0.40 \
-PLACER_TE_MEDIAN_IDENTITY_MIN=0.30 \
-PLACER_TE_RESCUE_VOTE_FRACTION_MIN=0.25 \
-PLACER_TE_RESCUE_MEDIAN_IDENTITY_MIN=0.20 \
+PLACER_TE_KMER_SIZES=9,11,13 \
+PLACER_TSD_MIN_LEN=3 \
+PLACER_TSD_MAX_LEN=50 \
+PLACER_TSD_FLANK_WINDOW=150 \
+PLACER_TSD_BG_P_MAX=0.05 \
+PLACER_GENOTYPE_MIN_DEPTH=3 \
+PLACER_GENOTYPE_ERROR_RATE=0.02 \
+PLACER_EVENT_CONSENSUS_POA_MIN_READS=2 \
+PLACER_EVENT_CONSENSUS_POA_MAX_READS=48 \
 ./build/placer <input.bam> <ref.fa> <te.fa>
 ```
-
-## Bootstrap Reclassification (Pass-1 / Pass-2)
-
-When TE reference quality is low, you can keep uncertain calls and bootstrap an incremental TE library.
-
-Pass-1 export controls:
-
-```bash
-PLACER_BOOTSTRAP_EXPORT=1 \
-PLACER_BOOTSTRAP_EXPORT_INCLUDE_NON_TE=1 \
-PLACER_BOOTSTRAP_MIN_CONSENSUS_LEN=80 \
-PLACER_BOOTSTRAP_FASTA_PATH=pass1_bootstrap_consensus.fasta \
-PLACER_BOOTSTRAP_TSV_PATH=pass1_bootstrap_calls.tsv \
-./build/placer <input.bam> <ref.fa> <te.fa>
-```
-
-Then run pass-2 with merged base+bootstrap library:
-
-```bash
-scripts/bootstrap_te_reclassify.sh \
-  --bam <input.bam> \
-  --ref <ref.fa> \
-  --base-te <te.fa> \
-  --pass1-fasta pass1_bootstrap_consensus.fasta \
-  --placer ./build/placer \
-  --outdir bootstrap_pass2 \
-  --min-len 80
-```
-
-The script generates:
-
-- `bootstrap_pass2/te_bootstrap_merged.fasta`
-- `bootstrap_pass2/scientific_pass2.txt`
-- `bootstrap_pass2/bootstrap_report.txt`
-
-Optional low-confidence acceptance (default off):
-
-```bash
-PLACER_EMIT_LOW_CONFIDENCE_CALLS=1 \
-PLACER_LOW_CONF_MIN_SUPPORT_READS=2 \
-PLACER_LOW_CONF_MAX_TIER=2 \
-./build/placer <input.bam> <ref.fa> <te.fa>
-```
-
-Posterior calibration knobs (optional):
-
-```bash
-PLACER_TE_CONF_CERTAIN_MIN=0.85 \
-PLACER_TE_CONF_UNCERTAIN_MIN=0.35 \
-PLACER_TE_CONF_BIAS=-3.0 \
-PLACER_TE_CONF_W_TOP1=2.4 \
-PLACER_TE_CONF_W_MARGIN=2.0 \
-PLACER_TE_CONF_W_ASM_IDENTITY=1.8 \
-PLACER_TE_CONF_W_SUPPORT=0.8 \
-./build/placer <input.bam> <ref.fa> <te.fa>
-```
-
-`scientific.txt` now reports calibrated TE confidence as `te_conf_prob`.
 
 ## Notes
 

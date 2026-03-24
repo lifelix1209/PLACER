@@ -21,9 +21,6 @@ struct DenovoConfig {
 
     int32_t bam_threads = 1;
     int32_t child_min_support_reads = 2;
-    int32_t child_max_tier = 2;
-    std::string child_confidence = "HIGH";
-    bool child_allow_uncertain = false;
 
     int32_t fetch_window = 500;
     int32_t default_match_window = 30;
@@ -40,9 +37,6 @@ struct DenovoChildCandidate {
     std::string chrom;
     int32_t pos = -1;
     std::string te_name;
-    std::string te_status = "NON_TE";
-    std::string confidence = "NA";
-    int32_t tier = 3;
     int32_t support_reads = 0;
     int32_t event_start = -1;
     int32_t event_end = -1;

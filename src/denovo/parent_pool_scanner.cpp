@@ -356,7 +356,7 @@ struct ParentPoolScanner::Impl {
         pipeline_config.ins_fragments_fasta_path.clear();
         pipeline_config.te_kmer_size = 13;
         pipeline_config.te_kmer_sizes_csv = "9,11,13";
-        pipeline_config.te_median_identity_min = 0.20;
+        pipeline_config.te_low_kmer_support_trigger = 0.20;
         pipeline_config.te_low_kmer_rescue_enable = true;
         pipeline_config.te_low_kmer_rescue_topn = 3;
         pipeline_config.te_low_kmer_rescue_min_frag_len = 40;

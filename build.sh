@@ -1,48 +1,34 @@
-#!/bin/bash
-# Build script for PLACER Phase 1
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$SCRIPT_DIR"
+BUILD_HELPER="$REPO_ROOT/scripts/build_latest_placer.sh"
 
-BUILD_DIR=build
-
-echo "=== Building PLACER Phase 1 ==="
-
-if command -v nproc >/dev/null 2>&1; then
-    JOBS=$(nproc)
-elif command -v sysctl >/dev/null 2>&1; then
-    JOBS=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
-else
-    JOBS=4
+if [[ ! -x "$BUILD_HELPER" ]]; then
+    echo "[build] build helper not executable: $BUILD_HELPER" >&2
+    exit 2
 fi
 
-# Create build directory
-mkdir -p $BUILD_DIR
-cd $BUILD_DIR
-
-# Configure with CMake
-echo "Configuring with CMake..."
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# Build
-echo "Building..."
-cmake --build . -j "$JOBS"
-
+echo "=== Building PLACER ==="
+PLACER_BIN="$("$BUILD_HELPER")"
 echo "=== Build complete ==="
 
-# Run tests
-echo "Running tests..."
-ctest --output-on-failure
-
-echo "=== All tests passed ==="
-
-# Optional demo run (user-provided input)
-if [ $# -ge 2 ]; then
-    echo ""
-    echo "=== Running demo ==="
-    ./placer "$1" "$2" "${3:-}"
+if [[ "${PLACER_RUN_TESTS:-1}" != "0" ]]; then
+    echo "Running tests..."
+    ctest --test-dir "$REPO_ROOT/build" --output-on-failure
+    echo "=== All tests passed ==="
 else
-    echo ""
-    echo "=== Demo skipped ==="
-    echo "Provide BAM/REF paths to run demo:"
-    echo "  ./build.sh <input.bam> <ref.fa> [te.fa]"
+    echo "Skipping tests because PLACER_RUN_TESTS=0"
 fi
+
+if [[ $# -ge 2 ]]; then
+    echo ""
+    echo "=== Running PLACER ==="
+    exec "$PLACER_BIN" "$@"
+fi
+
+echo ""
+echo "=== Run skipped ==="
+echo "Provide BAM/REF paths to run PLACER:"
+echo "  ./build.sh <input.bam> <ref.fa> [te.fa]"

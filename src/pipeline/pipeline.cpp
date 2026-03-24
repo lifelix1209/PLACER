@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <condition_variable>
@@ -14,6 +13,7 @@
 #include <limits>
 #include <mutex>
 #include <queue>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -49,6 +49,15 @@ constexpr double kReadAssignMinScore = 0.8;
 constexpr double kReadAmbiguousRatio = 0.75;
 constexpr double kReadAssignDecayBp = 150.0;
 constexpr int32_t kFinalCallDedupDistanceBp = 100;
+constexpr int32_t kLocalEventFetchSlackBp = 1000;
+constexpr int32_t kEventConsensusFlankBp = 80;
+constexpr int32_t kEventConsensusMinAnchorBp = 50;
+constexpr int32_t kEventSegmentationMinFlankAlignBp = 50;
+constexpr double kEventSegmentationMinFlankIdentity = 0.90;
+constexpr int32_t kEventSegmentationBreakpointSlackBp = 200;
+constexpr int32_t kEventSegmentationMinInsertBp = 1;
+constexpr int32_t kEventSegmentationMaxFlankQueryBp = 120;
+constexpr double kEventSegmentationUniquenessMargin = 0.02;
 
 enum class EvidenceKind : uint8_t {
     kSoftClip = 0,
@@ -79,6 +88,74 @@ struct EvidenceBundle {
     std::vector<ReadSignalSummary> read_summaries;
 };
 
+struct LocalFetchedReads {
+    std::vector<BamRecordPtr> owned_records;
+    std::vector<const bam1_t*> records;
+    std::vector<ReadReferenceSpan> read_spans;
+};
+
+ComponentCall build_local_fragment_component(
+    const PipelineConfig& config,
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& local_records) {
+    ComponentCall local_component = component;
+    local_component.read_indices.clear();
+    local_component.soft_clip_read_indices.clear();
+    local_component.split_sa_read_indices.clear();
+    local_component.insertion_read_indices.clear();
+
+    local_component.read_indices.reserve(local_records.size());
+    local_component.soft_clip_read_indices.reserve(local_records.size());
+    local_component.split_sa_read_indices.reserve(local_records.size());
+    local_component.insertion_read_indices.reserve(local_records.size());
+
+    for (size_t idx = 0; idx < local_records.size(); ++idx) {
+        const bam1_t* record = local_records[idx];
+        if (!record) {
+            continue;
+        }
+
+        ReadView read(record);
+        if (read.tid() != component.tid) {
+            continue;
+        }
+
+        local_component.read_indices.push_back(idx);
+
+        const uint16_t flag = read.flag();
+        if (read.has_sa_tag() || ((flag & BAM_FSUPPLEMENTARY) != 0)) {
+            local_component.split_sa_read_indices.push_back(idx);
+        }
+
+        const uint32_t* cigar = read.cigar();
+        const int32_t n_cigar = read.n_cigar();
+        if (!cigar || n_cigar <= 0) {
+            continue;
+        }
+
+        int32_t max_soft_clip = 0;
+        int32_t max_insertion = 0;
+        for (int32_t ci = 0; ci < n_cigar; ++ci) {
+            const int op = bam_cigar_op(cigar[ci]);
+            const int32_t len = static_cast<int32_t>(bam_cigar_oplen(cigar[ci]));
+            if (op == BAM_CSOFT_CLIP) {
+                max_soft_clip = std::max(max_soft_clip, len);
+            } else if (op == BAM_CINS) {
+                max_insertion = std::max(max_insertion, len);
+            }
+        }
+
+        if (max_soft_clip >= config.min_soft_clip_for_seq_extract) {
+            local_component.soft_clip_read_indices.push_back(idx);
+        }
+        if (max_insertion >= config.min_long_ins_for_seq_extract) {
+            local_component.insertion_read_indices.push_back(idx);
+        }
+    }
+
+    return local_component;
+}
+
 struct DensityPeak {
     int32_t pos = -1;
     double weight = 0.0;
@@ -89,6 +166,21 @@ struct CandidateWindow {
     int32_t end = -1;
     int32_t center = -1;
     double peak_weight = 0.0;
+};
+
+struct EventFlankPlacement {
+    int32_t query_start = -1;
+    int32_t query_end = -1;
+    int32_t ref_start = -1;
+    int32_t ref_end = -1;
+    int32_t align_len = 0;
+    int32_t breakpoint_delta = std::numeric_limits<int32_t>::max();
+    double identity = 0.0;
+};
+
+struct EventFlankSearchResult {
+    std::vector<EventFlankPlacement> candidates;
+    bool had_threshold_hit = false;
 };
 
 enum class SaHintSide : uint8_t {
@@ -133,31 +225,237 @@ void append_record_ptrs(
     }
 }
 
-using SharedRecordBatch = std::shared_ptr<const std::vector<BufferedRecord>>;
-
-std::string normalize_te_family(const std::string& te_name) {
-    if (te_name.empty()) {
-        return "UNK";
-    }
-    const size_t colon = te_name.find(':');
-    std::string family = te_name.substr(0, colon);
-    for (char& c : family) {
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    }
-    if (family.rfind("ALU", 0) == 0) {
-        return "ALU";
-    }
-    if (family.rfind("L1", 0) == 0) {
-        return "L1";
-    }
-    if (family.rfind("SVA", 0) == 0) {
-        return "SVA";
-    }
-    if (family.rfind("HERV", 0) == 0) {
-        return "HERV";
-    }
-    return family;
+int bool_as_int(bool value) {
+    return value ? 1 : 0;
 }
+
+bool better_event_flank_placement(
+    const EventFlankPlacement& lhs,
+    const EventFlankPlacement& rhs) {
+    if (lhs.align_len != rhs.align_len) {
+        return lhs.align_len > rhs.align_len;
+    }
+    if (lhs.identity != rhs.identity) {
+        return lhs.identity > rhs.identity;
+    }
+    if (lhs.breakpoint_delta != rhs.breakpoint_delta) {
+        return lhs.breakpoint_delta < rhs.breakpoint_delta;
+    }
+    if (lhs.ref_start != rhs.ref_start) {
+        return lhs.ref_start < rhs.ref_start;
+    }
+    return lhs.ref_end < rhs.ref_end;
+}
+
+std::string display_or_na(const std::string& value) {
+    return value.empty() ? "NA" : value;
+}
+
+std::string summarize_seq_ends(const std::string& seq, size_t keep = 24) {
+    if (seq.empty()) {
+        return "NA";
+    }
+    if (seq.size() <= (2 * keep)) {
+        return seq;
+    }
+    return seq.substr(0, keep) + "..." + seq.substr(seq.size() - keep);
+}
+
+bool is_primary_alignment(const bam1_t* record) {
+    if (!record) {
+        return false;
+    }
+    const uint16_t flag = record->core.flag;
+    return (flag & BAM_FUNMAP) == 0 &&
+           (flag & BAM_FSECONDARY) == 0 &&
+           (flag & BAM_FSUPPLEMENTARY) == 0;
+}
+
+std::string record_qname(const bam1_t* record) {
+    if (!record) {
+        return {};
+    }
+    ReadView view(record);
+    return std::string(view.qname());
+}
+
+struct LocalEventSignal {
+    bool split = false;
+    bool indel = false;
+    bool left_clip = false;
+    bool right_clip = false;
+    int32_t split_left_pos = -1;
+    int32_t split_right_pos = -1;
+    int32_t indel_pos = -1;
+    int32_t left_clip_pos = -1;
+    int32_t right_clip_pos = -1;
+
+    bool any() const {
+        return split || indel || left_clip || right_clip;
+    }
+};
+
+LocalEventSignal classify_local_event_signal(
+    const bam1_t* record,
+    int32_t window_start,
+    int32_t window_end) {
+    LocalEventSignal signal;
+    if (!record) {
+        return signal;
+    }
+
+    ReadView read(record);
+    const bool has_sa_or_supp =
+        read.has_sa_tag() || ((read.flag() & BAM_FSUPPLEMENTARY) != 0);
+
+    const uint32_t* cigar = read.cigar();
+    const int32_t n_cigar = read.n_cigar();
+    if (!cigar || n_cigar <= 0) {
+        return signal;
+    }
+
+    int first = -1;
+    int last = -1;
+    for (int32_t i = 0; i < n_cigar; ++i) {
+        if (bam_cigar_op(cigar[i]) != BAM_CHARD_CLIP) {
+            first = i;
+            break;
+        }
+    }
+    for (int32_t i = n_cigar - 1; i >= 0; --i) {
+        if (bam_cigar_op(cigar[i]) != BAM_CHARD_CLIP) {
+            last = i;
+            break;
+        }
+    }
+
+    int32_t ref_pos = read.pos();
+    const int32_t window_center = window_start + ((window_end - window_start) / 2);
+    int32_t best_indel_dist = std::numeric_limits<int32_t>::max();
+    for (int32_t i = 0; i < n_cigar; ++i) {
+        const int op = bam_cigar_op(cigar[i]);
+        const int32_t len = static_cast<int32_t>(bam_cigar_oplen(cigar[i]));
+
+        if (i == first && op == BAM_CSOFT_CLIP && len >= kSoftClipSignalMin &&
+            ref_pos >= window_start && ref_pos <= window_end) {
+            signal.left_clip = true;
+            signal.left_clip_pos = ref_pos;
+        }
+        if (i == last && op == BAM_CSOFT_CLIP && len >= kSoftClipSignalMin &&
+            ref_pos >= window_start && ref_pos <= window_end) {
+            signal.right_clip = true;
+            signal.right_clip_pos = ref_pos;
+        }
+        if (op == BAM_CINS && len >= kLongInsertionSignalMin &&
+            ref_pos >= window_start && ref_pos <= window_end) {
+            signal.indel = true;
+            const int32_t dist = std::abs(ref_pos - window_center);
+            if (dist < best_indel_dist) {
+                best_indel_dist = dist;
+                signal.indel_pos = ref_pos;
+            }
+        }
+
+        if ((bam_cigar_type(op) & 2) != 0) {
+            ref_pos += len;
+        }
+    }
+
+    signal.split = has_sa_or_supp && (signal.left_clip || signal.right_clip);
+    if (signal.split) {
+        signal.split_left_pos = signal.left_clip_pos;
+        signal.split_right_pos = signal.right_clip_pos;
+    }
+    return signal;
+}
+
+bool read_has_local_event_signal(
+    const bam1_t* record,
+    int32_t window_start,
+    int32_t window_end) {
+    return classify_local_event_signal(record, window_start, window_end).any();
+}
+
+std::vector<std::string> sorted_string_set(const std::unordered_set<std::string>& values) {
+    std::vector<std::string> out;
+    out.reserve(values.size());
+    for (const auto& value : values) {
+        out.push_back(value);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::string upper_acgt(const std::string& s);
+
+std::string build_event_string_from_fragment(
+    const bam1_t* record,
+    const InsertionFragment& fragment) {
+    if (!record || fragment.sequence.empty() || fragment.start < 0 || fragment.length <= 0) {
+        return {};
+    }
+
+    ReadView read(record);
+    const int32_t insert_start = fragment.start;
+    const int32_t insert_end = fragment.start + fragment.length;
+    const int32_t right_available = read.seq_len() - insert_end;
+    if (insert_start < kEventConsensusMinAnchorBp ||
+        right_available < kEventConsensusMinAnchorBp) {
+        return {};
+    }
+
+    const int32_t left_len = std::min(kEventConsensusFlankBp, insert_start);
+    const int32_t right_len = std::min(kEventConsensusFlankBp, right_available);
+    if (left_len < kEventConsensusMinAnchorBp ||
+        right_len < kEventConsensusMinAnchorBp) {
+        return {};
+    }
+
+    const std::string left_flank = upper_acgt(
+        read.decode_subsequence(insert_start - left_len, left_len));
+    const std::string insert_seq = upper_acgt(fragment.sequence);
+    const std::string right_flank = upper_acgt(
+        read.decode_subsequence(insert_end, right_len));
+    if (left_flank.empty() || insert_seq.empty() || right_flank.empty()) {
+        return {};
+    }
+    return left_flank + insert_seq + right_flank;
+}
+
+bool fragment_has_dual_context_event_string(
+    const InsertionFragment& fragment) {
+    switch (fragment.source) {
+        case InsertionFragmentSource::kCigarInsertion:
+        case InsertionFragmentSource::kSplitSa:
+            return true;
+        case InsertionFragmentSource::kClipRefLeft:
+        case InsertionFragmentSource::kClipRefRight:
+        case InsertionFragmentSource::kUnknown:
+        default:
+            return false;
+    }
+}
+
+bool fragment_is_local_to_event(
+    const InsertionFragment& fragment,
+    int32_t bp_left,
+    int32_t bp_right) {
+    if (fragment.ref_junc_pos < 0 || bp_left < 0 || bp_right < 0) {
+        return false;
+    }
+    constexpr int32_t kEventFragmentJunctionSlackBp = 25;
+    const int32_t span_start = std::max(0, std::min(bp_left, bp_right) - kEventFragmentJunctionSlackBp);
+    const int32_t span_end = std::max(span_start, std::max(bp_left, bp_right) + kEventFragmentJunctionSlackBp);
+    return fragment.ref_junc_pos >= span_start && fragment.ref_junc_pos <= span_end;
+}
+
+void emit_pipeline_log_line(const std::string& line) {
+    static std::mutex log_mutex;
+    const std::lock_guard<std::mutex> lock(log_mutex);
+    std::cerr << line << '\n';
+}
+
+using SharedRecordBatch = std::shared_ptr<const std::vector<BufferedRecord>>;
 
 bool final_call_sort_less(const FinalCall& a, const FinalCall& b) {
     if (a.tid != b.tid) {
@@ -189,49 +487,30 @@ bool prefer_new_call(const FinalCall& cur, const FinalCall& incumbent) {
     if (cur.support_reads != incumbent.support_reads) {
         return cur.support_reads > incumbent.support_reads;
     }
-    if (cur.tier != incumbent.tier) {
-        return cur.tier < incumbent.tier;
+    if (cur.gq != incumbent.gq) {
+        return cur.gq > incumbent.gq;
     }
-    if (cur.confidence != incumbent.confidence) {
-        return cur.confidence == "HIGH";
+    if (cur.cross_family_margin != incumbent.cross_family_margin) {
+        return cur.cross_family_margin > incumbent.cross_family_margin;
     }
-    if (cur.te_status != incumbent.te_status) {
-        if (cur.te_status == "TE_CERTAIN") {
-            return true;
-        }
-        if (incumbent.te_status == "TE_CERTAIN") {
-            return false;
-        }
-    }
-    if (cur.te_confidence_prob != incumbent.te_confidence_prob) {
-        return cur.te_confidence_prob > incumbent.te_confidence_prob;
-    }
-    if (cur.te_posterior_margin != incumbent.te_posterior_margin) {
-        return cur.te_posterior_margin > incumbent.te_posterior_margin;
+    if (cur.best_te_identity != incumbent.best_te_identity) {
+        return cur.best_te_identity > incumbent.best_te_identity;
     }
     if (cur.te_name != incumbent.te_name) {
-        if (incumbent.te_name == "UNK") {
+        if (incumbent.te_name.empty() || incumbent.te_name == "UNK") {
             return true;
         }
-        if (cur.te_name == "UNK") {
+        if (cur.te_name.empty() || cur.te_name == "UNK") {
             return false;
         }
     }
-    if (cur.asm_consensus_len != incumbent.asm_consensus_len) {
-        return cur.asm_consensus_len > incumbent.asm_consensus_len;
+    if (cur.event_consensus_len != incumbent.event_consensus_len) {
+        return cur.event_consensus_len > incumbent.event_consensus_len;
     }
-    if (cur.asm_identity_est != incumbent.asm_identity_est) {
-        return cur.asm_identity_est > incumbent.asm_identity_est;
+    if (cur.best_te_query_coverage != incumbent.best_te_query_coverage) {
+        return cur.best_te_query_coverage > incumbent.best_te_query_coverage;
     }
     return cur.pos < incumbent.pos;
-}
-
-const char* theta_tag(InsertionTheta theta) {
-    switch (theta) {
-        case InsertionTheta::kFwd: return "FWD";
-        case InsertionTheta::kRev: return "REV";
-        default: return "NA";
-    }
 }
 
 double sigmoid(double x) {
@@ -456,55 +735,6 @@ double kmer_uniqueness_ratio(const std::string& seq, int32_t k) {
     return static_cast<double>(uniq.size()) / static_cast<double>(total);
 }
 
-double kmer_overlap_fraction(
-    const std::unordered_set<uint64_t>& a,
-    const std::unordered_set<uint64_t>& b) {
-    if (a.empty() || b.empty()) {
-        return 0.0;
-    }
-    const auto* smaller = &a;
-    const auto* larger = &b;
-    if (a.size() > b.size()) {
-        smaller = &b;
-        larger = &a;
-    }
-    int32_t inter = 0;
-    for (uint64_t key : *smaller) {
-        if (larger->find(key) != larger->end()) {
-            ++inter;
-        }
-    }
-    const int32_t denom = std::max<int32_t>(1, std::min<int32_t>(a.size(), b.size()));
-    return static_cast<double>(inter) / static_cast<double>(denom);
-}
-
-double estimate_mean_identity_kmer(
-    const std::string& consensus,
-    const std::vector<std::string>& seqs,
-    int32_t k) {
-    if (consensus.empty() || seqs.empty()) {
-        return 0.0;
-    }
-    const auto cons_kmers = kmer_set(consensus, k);
-    if (cons_kmers.empty()) {
-        return 0.0;
-    }
-    double sum = 0.0;
-    int32_t used = 0;
-    for (const auto& seq : seqs) {
-        const auto seq_kmers = kmer_set(seq, k);
-        if (seq_kmers.empty()) {
-            continue;
-        }
-        sum += kmer_overlap_fraction(cons_kmers, seq_kmers);
-        ++used;
-    }
-    if (used <= 0) {
-        return 0.0;
-    }
-    return sum / static_cast<double>(used);
-}
-
 std::string upper_acgt(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -543,36 +773,6 @@ double edit_identity(const std::string& lhs, const std::string& rhs) {
     const int32_t dist = prev[static_cast<size_t>(m)];
     const double denom = static_cast<double>(std::max(n, m));
     return std::clamp(1.0 - (static_cast<double>(dist) / denom), 0.0, 1.0);
-}
-
-bool fragment_supports_left_anchor(const InsertionFragment& fragment) {
-    if (fragment.ref_junc_pos < 0) {
-        return false;
-    }
-    switch (fragment.source) {
-        case InsertionFragmentSource::kClipRefRight:
-        case InsertionFragmentSource::kCigarInsertion:
-            return true;
-        case InsertionFragmentSource::kSplitSa:
-            return fragment.ref_side == ReferenceSide::kRefLeft;
-        default:
-            return false;
-    }
-}
-
-bool fragment_supports_right_anchor(const InsertionFragment& fragment) {
-    if (fragment.ref_junc_pos < 0) {
-        return false;
-    }
-    switch (fragment.source) {
-        case InsertionFragmentSource::kClipRefLeft:
-        case InsertionFragmentSource::kCigarInsertion:
-            return true;
-        case InsertionFragmentSource::kSplitSa:
-            return fragment.ref_side == ReferenceSide::kRefRight;
-        default:
-            return false;
-    }
 }
 
 uint8_t nt_to_abpoa_code(char c) {
@@ -659,19 +859,6 @@ std::string abpoa_consensus(const std::vector<std::string>& seqs) {
     return consensus;
 }
 
-std::string anchor_qc_tag(const AnchorLockedReport& anchor_report) {
-    if (!anchor_report.enabled) {
-        return "ANCHOR_DISABLED";
-    }
-    if (anchor_report.fail_theta_uncertain) {
-        return "ANCHOR_FAIL_THETA_UNCERTAIN";
-    }
-    if (!anchor_report.has_result) {
-        return "ANCHOR_NO_CORE_RESULT";
-    }
-    return "ANCHOR_PASS";
-}
-
 bool has_prefix(const std::string& value, const char* prefix) {
     return value.rfind(prefix, 0) == 0;
 }
@@ -705,43 +892,6 @@ void append_qc_token(std::string& qc, const char* token) {
     qc += token;
 }
 
-struct BpSourceCountSummary {
-    int32_t split = 0;
-    int32_t clip = 0;
-    int32_t indel = 0;
-};
-
-void parse_bp_source_counts(const std::string& text, BpSourceCountSummary& out) {
-    out = BpSourceCountSummary{};
-    size_t start = 0;
-    while (start < text.size()) {
-        const size_t end = text.find(',', start);
-        const size_t len = (end == std::string::npos) ? (text.size() - start) : (end - start);
-        const std::string token = text.substr(start, len);
-        const size_t colon = token.find(':');
-        if (colon != std::string::npos && colon + 1 < token.size()) {
-            int32_t value = 0;
-            try {
-                value = static_cast<int32_t>(std::stoi(token.substr(colon + 1)));
-            } catch (const std::exception&) {
-                value = 0;
-            }
-            const std::string key = token.substr(0, colon);
-            if (key == "split") {
-                out.split = std::max(0, value);
-            } else if (key == "clip") {
-                out.clip = std::max(0, value);
-            } else if (key == "indel") {
-                out.indel = std::max(0, value);
-            }
-        }
-        if (end == std::string::npos) {
-            break;
-        }
-        start = end + 1;
-    }
-}
-
 void update_best_bp_by_read(
     std::unordered_map<size_t, int32_t>& bp_by_read,
     size_t read_index,
@@ -762,346 +912,8 @@ void update_best_bp_by_read(
     }
 }
 
-std::string format_bp_source_counts(const EvidenceFeatures& evidence) {
-    return "split:" + std::to_string(std::max(0, evidence.bp_source_split_count)) +
-           ",clip:" + std::to_string(std::max(0, evidence.bp_source_clip_count)) +
-           ",indel:" + std::to_string(std::max(0, evidence.bp_source_indel_count));
-}
-
-struct StructuralSupportSummary {
-    int32_t softclip_support_reads = 0;
-    int32_t split_sa_support_reads = 0;
-    int32_t indel_support_reads = 0;
-    int32_t split_like_support_reads = 0;
-    int32_t support_low_mapq_reads = 0;
-    double support_low_mapq_frac = 0.0;
-};
-
-StructuralSupportSummary summarize_structural_support(
-    const ComponentCall& component,
-    const std::vector<const bam1_t*>& bin_records) {
-    StructuralSupportSummary summary;
-
-    std::unordered_set<size_t> softclip_reads(
-        component.soft_clip_read_indices.begin(),
-        component.soft_clip_read_indices.end());
-    std::unordered_set<size_t> split_sa_reads(
-        component.split_sa_read_indices.begin(),
-        component.split_sa_read_indices.end());
-    std::unordered_set<size_t> indel_reads(
-        component.insertion_read_indices.begin(),
-        component.insertion_read_indices.end());
-    std::unordered_set<size_t> split_like_reads = split_sa_reads;
-    split_like_reads.insert(indel_reads.begin(), indel_reads.end());
-
-    std::unordered_set<size_t> all_support_reads = softclip_reads;
-    all_support_reads.insert(split_like_reads.begin(), split_like_reads.end());
-
-    summary.softclip_support_reads = static_cast<int32_t>(softclip_reads.size());
-    summary.split_sa_support_reads = static_cast<int32_t>(split_sa_reads.size());
-    summary.indel_support_reads = static_cast<int32_t>(indel_reads.size());
-    summary.split_like_support_reads = static_cast<int32_t>(split_like_reads.size());
-
-    int32_t support_reads_with_mapq = 0;
-    for (size_t read_idx : all_support_reads) {
-        if (read_idx >= bin_records.size() || !bin_records[read_idx]) {
-            continue;
-        }
-        ++support_reads_with_mapq;
-        if (bin_records[read_idx]->core.qual < 20) {
-            summary.support_low_mapq_reads += 1;
-        }
-    }
-    if (support_reads_with_mapq > 0) {
-        summary.support_low_mapq_frac =
-            static_cast<double>(summary.support_low_mapq_reads) /
-            static_cast<double>(support_reads_with_mapq);
-    }
-
-    return summary;
-}
-
-bool families_differ(const std::string& lhs, const std::string& rhs) {
-    if (lhs.empty() || rhs.empty()) {
-        return false;
-    }
-    return normalize_te_family(lhs) != normalize_te_family(rhs);
-}
-
-bool is_consensus_proxy_te_certain(
-    const ClusterTECall& te_call,
-    const AssemblyCall& assembly,
-    const PipelineConfig& config);
-
-InsertionAcceptanceDecision evaluate_insertion_acceptance_for_pipeline(
-    const PlaceabilityReport& placeability,
-    const PipelineConfig& config) {
-    InsertionEvidence evidence;
-    evidence.tier = placeability.tier;
-    evidence.support_reads = placeability.support_reads;
-    InsertionAcceptanceParams params;
-    params.emit_low_confidence_calls = config.emit_low_confidence_calls;
-    params.low_conf_min_support_reads = config.low_conf_min_support_reads;
-    params.low_conf_max_tier = config.low_conf_max_tier;
-    return evaluate_insertion_acceptance(evidence, params);
-}
-
-void apply_te_open_set_classification(
-    FinalCall& call,
-    const ClusterTECall& te_call,
-    const AssemblyCall& assembly,
-    const PostAssemblyTeDecision& te_decision,
-    const PipelineConfig& config) {
-    const bool tsd_hard_fail = call.te_qc.find("FAIL_TSD_INCONSISTENT") != std::string::npos;
-    const TeFinalEvidenceDecision evidence_gate = apply_te_evidence_gates(call, config);
-    TeOpenSetInput input;
-    input.te_gate_pass = te_decision.pass && !tsd_hard_fail;
-    input.te_gate_uncertain_path =
-        has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN") || tsd_hard_fail;
-    input.force_te_uncertain = te_decision.force_te_uncertain || evidence_gate.force_te_uncertain;
-    input.force_non_te = evidence_gate.force_non_te;
-    input.has_proxy_signal = !call.te_top1_name.empty() && call.te_posterior_top1 > 0.0;
-    input.proxy_certain = is_consensus_proxy_te_certain(te_call, assembly, config);
-    input.te_confidence_prob = call.te_confidence_prob;
-    TeOpenSetParams params;
-    params.conf_certain_min = config.te_confidence_prob_certain_min;
-    params.conf_uncertain_min = config.te_confidence_prob_uncertain_min;
-    const TeOpenSetDecision decision = classify_te_open_set(input, params);
-
-    call.te_status = decision.status;
-    if (decision.promote_top1_name) {
-        call.te_name = call.te_top1_name;
-    }
-    if (decision.add_te_gate_fail_tag) {
-        call.te_qc += "|TE_GATE_FAIL";
-    }
-    if (!decision.qc_proxy_tag.empty()) {
-        call.te_qc += "|" + decision.qc_proxy_tag;
-    }
-
-    const double margin_min = std::clamp(config.te_certain_posterior_margin_min, 0.0, 1.0);
-    const bool cross_family_low_margin =
-        call.te_status == "TE_CERTAIN" &&
-        !call.te_top2_name.empty() &&
-        call.te_posterior_top2 > 0.0 &&
-        call.te_posterior_margin < margin_min &&
-        families_differ(call.te_top1_name, call.te_top2_name);
-    if (cross_family_low_margin) {
-        call.te_status = "TE_UNCERTAIN";
-        const double conf_certain_min = std::clamp(config.te_confidence_prob_certain_min, 0.0, 1.0);
-        const double conf_uncertain_min = std::clamp(
-            std::min(config.te_confidence_prob_uncertain_min, conf_certain_min),
-            0.0,
-            1.0);
-        const double uncertain_cap = std::clamp(
-            0.5 * (conf_certain_min + conf_uncertain_min),
-            conf_uncertain_min,
-            std::max(0.0, conf_certain_min - 1e-6));
-        call.te_confidence_prob = std::min(call.te_confidence_prob, uncertain_cap);
-        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_CROSS_FAMILY_LOW_MARGIN");
-    }
-}
-
-std::mutex g_bootstrap_export_mutex;
-std::atomic<uint64_t> g_bootstrap_export_id{0};
-
-bool bootstrap_export_enabled(const PipelineConfig& config) {
-    if (!config.bootstrap_export_enable) {
-        return false;
-    }
-    return !config.bootstrap_consensus_fasta_path.empty() ||
-           !config.bootstrap_metadata_tsv_path.empty();
-}
-
-void initialize_bootstrap_outputs(const PipelineConfig& config) {
-    if (!bootstrap_export_enabled(config)) {
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_bootstrap_export_mutex);
-        g_bootstrap_export_id = 0;
-    }
-    if (!config.bootstrap_consensus_fasta_path.empty()) {
-        std::ofstream fasta(config.bootstrap_consensus_fasta_path, std::ios::out | std::ios::trunc);
-    }
-    if (!config.bootstrap_metadata_tsv_path.empty()) {
-        std::ofstream tsv(config.bootstrap_metadata_tsv_path, std::ios::out | std::ios::trunc);
-        if (tsv.is_open()) {
-            tsv << "bootstrap_id\tchrom\tpos\twindow_start\twindow_end\tte_status\tconfidence\tinsertion_qc\tte_name\tte_top1\tte_top2"
-                << "\tte_post_top1\tte_post_top2\tte_post_margin\tte_conf_prob\tsupport_reads\ttier\tasm_consensus_len\tasm_identity_est"
-                << "\tte_qc\n";
-        }
-    }
-}
-
-bool should_export_bootstrap_call(
-    const PipelineConfig& config,
-    const FinalCall& call,
-    const AssemblyCall& assembly) {
-    if (!bootstrap_export_enabled(config)) {
-        return false;
-    }
-    if (assembly.consensus.empty()) {
-        return false;
-    }
-    if (assembly.consensus_len < std::max(20, config.bootstrap_export_min_consensus_len)) {
-        return false;
-    }
-    if (call.te_status == "TE_UNCERTAIN") {
-        return true;
-    }
-    if (call.te_status == "NON_TE" && config.bootstrap_export_include_non_te) {
-        return true;
-    }
-    return false;
-}
-
-bool append_bootstrap_export(
-    const PipelineConfig& config,
-    const FinalCall& call,
-    const AssemblyCall& assembly) {
-    if (!should_export_bootstrap_call(config, call, assembly)) {
-        return false;
-    }
-
-    std::string qc = call.te_qc;
-    std::replace(qc.begin(), qc.end(), '\t', '|');
-    std::replace(qc.begin(), qc.end(), '\n', '|');
-
-    std::lock_guard<std::mutex> lock(g_bootstrap_export_mutex);
-    const uint64_t id = ++g_bootstrap_export_id;
-
-    if (!config.bootstrap_consensus_fasta_path.empty()) {
-        std::ofstream fasta(config.bootstrap_consensus_fasta_path, std::ios::out | std::ios::app);
-        if (fasta.is_open()) {
-            fasta << ">BOOTSTRAP_" << id
-                  << "|status=" << call.te_status
-                  << "|conf=" << call.confidence
-                  << "|chrom=" << call.chrom
-                  << "|pos=" << call.pos
-                  << "|top1=" << (call.te_top1_name.empty() ? "NA" : call.te_top1_name)
-                  << "|post1=" << call.te_posterior_top1
-                  << "|margin=" << call.te_posterior_margin
-                  << '\n'
-                  << assembly.consensus << '\n';
-        }
-    }
-
-    if (!config.bootstrap_metadata_tsv_path.empty()) {
-        std::ofstream tsv(config.bootstrap_metadata_tsv_path, std::ios::out | std::ios::app);
-        if (tsv.is_open()) {
-            tsv << "BOOTSTRAP_" << id << '\t'
-                << call.chrom << '\t'
-                << call.pos << '\t'
-                << call.window_start << '\t'
-                << call.window_end << '\t'
-                << call.te_status << '\t'
-                << call.confidence << '\t'
-                << call.insertion_qc << '\t'
-                << (call.te_name.empty() ? "NA" : call.te_name) << '\t'
-                << (call.te_top1_name.empty() ? "NA" : call.te_top1_name) << '\t'
-                << (call.te_top2_name.empty() ? "NA" : call.te_top2_name) << '\t'
-                << call.te_posterior_top1 << '\t'
-                << call.te_posterior_top2 << '\t'
-                << call.te_posterior_margin << '\t'
-                << call.te_confidence_prob << '\t'
-                << call.support_reads << '\t'
-                << call.tier << '\t'
-                << call.asm_consensus_len << '\t'
-                << call.asm_identity_est << '\t'
-                << qc << '\n';
-        }
-    }
-    return true;
-}
-
-bool is_consensus_proxy_te_certain(
-    const ClusterTECall& te_call,
-    const AssemblyCall& assembly,
-    const PipelineConfig& config) {
-    if (!assembly.qc_pass) {
-        return false;
-    }
-    if (te_call.top1_te_name.empty()) {
-        return false;
-    }
-    const double p1_min = std::clamp(config.te_proxy_posterior_top1_min, 0.0, 1.0);
-    const double margin_min = std::clamp(config.te_proxy_posterior_margin_min, 0.0, 1.0);
-    const double identity_min = std::clamp(
-        std::max(config.assembly_min_identity_est, config.te_proxy_identity_min),
-        0.0,
-        1.0);
-    return te_call.posterior_top1 >= p1_min &&
-           te_call.posterior_margin >= margin_min &&
-           assembly.identity_est >= identity_min;
-}
-
-double calibrate_te_confidence_prob(
-    const ClusterTECall& te_call,
-    const AssemblyCall& assembly,
-    const PlaceabilityReport& placeability,
-    const PostAssemblyTeDecision& te_decision,
-    const PipelineConfig& config) {
-    const double support_norm = std::clamp(
-        std::log1p(static_cast<double>(std::max(0, placeability.support_reads))) / std::log1p(10.0),
-        0.0,
-        1.0);
-    const double mad_term = std::exp(-std::max(0.0, placeability.breakpoint_mad) / 25.0);
-    const bool rescue_path =
-        has_prefix(te_decision.qc, "PASS_INSERTION_TE_UNCERTAIN") ||
-        has_prefix(te_decision.qc, "PASS_SHORT_INS_RESCUE") ||
-        has_prefix(te_decision.qc, "PASS_SPLIT_INDEL_RESCUE") ||
-        has_prefix(te_decision.qc, "PASS_ASM_RESCUE");
-    const double z =
-        config.te_confidence_bias +
-        (config.te_confidence_w_top1 * std::clamp(te_call.posterior_top1, 0.0, 1.0)) +
-        (config.te_confidence_w_margin * std::clamp(te_call.posterior_margin, 0.0, 1.0)) +
-        (config.te_confidence_w_asm_identity * std::clamp(assembly.identity_est, 0.0, 1.0)) +
-        (config.te_confidence_w_support * support_norm) +
-        (config.te_confidence_w_vote * std::clamp(te_call.vote_fraction, 0.0, 1.0)) +
-        (config.te_confidence_w_te_identity * std::clamp(te_call.median_identity, 0.0, 1.0)) +
-        (config.te_confidence_w_breakpoint_mad * std::clamp(mad_term, 0.0, 1.0)) -
-        ((rescue_path ? 1.0 : 0.0) * std::max(0.0, config.te_confidence_rescue_penalty));
-    return std::clamp(sigmoid(z), 0.0, 1.0);
-}
-
-ClusterTECall enrich_te_call_with_consensus_proxy(
-    ClusterTECall base_call,
-    const TEKmerQuickClassifierModule& te_classifier_module,
-    const AssemblyCall& assembly) {
-    if (!te_classifier_module.is_enabled()) {
-        return base_call;
-    }
-    if (!assembly.qc_pass || assembly.consensus.empty()) {
-        return base_call;
-    }
-    if (!base_call.top1_te_name.empty() && base_call.posterior_top1 > 0.0) {
-        return base_call;
-    }
-
-    InsertionFragment proxy;
-    proxy.fragment_id = "__asm_consensus_proxy__";
-    proxy.length = assembly.consensus_len;
-    proxy.sequence = assembly.consensus;
-
-    const std::vector<InsertionFragment> proxy_fragments = {proxy};
-    const auto proxy_hits = te_classifier_module.classify(proxy_fragments);
-    const ClusterTECall proxy_call = te_classifier_module.vote_cluster(proxy_hits);
-    if (proxy_call.top1_te_name.empty()) {
-        return base_call;
-    }
-
-    base_call.top1_te_name = proxy_call.top1_te_name;
-    base_call.top2_te_name = proxy_call.top2_te_name;
-    base_call.posterior_top1 = proxy_call.posterior_top1;
-    base_call.posterior_top2 = proxy_call.posterior_top2;
-    base_call.posterior_margin = proxy_call.posterior_margin;
-    return base_call;
-}
-
-std::pair<int32_t, int32_t> infer_tsd_breakpoint_bounds(
-    const ComponentCall& component,
-    const AnchorLockedReport& anchor_report) {
+std::pair<int32_t, int32_t> infer_component_breakpoint_bounds(
+    const ComponentCall& component) {
     int32_t bp_min = std::numeric_limits<int32_t>::max();
     int32_t bp_max = std::numeric_limits<int32_t>::min();
 
@@ -1117,59 +929,118 @@ std::pair<int32_t, int32_t> infer_tsd_breakpoint_bounds(
         return {bp_min, bp_max};
     }
 
-    if (anchor_report.ref_junc_pos_min >= 0 && anchor_report.ref_junc_pos_max >= 0) {
-        return {
-            std::min(anchor_report.ref_junc_pos_min, anchor_report.ref_junc_pos_max),
-            std::max(anchor_report.ref_junc_pos_min, anchor_report.ref_junc_pos_max)};
-    }
-
-    if (anchor_report.te_breakpoint_window_start >= 0 &&
-        anchor_report.te_breakpoint_window_end >= 0) {
-        return {
-            std::min(anchor_report.te_breakpoint_window_start, anchor_report.te_breakpoint_window_end),
-            std::max(anchor_report.te_breakpoint_window_start, anchor_report.te_breakpoint_window_end)};
-    }
-
     const int32_t fallback = std::max(0, component.anchor_pos);
     return {fallback, fallback};
 }
 
-void apply_tsd_to_call(
-    const TsdDetection& tsd,
-    const PipelineConfig& config,
-    FinalCall& call) {
-    call.tsd_type = tsd.type;
-    call.tsd_len = std::max(0, tsd.length);
-    call.tsd_seq = tsd.sequence.empty() ? "NA" : tsd.sequence;
-    call.tsd_bg_p = std::clamp(tsd.bg_p, 0.0, 1.0);
+std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<InsertionFragment>& fragments,
+    int32_t seed_left,
+    int32_t seed_right) {
+    constexpr int32_t kEventBreakpointSearchSlackBp = 200;
 
-    if (tsd.type == "DUP" && tsd.significant) {
-        call.te_confidence_prob = std::clamp(call.te_confidence_prob + 0.06, 0.0, 1.0);
-    } else if (tsd.type == "DEL" && tsd.significant) {
-        call.te_confidence_prob = std::clamp(call.te_confidence_prob + 0.03, 0.0, 1.0);
-    } else if (tsd.type == "UNCERTAIN" && call.tsd_bg_p > std::clamp(config.tsd_bg_p_max, 0.0, 1.0)) {
-        call.te_confidence_prob = std::clamp(call.te_confidence_prob - 0.02, 0.0, 1.0);
+    const int32_t search_start = std::max(
+        0,
+        std::min(seed_left, seed_right) - kEventBreakpointSearchSlackBp);
+    const int32_t search_end = std::max(
+        search_start + 1,
+        std::max(seed_left, seed_right) + kEventBreakpointSearchSlackBp);
+
+    std::vector<int32_t> fragment_split_left_positions;
+    std::vector<int32_t> fragment_split_right_positions;
+    std::vector<int32_t> fragment_indel_positions;
+    std::vector<int32_t> fragment_clip_left_positions;
+    std::vector<int32_t> fragment_clip_right_positions;
+    std::vector<int32_t> raw_indel_positions;
+    std::vector<int32_t> raw_clip_left_positions;
+    std::vector<int32_t> raw_clip_right_positions;
+
+    auto add_position = [&](std::vector<int32_t>& out, int32_t pos) {
+        if (pos >= search_start && pos <= search_end) {
+            out.push_back(pos);
+        }
+    };
+
+    for (const bam1_t* record : local_records) {
+        if (!record) {
+            continue;
+        }
+        ReadView read(record);
+        if (read.tid() != component.tid) {
+            continue;
+        }
+
+        const LocalEventSignal signal = classify_local_event_signal(
+            record,
+            search_start,
+            search_end);
+        add_position(raw_clip_left_positions, signal.left_clip_pos);
+        add_position(raw_clip_right_positions, signal.right_clip_pos);
+        add_position(raw_indel_positions, signal.indel_pos);
     }
+
+    for (const auto& fragment : fragments) {
+        if (fragment.ref_junc_pos < search_start || fragment.ref_junc_pos > search_end) {
+            continue;
+        }
+        switch (fragment.source) {
+            case InsertionFragmentSource::kSplitSa:
+                if (fragment.ref_side == ReferenceSide::kRefLeft) {
+                    fragment_split_left_positions.push_back(fragment.ref_junc_pos);
+                } else if (fragment.ref_side == ReferenceSide::kRefRight) {
+                    fragment_split_right_positions.push_back(fragment.ref_junc_pos);
+                }
+                break;
+            case InsertionFragmentSource::kCigarInsertion:
+                fragment_indel_positions.push_back(fragment.ref_junc_pos);
+                break;
+            case InsertionFragmentSource::kClipRefLeft:
+                fragment_clip_left_positions.push_back(fragment.ref_junc_pos);
+                break;
+            case InsertionFragmentSource::kClipRefRight:
+                fragment_clip_right_positions.push_back(fragment.ref_junc_pos);
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (!fragment_split_left_positions.empty() || !fragment_split_right_positions.empty()) {
+        const int32_t left = !fragment_split_left_positions.empty()
+            ? median_i32(fragment_split_left_positions)
+            : median_i32(fragment_split_right_positions);
+        const int32_t right = !fragment_split_right_positions.empty()
+            ? median_i32(fragment_split_right_positions)
+            : median_i32(fragment_split_left_positions);
+        return {std::min(left, right), std::max(left, right)};
+    }
+
+    if (!fragment_indel_positions.empty()) {
+        const int32_t pos = median_i32(fragment_indel_positions);
+        return {pos, pos};
+    }
+
+    if (!fragment_clip_left_positions.empty() && !fragment_clip_right_positions.empty()) {
+        const int32_t left = median_i32(fragment_clip_left_positions);
+        const int32_t right = median_i32(fragment_clip_right_positions);
+        return {std::min(left, right), std::max(left, right)};
+    }
+
+    if (!raw_indel_positions.empty()) {
+        const int32_t pos = median_i32(raw_indel_positions);
+        return {pos, pos};
+    }
+
+    if (!raw_clip_left_positions.empty() && !raw_clip_right_positions.empty()) {
+        const int32_t left = median_i32(raw_clip_left_positions);
+        const int32_t right = median_i32(raw_clip_right_positions);
+        return {std::min(left, right), std::max(left, right)};
+    }
+
+    return {std::max(0, component.anchor_pos), std::max(0, component.anchor_pos)};
 }
-
-void apply_tsd_consistency_gate(
-    const TsdDetection& tsd,
-    const PipelineConfig& config,
-    FinalCall& call) {
-    if (!config.te_fail_on_tsd_inconsistent) {
-        return;
-    }
-    if (tsd.type == "UNCERTAIN" &&
-        std::clamp(tsd.bg_p, 0.0, 1.0) > std::clamp(config.tsd_bg_p_max, 0.0, 1.0)) {
-        call.te_qc += "|FAIL_TSD_INCONSISTENT";
-        const double fail_cap = std::clamp(
-            0.5 * std::clamp(config.te_confidence_prob_uncertain_min, 0.0, 1.0),
-            0.0,
-            1.0);
-        call.te_confidence_prob = std::min(call.te_confidence_prob, fail_cap);
-    }
-}
-
 template <typename T>
 class SafeQueue {
 public:
@@ -1617,6 +1488,523 @@ std::vector<CandidateWindow> build_density_windows(
 
 }  // namespace
 
+EventReadEvidence Pipeline::collect_event_read_evidence(
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<ReadReferenceSpan>& read_spans,
+    const std::vector<InsertionFragment>& fragments) const {
+    EventReadEvidence evidence;
+    const auto seed_bounds = infer_component_breakpoint_bounds(component);
+    const auto bp_bounds = resolve_event_breakpoint_bounds(
+        component,
+        local_records,
+        fragments,
+        seed_bounds.first,
+        seed_bounds.second);
+    evidence.bp_left = std::min(bp_bounds.first, bp_bounds.second);
+    evidence.bp_right = std::max(bp_bounds.first, bp_bounds.second);
+
+    std::unordered_set<std::string> split_qnames;
+    std::unordered_set<std::string> indel_qnames;
+    std::unordered_set<std::string> left_clip_qnames;
+    std::unordered_set<std::string> right_clip_qnames;
+
+    const int32_t span_start = std::max(0, evidence.bp_left - 25);
+    const int32_t span_end = std::max(span_start, evidence.bp_right + 25);
+    for (size_t read_idx = 0; read_idx < local_records.size(); ++read_idx) {
+        const bam1_t* record = local_records[read_idx];
+        if (!record) {
+            continue;
+        }
+        ReadView read(record);
+        if (read.tid() != component.tid) {
+            continue;
+        }
+
+        const std::string qname = record_qname(record);
+        if (qname.empty()) {
+            continue;
+        }
+
+        const LocalEventSignal signal = classify_local_event_signal(
+            record,
+            span_start,
+            span_end);
+        if (signal.split) {
+            split_qnames.insert(qname);
+        }
+        if (signal.indel) {
+            indel_qnames.insert(qname);
+        }
+        if (signal.left_clip) {
+            left_clip_qnames.insert(qname);
+        }
+        if (signal.right_clip) {
+            right_clip_qnames.insert(qname);
+        }
+    }
+
+    for (const auto& fragment : fragments) {
+        if (fragment.read_id.empty() ||
+            fragment.ref_junc_pos < span_start ||
+            fragment.ref_junc_pos > span_end) {
+            continue;
+        }
+        switch (fragment.source) {
+            case InsertionFragmentSource::kSplitSa:
+                split_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kCigarInsertion:
+                indel_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kClipRefLeft:
+                left_clip_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kClipRefRight:
+                right_clip_qnames.insert(fragment.read_id);
+                break;
+            default:
+                break;
+        }
+    }
+
+    evidence.alt_split_reads = static_cast<int32_t>(split_qnames.size());
+    evidence.alt_indel_reads = static_cast<int32_t>(indel_qnames.size());
+    evidence.alt_left_clip_reads = static_cast<int32_t>(left_clip_qnames.size());
+    evidence.alt_right_clip_reads = static_cast<int32_t>(right_clip_qnames.size());
+
+    std::unordered_set<std::string> alt_qnames = split_qnames;
+    alt_qnames.insert(indel_qnames.begin(), indel_qnames.end());
+    const bool paired_clip_support = !left_clip_qnames.empty() && !right_clip_qnames.empty();
+    if (paired_clip_support) {
+        alt_qnames.insert(left_clip_qnames.begin(), left_clip_qnames.end());
+        alt_qnames.insert(right_clip_qnames.begin(), right_clip_qnames.end());
+    }
+
+    evidence.alt_struct_reads = static_cast<int32_t>(alt_qnames.size());
+    evidence.support_qnames = sorted_string_set(alt_qnames);
+
+    std::unordered_set<std::string> ref_qnames;
+    std::unordered_set<std::string> low_mapq_ref_qnames;
+    for (size_t read_idx = 0; read_idx < read_spans.size(); ++read_idx) {
+        const auto& span = read_spans[read_idx];
+        if (!span.valid || span.tid != component.tid) {
+            continue;
+        }
+        if (span.start > span_start || span.end < span_end) {
+            continue;
+        }
+        if (read_idx >= local_records.size() || !local_records[read_idx]) {
+            continue;
+        }
+        const bam1_t* record = local_records[read_idx];
+        if (!is_primary_alignment(record)) {
+            continue;
+        }
+        const std::string qname = record_qname(record);
+        if (qname.empty() || alt_qnames.find(qname) != alt_qnames.end()) {
+            continue;
+        }
+        if (read_has_local_event_signal(record, span_start, span_end)) {
+            continue;
+        }
+        if (record->core.qual >= 20) {
+            ref_qnames.insert(qname);
+        } else {
+            low_mapq_ref_qnames.insert(qname);
+        }
+    }
+
+    evidence.ref_span_reads = static_cast<int32_t>(ref_qnames.size());
+    evidence.low_mapq_ref_span_reads = static_cast<int32_t>(low_mapq_ref_qnames.size());
+    evidence.ref_span_qnames = sorted_string_set(ref_qnames);
+    return evidence;
+}
+
+EventConsensus Pipeline::build_event_consensus(
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<InsertionFragment>& fragments,
+    const EventReadEvidence& event_evidence) const {
+    EventConsensus consensus;
+    (void)component;
+
+    std::unordered_set<std::string> support_qnames(
+        event_evidence.support_qnames.begin(),
+        event_evidence.support_qnames.end());
+    std::unordered_map<std::string, const bam1_t*> records_by_qname;
+    records_by_qname.reserve(local_records.size());
+    for (const bam1_t* record : local_records) {
+        if (!record) {
+            continue;
+        }
+        const std::string qname = record_qname(record);
+        if (qname.empty()) {
+            continue;
+        }
+
+        auto it = records_by_qname.find(qname);
+        if (it == records_by_qname.end()) {
+            records_by_qname.emplace(qname, record);
+            continue;
+        }
+
+        ReadView candidate(record);
+        ReadView incumbent(it->second);
+        const int32_t candidate_seq_len = candidate.seq_len();
+        const int32_t incumbent_seq_len = incumbent.seq_len();
+        if (candidate_seq_len > incumbent_seq_len ||
+            (candidate_seq_len == incumbent_seq_len &&
+             is_primary_alignment(record) &&
+             !is_primary_alignment(it->second))) {
+            it->second = record;
+        }
+    }
+
+    std::unordered_map<std::string, std::string> event_by_qname;
+    event_by_qname.reserve(fragments.size());
+
+    for (const auto& fragment : fragments) {
+        if (fragment.read_id.empty() ||
+            support_qnames.find(fragment.read_id) == support_qnames.end() ||
+            !fragment_has_dual_context_event_string(fragment) ||
+            !fragment_is_local_to_event(fragment, event_evidence.bp_left, event_evidence.bp_right)) {
+            continue;
+        }
+        const auto record_it = records_by_qname.find(fragment.read_id);
+        if (record_it == records_by_qname.end()) {
+            continue;
+        }
+        const std::string event_string = build_event_string_from_fragment(
+            record_it->second,
+            fragment);
+        if (event_string.empty()) {
+            continue;
+        }
+        auto it = event_by_qname.find(fragment.read_id);
+        if (it == event_by_qname.end() || event_string.size() > it->second.size()) {
+            event_by_qname[fragment.read_id] = event_string;
+        }
+    }
+
+    std::vector<std::string> event_strings;
+    event_strings.reserve(event_by_qname.size());
+    for (const auto& row : event_by_qname) {
+        event_strings.push_back(row.second);
+    }
+
+    consensus.input_event_reads = static_cast<int32_t>(event_strings.size());
+    if (consensus.input_event_reads <= 0) {
+        consensus.qc_reason = "NO_DUAL_CONTEXT_EVENT_READS";
+        return consensus;
+    }
+    if (consensus.input_event_reads < std::max(1, config_.event_consensus_poa_min_reads)) {
+        consensus.qc_reason = "INSUFFICIENT_EVENT_READS";
+        return consensus;
+    }
+
+    std::sort(event_strings.begin(), event_strings.end(), [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) {
+            return a.size() > b.size();
+        }
+        return a < b;
+    });
+    if (static_cast<int32_t>(event_strings.size()) > config_.event_consensus_poa_max_reads) {
+        event_strings.resize(static_cast<size_t>(config_.event_consensus_poa_max_reads));
+    }
+
+    consensus.consensus_seq = upper_acgt(abpoa_consensus(event_strings));
+    consensus.consensus_len = static_cast<int32_t>(consensus.consensus_seq.size());
+    if (consensus.consensus_seq.empty()) {
+        consensus.qc_reason = "EMPTY_EVENT_CONSENSUS";
+        return consensus;
+    }
+
+    consensus.qc_pass = true;
+    consensus.qc_reason = "PASS_EVENT_CONSENSUS";
+    return consensus;
+}
+
+EventSegmentation Pipeline::segment_event_consensus(
+    const ComponentCall& component,
+    const EventReadEvidence& event_evidence,
+    const EventConsensus& event_consensus) const {
+    EventSegmentation segmentation;
+
+    if (!event_consensus.qc_pass || event_consensus.consensus_seq.empty()) {
+        segmentation.qc_reason = "NO_EVENT_CONSENSUS_TO_SEGMENT";
+        return segmentation;
+    }
+    if (!tsd_detector_.can_fetch_reference()) {
+        segmentation.qc_reason = "REFERENCE_FETCH_UNAVAILABLE";
+        return segmentation;
+    }
+
+    const std::string& consensus = event_consensus.consensus_seq;
+    const int32_t consensus_len = static_cast<int32_t>(consensus.size());
+    const int32_t min_total_len =
+        (2 * kEventSegmentationMinFlankAlignBp) + kEventSegmentationMinInsertBp;
+    if (consensus_len < min_total_len) {
+        segmentation.qc_reason = "EVENT_CONSENSUS_TOO_SHORT";
+        return segmentation;
+    }
+
+    const int32_t max_flank_query_len = std::min(
+        kEventSegmentationMaxFlankQueryBp,
+        consensus_len - kEventSegmentationMinFlankAlignBp - kEventSegmentationMinInsertBp);
+    if (max_flank_query_len < kEventSegmentationMinFlankAlignBp) {
+        segmentation.qc_reason = "EVENT_CONSENSUS_TOO_SHORT";
+        return segmentation;
+    }
+
+    const int32_t bp_left = std::min(event_evidence.bp_left, event_evidence.bp_right);
+    const int32_t bp_right = std::max(event_evidence.bp_left, event_evidence.bp_right);
+    if (component.chrom.empty() || bp_left < 0 || bp_right < 0) {
+        segmentation.qc_reason = "INVALID_EVENT_BREAKPOINTS";
+        return segmentation;
+    }
+
+    const int32_t left_window_start = std::max(
+        0,
+        bp_left - kEventSegmentationBreakpointSlackBp - max_flank_query_len);
+    const int32_t left_window_end = std::max(
+        left_window_start + 1,
+        bp_left + kEventSegmentationBreakpointSlackBp);
+    const int32_t right_window_start = std::max(
+        0,
+        bp_right - kEventSegmentationBreakpointSlackBp);
+    const int32_t right_window_end = std::max(
+        right_window_start + 1,
+        bp_right + kEventSegmentationBreakpointSlackBp + max_flank_query_len);
+
+    const std::string left_ref_window = tsd_detector_.fetch_window(
+        component.chrom,
+        left_window_start,
+        left_window_end);
+    const std::string right_ref_window = tsd_detector_.fetch_window(
+        component.chrom,
+        right_window_start,
+        right_window_end);
+    if (left_ref_window.empty() || right_ref_window.empty()) {
+        segmentation.qc_reason = "REFERENCE_WINDOW_FETCH_FAILED";
+        return segmentation;
+    }
+
+    const auto collect_candidates = [&](
+        bool is_left,
+        int32_t breakpoint,
+        int32_t ref_window_start,
+        const std::string& ref_window) {
+        EventFlankSearchResult result;
+        if (ref_window.empty()) {
+            return result;
+        }
+
+        const int32_t ref_window_end =
+            ref_window_start + static_cast<int32_t>(ref_window.size());
+        const int32_t search_lo = std::max(0, breakpoint - kEventSegmentationBreakpointSlackBp);
+        const int32_t search_hi = breakpoint + kEventSegmentationBreakpointSlackBp;
+
+        for (int32_t align_len = max_flank_query_len;
+             align_len >= kEventSegmentationMinFlankAlignBp;
+             --align_len) {
+            const int32_t query_start = is_left ? 0 : (consensus_len - align_len);
+            const std::string query = consensus.substr(
+                static_cast<size_t>(query_start),
+                static_cast<size_t>(align_len));
+
+            std::vector<EventFlankPlacement> placements;
+            placements.reserve(
+                static_cast<size_t>(std::max(0, search_hi - search_lo + 1)));
+
+            for (int32_t anchor_pos = search_lo; anchor_pos <= search_hi; ++anchor_pos) {
+                const int32_t ref_start = is_left ? (anchor_pos - align_len) : anchor_pos;
+                const int32_t ref_end = is_left ? anchor_pos : (anchor_pos + align_len);
+                if (ref_start < ref_window_start || ref_end > ref_window_end) {
+                    continue;
+                }
+
+                const size_t offset = static_cast<size_t>(ref_start - ref_window_start);
+                const std::string ref_seq = ref_window.substr(offset, static_cast<size_t>(align_len));
+                if (static_cast<int32_t>(ref_seq.size()) != align_len) {
+                    continue;
+                }
+
+                const double identity = edit_identity(query, ref_seq);
+                if (identity + 1e-9 < kEventSegmentationMinFlankIdentity) {
+                    continue;
+                }
+
+                result.had_threshold_hit = true;
+                EventFlankPlacement placement;
+                placement.query_start = query_start;
+                placement.query_end = query_start + align_len;
+                placement.ref_start = ref_start;
+                placement.ref_end = ref_end;
+                placement.align_len = align_len;
+                placement.identity = identity;
+                placement.breakpoint_delta = is_left
+                    ? std::abs(ref_end - breakpoint)
+                    : std::abs(ref_start - breakpoint);
+                placements.push_back(placement);
+            }
+
+            if (placements.empty()) {
+                continue;
+            }
+
+            std::sort(
+                placements.begin(),
+                placements.end(),
+                better_event_flank_placement);
+            const EventFlankPlacement& best = placements.front();
+
+            bool ambiguous = false;
+            for (size_t idx = 1; idx < placements.size(); ++idx) {
+                const EventFlankPlacement& alt = placements[idx];
+                if (alt.ref_start == best.ref_start && alt.ref_end == best.ref_end) {
+                    continue;
+                }
+                if ((alt.identity + kEventSegmentationUniquenessMargin) >= best.identity) {
+                    ambiguous = true;
+                }
+                break;
+            }
+            if (ambiguous) {
+                continue;
+            }
+
+            result.candidates.push_back(best);
+        }
+
+        std::sort(
+            result.candidates.begin(),
+            result.candidates.end(),
+            better_event_flank_placement);
+        return result;
+    };
+
+    const EventFlankSearchResult left_search = collect_candidates(
+        true,
+        bp_left,
+        left_window_start,
+        left_ref_window);
+    if (left_search.candidates.empty()) {
+        segmentation.qc_reason = left_search.had_threshold_hit
+            ? "LEFT_FLANK_AMBIGUOUS"
+            : "NO_LEFT_FLANK_MATCH";
+        return segmentation;
+    }
+
+    const EventFlankSearchResult right_search = collect_candidates(
+        false,
+        bp_right,
+        right_window_start,
+        right_ref_window);
+    if (right_search.candidates.empty()) {
+        segmentation.qc_reason = right_search.had_threshold_hit
+            ? "RIGHT_FLANK_AMBIGUOUS"
+            : "NO_RIGHT_FLANK_MATCH";
+        return segmentation;
+    }
+
+    EventFlankPlacement best_left;
+    EventFlankPlacement best_right;
+    bool have_pair = false;
+    auto better_pair = [&](const EventFlankPlacement& lhs_left,
+                           const EventFlankPlacement& lhs_right,
+                           const EventFlankPlacement& rhs_left,
+                           const EventFlankPlacement& rhs_right) {
+        const int32_t lhs_total = lhs_left.align_len + lhs_right.align_len;
+        const int32_t rhs_total = rhs_left.align_len + rhs_right.align_len;
+        if (lhs_total != rhs_total) {
+            return lhs_total > rhs_total;
+        }
+
+        const double lhs_min_identity = std::min(lhs_left.identity, lhs_right.identity);
+        const double rhs_min_identity = std::min(rhs_left.identity, rhs_right.identity);
+        if (lhs_min_identity != rhs_min_identity) {
+            return lhs_min_identity > rhs_min_identity;
+        }
+
+        const double lhs_mean_identity = 0.5 * (lhs_left.identity + lhs_right.identity);
+        const double rhs_mean_identity = 0.5 * (rhs_left.identity + rhs_right.identity);
+        if (lhs_mean_identity != rhs_mean_identity) {
+            return lhs_mean_identity > rhs_mean_identity;
+        }
+
+        const int32_t lhs_delta = lhs_left.breakpoint_delta + lhs_right.breakpoint_delta;
+        const int32_t rhs_delta = rhs_left.breakpoint_delta + rhs_right.breakpoint_delta;
+        if (lhs_delta != rhs_delta) {
+            return lhs_delta < rhs_delta;
+        }
+
+        if (lhs_left.ref_start != rhs_left.ref_start) {
+            return lhs_left.ref_start < rhs_left.ref_start;
+        }
+        return lhs_right.ref_start < rhs_right.ref_start;
+    };
+
+    for (const auto& left_candidate : left_search.candidates) {
+        for (const auto& right_candidate : right_search.candidates) {
+            if (left_candidate.query_end + kEventSegmentationMinInsertBp >
+                right_candidate.query_start) {
+                continue;
+            }
+
+            if (!have_pair ||
+                better_pair(left_candidate, right_candidate, best_left, best_right)) {
+                best_left = left_candidate;
+                best_right = right_candidate;
+                have_pair = true;
+            }
+        }
+    }
+
+    if (!have_pair) {
+        segmentation.qc_reason = "NO_TRIPARTITE_EVENT_SEGMENTATION";
+        return segmentation;
+    }
+
+    const int32_t insert_start = best_left.query_end;
+    const int32_t insert_len = best_right.query_start - best_left.query_end;
+    if (insert_len < kEventSegmentationMinInsertBp) {
+        segmentation.qc_reason = "EMPTY_EVENT_INSERT_SEGMENT";
+        return segmentation;
+    }
+
+    segmentation.left_flank_seq = consensus.substr(
+        static_cast<size_t>(best_left.query_start),
+        static_cast<size_t>(best_left.align_len));
+    segmentation.insert_seq = consensus.substr(
+        static_cast<size_t>(insert_start),
+        static_cast<size_t>(insert_len));
+    segmentation.right_flank_seq = consensus.substr(
+        static_cast<size_t>(best_right.query_start),
+        static_cast<size_t>(best_right.align_len));
+    segmentation.left_ref_start = best_left.ref_start;
+    segmentation.left_ref_end = best_left.ref_end;
+    segmentation.right_ref_start = best_right.ref_start;
+    segmentation.right_ref_end = best_right.ref_end;
+    segmentation.left_flank_align_len = best_left.align_len;
+    segmentation.right_flank_align_len = best_right.align_len;
+    segmentation.left_flank_identity = best_left.identity;
+    segmentation.right_flank_identity = best_right.identity;
+    segmentation.pass = true;
+    segmentation.qc_reason = "PASS_EVENT_SEGMENTATION";
+    return segmentation;
+}
+
+TEAlignmentEvidence Pipeline::align_insert_seq_to_te(
+    const EventSegmentation& event_segmentation) const {
+    if (!event_segmentation.pass) {
+        TEAlignmentEvidence evidence;
+        evidence.qc_reason = "NO_EVENT_SEGMENTATION_FOR_TE_ALIGNMENT";
+        return evidence;
+    }
+    return te_classifier_module_.align_insert_sequence(event_segmentation.insert_seq);
+}
+
 void finalize_final_calls(PipelineResult& result) {
     std::sort(result.final_calls.begin(), result.final_calls.end(), final_call_sort_less);
 
@@ -1640,175 +2028,7 @@ void finalize_final_calls(PipelineResult& result) {
 
     result.final_calls = std::move(deduped);
 
-    result.final_te_certain = 0;
-    result.final_te_uncertain = 0;
-    result.final_non_te = 0;
-    result.final_high_confidence = 0;
-    result.final_low_confidence = 0;
-    for (const auto& call : result.final_calls) {
-        if (call.te_status == "TE_CERTAIN") {
-            result.final_te_certain += 1;
-        } else if (call.te_status == "TE_UNCERTAIN") {
-            result.final_te_uncertain += 1;
-        } else {
-            result.final_non_te += 1;
-        }
-        if (call.confidence == "LOW") {
-            result.final_low_confidence += 1;
-        } else {
-            result.final_high_confidence += 1;
-        }
-    }
-}
-
-TeFinalEvidenceDecision apply_te_evidence_gates(
-    FinalCall& call,
-    const PipelineConfig& config) {
-    TeFinalEvidenceDecision decision;
-
-    const int32_t softclip_support_reads = std::max(0, call.softclip_support_reads);
-    const int32_t split_like_support_reads = std::max(0, call.split_like_support_reads);
-    const bool split_indel_dominant =
-        split_like_support_reads > 0 &&
-        split_like_support_reads >= softclip_support_reads;
-    const bool clip_dominant =
-        softclip_support_reads >
-        (2 * std::max(1, split_like_support_reads));
-
-    const bool anchor_fail =
-        call.te_qc.find("ANCHOR_FAIL_") != std::string::npos ||
-        has_qc_token(call.te_qc, "ANCHOR_NO_CORE_RESULT");
-    const bool weak_no_tsd = call.tsd_type == "NONE" && !split_indel_dominant;
-    const bool weak_uncertain_tsd = call.tsd_type == "UNCERTAIN" && !split_indel_dominant;
-    const bool weak_tsd = weak_no_tsd || weak_uncertain_tsd;
-    const bool named_te =
-        !call.te_name.empty() &&
-        call.te_name != "UNK";
-    const double rescue_identity_min = std::clamp(config.te_rescue_median_identity_min, 0.0, 1.0);
-    const bool low_te_identity =
-        named_te &&
-        call.te_median_identity < rescue_identity_min;
-
-    const double margin_min = std::clamp(config.te_certain_posterior_margin_min, 0.0, 1.0);
-    const bool low_margin =
-        !call.te_top2_name.empty() &&
-        call.te_posterior_top2 > 0.0 &&
-        call.te_posterior_margin < margin_min;
-    const bool weak_structural =
-        split_like_support_reads < 2 &&
-        call.tsd_type == "NONE";
-    const bool clip_dominant_low_mapq =
-        call.tsd_type == "NONE" &&
-        clip_dominant &&
-        call.support_low_mapq_frac >= 0.20;
-    const double same_family_margin_max = std::clamp(
-        std::max(config.te_same_family_ambiguity_margin_max, margin_min),
-        0.0,
-        1.0);
-    const bool family_ambiguous =
-        !call.te_top1_name.empty() &&
-        !call.te_top2_name.empty() &&
-        call.te_posterior_top2 > 0.0 &&
-        call.te_top1_name != call.te_top2_name &&
-        normalize_te_family(call.te_top1_name) == normalize_te_family(call.te_top2_name) &&
-        call.te_posterior_margin < same_family_margin_max;
-
-    double penalty = 0.0;
-    if (anchor_fail) {
-        decision.force_te_uncertain = true;
-        penalty += std::max(0.0, config.te_confidence_anchor_fail_penalty);
-        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_ANCHOR");
-    }
-    if (weak_no_tsd) {
-        decision.force_te_uncertain = true;
-        penalty += std::max(0.0, config.te_confidence_no_tsd_penalty);
-        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_NO_TSD");
-    }
-    if (weak_uncertain_tsd) {
-        decision.force_te_uncertain = true;
-        penalty += std::max(0.0, config.te_confidence_no_tsd_penalty);
-        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_TSD_UNCERTAIN");
-    }
-    if (call.seq_closure_enabled && !call.seq_closure_pass) {
-        decision.force_te_uncertain = true;
-        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_SEQUENCE_CLOSURE_FAIL");
-    }
-    if (call.seq_closure_enabled &&
-        call.seq_closure_pass &&
-        !call.seq_closure_certain) {
-        decision.force_te_uncertain = true;
-        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_SEQUENCE_CLOSURE_WEAK");
-    }
-    if (low_margin) {
-        decision.force_te_uncertain = true;
-        penalty += std::max(0.0, config.te_confidence_low_margin_penalty);
-        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_LOW_MARGIN");
-    }
-    if (clip_dominant && weak_structural) {
-        decision.force_te_uncertain = true;
-        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_CLIP_DOMINANT_WEAK_STRUCTURAL");
-    }
-    if (family_ambiguous) {
-        decision.force_te_uncertain = true;
-        penalty += 0.5 * std::max(0.0, config.te_confidence_low_margin_penalty);
-        append_qc_token(call.te_qc, "TE_FORCE_UNCERTAIN_FAMILY_AMBIGUOUS");
-    }
-    if (low_te_identity) {
-        decision.force_non_te = true;
-        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_LOW_IDENTITY");
-    }
-    if (config.te_force_non_te_on_anchor_weak_tsd &&
-        anchor_fail &&
-        weak_tsd) {
-        decision.force_non_te = true;
-        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_ANCHOR_WEAK_TSD");
-    }
-
-    if (config.te_force_non_te_on_combined_weakness &&
-        anchor_fail &&
-        weak_no_tsd &&
-        low_margin) {
-        decision.force_non_te = true;
-        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_COMBINED_WEAKNESS");
-    }
-    if (clip_dominant && weak_structural && low_margin) {
-        decision.force_non_te = true;
-        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_CLIP_DOMINANT_LOW_MARGIN");
-    }
-    if (clip_dominant_low_mapq) {
-        decision.force_non_te = true;
-        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_CLIP_DOMINANT_LOW_MAPQ");
-    }
-    if (call.seq_closure_enabled && call.seq_closure_force_non_te) {
-        decision.force_non_te = true;
-        append_qc_token(call.te_qc, "TE_FORCE_NON_TE_SEQUENCE_CLOSURE_FAIL");
-    }
-
-    if (penalty > 0.0) {
-        call.te_confidence_prob =
-            std::clamp(call.te_confidence_prob - penalty, 0.0, 1.0);
-    }
-    const double conf_certain_min = std::clamp(config.te_confidence_prob_certain_min, 0.0, 1.0);
-    const double conf_uncertain_min = std::clamp(
-        std::min(config.te_confidence_prob_uncertain_min, conf_certain_min),
-        0.0,
-        1.0);
-    if (decision.force_te_uncertain) {
-        const double uncertain_cap = std::clamp(
-            0.5 * (conf_certain_min + conf_uncertain_min),
-            conf_uncertain_min,
-            std::max(0.0, conf_certain_min - 1e-6));
-        call.te_confidence_prob = std::min(call.te_confidence_prob, uncertain_cap);
-    }
-    if (decision.force_non_te || low_te_identity) {
-        const double fail_cap = std::clamp(
-            0.5 * conf_uncertain_min,
-            0.0,
-            1.0);
-        call.te_confidence_prob = std::min(call.te_confidence_prob, fail_cap);
-    }
-
-    return decision;
+    result.final_pass_calls = static_cast<int64_t>(result.final_calls.size());
 }
 
 std::vector<ComponentCall> LinearBinComponentModule::build(
@@ -1899,11 +2119,6 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
         call.bin_end = windows[wi].end;
         call.anchor_pos = windows[wi].center;
         call.peak_weight = windows[wi].peak_weight;
-
-        const int32_t denom = assigned_count[wi] + ambiguous_count[wi];
-        if (denom > 0) {
-            call.ambiguous_frac = static_cast<double>(ambiguous_count[wi]) / static_cast<double>(denom);
-        }
 
         std::vector<std::pair<int32_t, double>> anchor_points;
         for (size_t read_idx = 0; read_idx < assigned_window.size(); ++read_idx) {
@@ -2046,15 +2261,35 @@ Pipeline::Pipeline(PipelineConfig config, std::unique_ptr<BamStreamReader> bam_r
       component_module_(),
       ins_fragment_module_(config_),
       te_classifier_module_(config_),
-      anchor_locked_module_(config_),
       tsd_detector_(config_) {}
 
 PipelineResult Pipeline::run() const {
     if (!bam_reader_ || !bam_reader_->is_valid()) {
         throw std::runtime_error("BAM reader is not valid");
     }
+    if (!bam_reader_->can_fetch()) {
+        throw std::runtime_error(
+            "BAM reader does not support indexed local fetch; a BAM index is required for event-level recollection");
+    }
+    if (!tsd_detector_.can_fetch_reference()) {
+        throw std::runtime_error(
+            "Reference FASTA cannot be fetched; event consensus segmentation requires a readable indexed reference");
+    }
+    if (!te_classifier_module_.is_enabled()) {
+        throw std::runtime_error(
+            "TE library alignment is unavailable; Stage 5 requires a readable TE FASTA and a usable shortlist index");
+    }
 
-    initialize_bootstrap_outputs(config_);
+    {
+        std::ostringstream oss;
+        oss << "[Pipeline] starting mode="
+            << (config_.enable_parallel ? "parallel" : "streaming")
+            << " bam_threads=" << config_.bam_threads
+            << " progress_interval=" << config_.progress_interval
+            << " log_stage_bins=" << bool_as_int(config_.log_stage_bins)
+            << " log_stage_components=" << bool_as_int(config_.log_stage_components);
+        emit_pipeline_log_line(oss.str());
+    }
 
     if (config_.enable_parallel) {
         return run_parallel();
@@ -2094,6 +2329,12 @@ PipelineResult Pipeline::run_parallel() const {
     std::vector<PipelineResult> worker_results(static_cast<size_t>(worker_count));
     std::vector<std::thread> workers;
     workers.reserve(static_cast<size_t>(worker_count));
+    {
+        std::ostringstream oss;
+        oss << "[Pipeline] parallel workers=" << worker_count
+            << " queue_cap=" << queue_cap;
+        emit_pipeline_log_line(oss.str());
+    }
 
     for (int32_t wi = 0; wi < worker_count; ++wi) {
         workers.emplace_back([this, wi, &bin_queue, &worker_results]() {
@@ -2248,16 +2489,8 @@ PipelineResult Pipeline::run_parallel() const {
     for (auto& worker_result : worker_results) {
         result.processed_bins += worker_result.processed_bins;
         result.built_components += worker_result.built_components;
-        result.evidence_rows += worker_result.evidence_rows;
-        result.assembled_calls += worker_result.assembled_calls;
-        result.placeability_calls += worker_result.placeability_calls;
+        result.event_consensus_calls += worker_result.event_consensus_calls;
         result.genotype_calls += worker_result.genotype_calls;
-        result.final_te_certain += worker_result.final_te_certain;
-        result.final_te_uncertain += worker_result.final_te_uncertain;
-        result.final_non_te += worker_result.final_non_te;
-        result.final_high_confidence += worker_result.final_high_confidence;
-        result.final_low_confidence += worker_result.final_low_confidence;
-        result.bootstrap_exported_calls += worker_result.bootstrap_exported_calls;
         for (auto& call : worker_result.final_calls) {
             result.final_calls.push_back(std::move(call));
         }
@@ -2365,734 +2598,82 @@ void Pipeline::flush_current_bin(
     state.current_bin_records.clear();
 }
 
-EvidenceFeatures Pipeline::collect_evidence(
+GenotypeCall Pipeline::genotype_call(
     const ComponentCall& component,
-    const std::vector<const bam1_t*>& bin_records,
-    const std::vector<ReadReferenceSpan>& read_spans,
-    const std::vector<InsertionFragment>& fragments,
-    const ClusterTECall& te_call,
-    const AnchorLockedReport& anchor_report) const {
-    EvidenceFeatures features;
-    features.tid = component.tid;
-    features.pos = component.anchor_pos;
-    features.global_cov_reads = static_cast<int32_t>(bin_records.size());
-    features.local_cov_reads = static_cast<int32_t>(component.read_indices.size());
-    features.evidence_point_count = static_cast<int32_t>(component.breakpoint_candidates.size());
-    features.te_vote_fraction = te_call.vote_fraction;
-    features.te_median_identity = te_call.median_identity;
-    features.ambiguous_frac = std::clamp(component.ambiguous_frac, 0.0, 1.0);
-    features.anchor_consensus_ok = anchor_report.has_result && !anchor_report.fail_theta_uncertain;
-
-    std::unordered_set<size_t> alt_support_set;
-    std::unordered_map<size_t, int32_t> split_bp_by_read;
-    std::unordered_map<size_t, int32_t> clip_bp_by_read;
-    std::unordered_map<size_t, int32_t> indel_bp_by_read;
-    split_bp_by_read.reserve(component.breakpoint_candidates.size());
-    clip_bp_by_read.reserve(component.breakpoint_candidates.size());
-    indel_bp_by_read.reserve(component.breakpoint_candidates.size());
-
-    for (const auto& bp : component.breakpoint_candidates) {
-        alt_support_set.insert(bp.read_index);
-        if (bp.pos < 0) {
-            continue;
-        }
-        if ((bp.class_mask & kCandidateSplitSaSupplementary) != 0) {
-            update_best_bp_by_read(
-                split_bp_by_read,
-                bp.read_index,
-                bp.pos,
-                component.anchor_pos);
-            continue;
-        }
-        if ((bp.class_mask & kCandidateLongInsertion) != 0) {
-            update_best_bp_by_read(
-                indel_bp_by_read,
-                bp.read_index,
-                bp.pos,
-                component.anchor_pos);
-            continue;
-        }
-        if ((bp.class_mask & kCandidateSoftClip) != 0) {
-            update_best_bp_by_read(
-                clip_bp_by_read,
-                bp.read_index,
-                bp.pos,
-                component.anchor_pos);
-        }
-    }
-
-    for (const auto& frag : fragments) {
-        if (frag.ref_junc_pos < 0) {
-            continue;
-        }
-        if (frag.source == InsertionFragmentSource::kSplitSa) {
-            update_best_bp_by_read(
-                split_bp_by_read,
-                frag.read_index,
-                frag.ref_junc_pos,
-                component.anchor_pos);
-        } else if (frag.source == InsertionFragmentSource::kCigarInsertion) {
-            update_best_bp_by_read(
-                indel_bp_by_read,
-                frag.read_index,
-                frag.ref_junc_pos,
-                component.anchor_pos);
-        } else if (is_softclip_source(frag.source)) {
-            update_best_bp_by_read(
-                clip_bp_by_read,
-                frag.read_index,
-                frag.ref_junc_pos,
-                component.anchor_pos);
-        }
-    }
-
-    std::vector<int32_t> split_bp_positions;
-    std::vector<int32_t> split_like_bp_positions;
-    std::vector<int32_t> clip_bp_positions;
-    std::vector<int32_t> indel_bp_positions;
-    split_bp_positions.reserve(split_bp_by_read.size());
-    split_like_bp_positions.reserve(split_bp_by_read.size() + indel_bp_by_read.size());
-    clip_bp_positions.reserve(clip_bp_by_read.size());
-    indel_bp_positions.reserve(indel_bp_by_read.size());
-    for (const auto& row : split_bp_by_read) {
-        split_bp_positions.push_back(row.second);
-        split_like_bp_positions.push_back(row.second);
-    }
-    for (const auto& row : clip_bp_by_read) {
-        clip_bp_positions.push_back(row.second);
-    }
-    for (const auto& row : indel_bp_by_read) {
-        indel_bp_positions.push_back(row.second);
-        split_like_bp_positions.push_back(row.second);
-    }
-
-    features.bp_source_split_count = static_cast<int32_t>(split_bp_positions.size());
-    features.bp_source_clip_count = static_cast<int32_t>(clip_bp_positions.size());
-    features.bp_source_indel_count = static_cast<int32_t>(indel_bp_positions.size());
-    features.split_breakpoint_mad = mad_from_positions(split_bp_positions);
-    features.split_like_breakpoint_mad = mad_from_positions(split_like_bp_positions);
-    features.clip_breakpoint_mad = mad_from_positions(clip_bp_positions);
-    features.indel_breakpoint_mad = mad_from_positions(indel_bp_positions);
-
-    const int32_t split_core = median_i32(split_like_bp_positions);
-    const int32_t clip_core = median_i32(clip_bp_positions);
-    if (split_core >= 0 && clip_core >= 0) {
-        features.split_clip_core_delta =
-            static_cast<double>(std::abs(split_core - clip_core));
-    }
-
-    if (alt_support_set.empty()) {
-        alt_support_set.insert(
-            component.split_sa_read_indices.begin(),
-            component.split_sa_read_indices.end());
-        alt_support_set.insert(
-            component.insertion_read_indices.begin(),
-            component.insertion_read_indices.end());
-        alt_support_set.insert(
-            component.soft_clip_read_indices.begin(),
-            component.soft_clip_read_indices.end());
-    }
-    if (alt_support_set.empty()) {
-        alt_support_set.insert(component.read_indices.begin(), component.read_indices.end());
-    }
-
-    std::vector<int32_t> breakpoint_positions;
-    if (!split_bp_positions.empty() || !indel_bp_positions.empty() || !clip_bp_positions.empty()) {
-        breakpoint_positions.reserve(
-            split_bp_positions.size() + indel_bp_positions.size() + clip_bp_positions.size());
-        breakpoint_positions.insert(
-            breakpoint_positions.end(),
-            split_bp_positions.begin(),
-            split_bp_positions.end());
-        breakpoint_positions.insert(
-            breakpoint_positions.end(),
-            indel_bp_positions.begin(),
-            indel_bp_positions.end());
-        breakpoint_positions.insert(
-            breakpoint_positions.end(),
-            clip_bp_positions.begin(),
-            clip_bp_positions.end());
-    } else if (anchor_report.ref_junc_pos_min >= 0 && anchor_report.ref_junc_pos_max >= 0) {
-        breakpoint_positions.push_back(anchor_report.ref_junc_pos_min);
-        breakpoint_positions.push_back(anchor_report.ref_junc_pos_max);
-    } else if (anchor_report.te_breakpoint_core >= 0) {
-        breakpoint_positions.push_back(anchor_report.te_breakpoint_core);
-    } else if (component.anchor_pos >= 0) {
-        breakpoint_positions.push_back(component.anchor_pos);
-    }
-
-    if (breakpoint_positions.empty()) {
-        features.bp_fallback_used = true;
-        breakpoint_positions.reserve(alt_support_set.size());
-        for (size_t idx : alt_support_set) {
-            if (idx >= read_spans.size()) {
-                continue;
-            }
-            const auto& span = read_spans[idx];
-            if (!span.valid) {
-                continue;
-            }
-            if (span.start >= 0) {
-                breakpoint_positions.push_back(span.start);
-            }
-        }
-    }
-    features.breakpoint_mad = mad_from_positions(breakpoint_positions);
-
-    const int32_t anchor_margin = 100;
-    std::unordered_set<size_t> depth_set;
-    depth_set.reserve(bin_records.size());
-    const int32_t anchor_start = component.anchor_pos - anchor_margin;
-    const int32_t anchor_end = component.anchor_pos + anchor_margin;
-    for (size_t idx = 0; idx < read_spans.size(); ++idx) {
-        const auto& span = read_spans[idx];
-        if (!span.valid) {
-            continue;
-        }
-        if (span.tid != component.tid) {
-            continue;
-        }
-        if (span.end < anchor_start || span.start > anchor_end) {
-            continue;
-        }
-        depth_set.insert(idx);
-    }
-
-    std::unordered_set<size_t> split_sa_set(
-        component.split_sa_read_indices.begin(),
-        component.split_sa_read_indices.end());
-    std::unordered_set<size_t> insertion_set(
-        component.insertion_read_indices.begin(),
-        component.insertion_read_indices.end());
-    std::unordered_set<size_t> softclip_set(
-        component.soft_clip_read_indices.begin(),
-        component.soft_clip_read_indices.end());
-
-    int32_t alt_overlap_support = 0;
-    for (size_t idx : depth_set) {
-        if (alt_support_set.find(idx) != alt_support_set.end()) {
-            ++alt_overlap_support;
-        }
-    }
-
-    int32_t depth_reads = static_cast<int32_t>(depth_set.size());
-    if (depth_reads <= 0) {
-        depth_reads = std::max(
-            static_cast<int32_t>(alt_support_set.size()),
-            features.local_cov_reads);
-    }
-    int32_t alt_support_reads = alt_overlap_support;
-    if (alt_support_reads <= 0) {
-        alt_support_reads = static_cast<int32_t>(alt_support_set.size());
-    }
-    alt_support_reads = std::max(0, std::min(alt_support_reads, depth_reads));
-    const int32_t ref_support_reads = std::max(0, depth_reads - alt_support_reads);
-
-    features.depth_reads = depth_reads;
-    features.alt_support_reads = alt_support_reads;
-    features.ref_support_reads = ref_support_reads;
-
-    for (size_t read_idx : alt_support_set) {
-        double weight = 0.0;
-        if (split_sa_set.find(read_idx) != split_sa_set.end()) {
-            weight += 1.0;
-        }
-        if (insertion_set.find(read_idx) != insertion_set.end()) {
-            weight += 0.9;
-        }
-        if (softclip_set.find(read_idx) != softclip_set.end()) {
-            weight += 0.6;
-        }
-        if (weight <= 0.0) {
-            weight = 0.5;
-        }
-        features.effective_alt_support += weight;
-    }
-
-    int32_t softclip_total = 0;
-    int32_t softclip_low_complex = 0;
-    for (const auto& frag : fragments) {
-        if (!is_softclip_source(frag.source)) {
-            continue;
-        }
-        ++softclip_total;
-        if (is_low_complexity_softclip(frag, config_) ||
-            is_low_quality_softclip_anchor(frag, config_)) {
-            ++softclip_low_complex;
-        }
-    }
-    if (softclip_total > 0) {
-        features.low_complex_softclip_frac =
-            static_cast<double>(softclip_low_complex) / static_cast<double>(softclip_total);
-    }
-
-    const double alpha = std::clamp(config_.evidence_min_support_alpha, 0.0, 1.0);
-    const double lambda = std::clamp(config_.evidence_min_support_lambda, 0.0, 1.0);
-    const double expected_cov =
-        ((1.0 - lambda) * static_cast<double>(std::max(0, features.global_cov_reads))) +
-        (lambda * static_cast<double>(std::max(0, features.local_cov_reads)));
-    const int32_t min_support = std::max(
-        1,
-        static_cast<int32_t>(std::ceil(alpha * expected_cov)));
-
-    features.min_support_required = min_support;
-    features.pass_min_support = features.alt_support_reads >= min_support;
-    BreakpointConsistencyInput breakpoint_input;
-    breakpoint_input.split_count = features.bp_source_split_count;
-    breakpoint_input.clip_count = features.bp_source_clip_count;
-    breakpoint_input.indel_count = features.bp_source_indel_count;
-    breakpoint_input.all_breakpoint_mad = features.breakpoint_mad;
-    breakpoint_input.split_breakpoint_mad = features.split_breakpoint_mad;
-    breakpoint_input.split_like_breakpoint_mad = features.split_like_breakpoint_mad;
-    breakpoint_input.clip_breakpoint_mad = features.clip_breakpoint_mad;
-    breakpoint_input.indel_breakpoint_mad = features.indel_breakpoint_mad;
-    breakpoint_input.split_clip_core_delta = features.split_clip_core_delta;
-    BreakpointConsistencyParams breakpoint_params;
-    breakpoint_params.breakpoint_mad_max = config_.evidence_breakpoint_mad_max;
-    breakpoint_params.clip_breakpoint_mad_max = config_.evidence_clip_breakpoint_mad_max;
-    breakpoint_params.split_clip_core_delta_max = config_.evidence_split_clip_core_delta_max;
-    breakpoint_params.tight_split_like_breakpoint_mad_max =
-        0.5 * std::max(0.0, config_.evidence_breakpoint_mad_max);
-    const BreakpointConsistencyDecision breakpoint_decision =
-        evaluate_breakpoint_consistency(breakpoint_input, breakpoint_params);
-    features.pass_breakpoint_mad = breakpoint_decision.pass_breakpoint_mad;
-    features.pass_split_clip_consistency = breakpoint_decision.pass_split_clip_consistency;
-    features.breakpoint_inconsistency_penalty = breakpoint_decision.placeability_penalty;
-    features.pass_low_complexity = features.low_complex_softclip_frac <=
-        std::clamp(config_.evidence_low_complex_softclip_frac_max, 0.0, 1.0);
-    // Stage-A weak gate: do not require TE label; allow insertion evidence to carry candidates.
-    const int32_t weak_min_fragments = std::max(1, config_.te_min_fragments_for_vote / 2);
-    const bool te_fragment_support = te_call.fragment_count >= weak_min_fragments;
-    const bool insertion_fragment_support =
-        static_cast<int32_t>(fragments.size()) >= weak_min_fragments ||
-        features.alt_support_reads >= weak_min_fragments;
-    features.pass_te_consistency = te_fragment_support || insertion_fragment_support;
-    features.hard_filtered =
-        !(features.pass_min_support &&
-          features.pass_breakpoint_mad &&
-          features.pass_split_clip_consistency &&
-          features.pass_low_complexity &&
-          features.pass_te_consistency);
-
-    return features;
-}
-
-AssemblyCall Pipeline::assemble_component(
-    const ComponentCall& component,
-    const std::vector<InsertionFragment>& fragments,
-    const std::vector<FragmentTEHit>& hits,
-    const ClusterTECall& te_call) const {
-    AssemblyCall call;
+    const EventReadEvidence& event_evidence) const {
+    GenotypeCall call;
     call.tid = component.tid;
     call.pos = component.anchor_pos;
-    call.assembly_mode = "NONE";
-    call.qc.clear();
 
-    (void)hits;
-    (void)te_call;
+    EventGenotypeInput input;
+    input.alt_struct_reads = event_evidence.alt_struct_reads;
+    input.ref_span_reads = event_evidence.ref_span_reads;
+    input.min_depth = config_.genotype_min_depth;
+    input.error_rate = config_.genotype_error_rate;
+    const EventGenotypeDecision decision = genotype_event_from_alt_vs_ref(input);
 
-    std::vector<std::string> candidates;
-    candidates.reserve(fragments.size());
-    for (const auto& frag : fragments) {
-        if (frag.sequence.empty() || frag.length < config_.assembly_min_fragment_len) {
-            continue;
-        }
-
-        candidates.push_back(upper_acgt(frag.sequence));
-    }
-
-    call.input_fragments = static_cast<int32_t>(candidates.size());
-    if (candidates.empty()) {
-        call.qc_pass = false;
-        call.qc = "NO_CANDIDATE_FRAGMENTS";
-        return call;
-    }
-    call.used_fragments = static_cast<int32_t>(candidates.size());
-    if (call.used_fragments < config_.assembly_poa_min_reads) {
-        call.qc_pass = false;
-        call.qc = "INSUFFICIENT_POA_READS";
-        return call;
-    }
-    std::sort(candidates.begin(), candidates.end(), [](const std::string& a, const std::string& b) {
-        if (a.size() != b.size()) {
-            return a.size() > b.size();
-        }
-        return a < b;
-    });
-    if (static_cast<int32_t>(candidates.size()) > config_.assembly_poa_max_reads) {
-        candidates.resize(static_cast<size_t>(config_.assembly_poa_max_reads));
-    }
-    call.used_fragments = static_cast<int32_t>(candidates.size());
-    call.consensus = abpoa_consensus(candidates);
-    call.assembly_mode = "POA";
-
-    call.consensus = upper_acgt(call.consensus);
-    call.consensus_len = static_cast<int32_t>(call.consensus.size());
-    call.identity_est = estimate_mean_identity_kmer(call.consensus, candidates, config_.assembly_kmer_size);
-
-    std::unordered_set<size_t> non_softclip_support;
-    non_softclip_support.insert(
-        component.split_sa_read_indices.begin(),
-        component.split_sa_read_indices.end());
-    non_softclip_support.insert(
-        component.insertion_read_indices.begin(),
-        component.insertion_read_indices.end());
-    const int32_t non_softclip_reads = static_cast<int32_t>(non_softclip_support.size());
-    const int32_t softclip_reads = static_cast<int32_t>(component.soft_clip_read_indices.size());
-    const bool split_indel_dominant =
-        non_softclip_reads > 0 && non_softclip_reads >= softclip_reads;
-
-    double identity_min = std::clamp(config_.assembly_min_identity_est, 0.0, 1.0);
-    if (split_indel_dominant &&
-        non_softclip_reads >= std::max(1, config_.te_no_softclip_min_reads)) {
-        identity_min = std::min(
-            identity_min,
-            std::clamp(config_.te_no_softclip_identity_min, 0.0, 1.0));
-    }
-    if (config_.short_ins_enable &&
-        split_indel_dominant &&
-        non_softclip_reads >= std::max(1, config_.short_ins_min_reads) &&
-        call.consensus_len >= std::max(1, config_.short_ins_min_len) &&
-        call.consensus_len <= std::max(std::max(1, config_.short_ins_min_len), config_.short_ins_max_len)) {
-        identity_min = std::min(
-            identity_min,
-            std::clamp(
-                config_.assembly_min_identity_est -
-                std::clamp(config_.short_ins_kmer_relax_identity, 0.0, 1.0),
-                0.0,
-                1.0));
-    }
-
-    if (call.consensus.empty()) {
-        call.qc_pass = false;
-        call.qc = "EMPTY_CONSENSUS";
-    } else if (call.consensus_len < config_.assembly_min_consensus_len) {
-        call.qc_pass = false;
-        call.qc = "CONSENSUS_TOO_SHORT";
-    } else if (call.used_fragments >= 2 && call.identity_est < identity_min) {
-        call.qc_pass = false;
-        call.qc = "LOW_IDENTITY";
-    } else {
-        call.qc_pass = true;
-        call.qc = "PASS";
-    }
-
+    call.genotype = decision.best_gt;
+    call.af = decision.allele_fraction;
+    call.gq = decision.gq;
     return call;
 }
 
-SequenceClosureEvidence Pipeline::build_sequence_closure_evidence(
+FinalCall Pipeline::emit_final_te_call(
     const ComponentCall& component,
-    const std::vector<const bam1_t*>& bin_records,
-    const std::vector<ReadReferenceSpan>& read_spans,
-    const std::vector<InsertionFragment>& fragments) const {
-    SequenceClosureEvidence evidence;
-    if (!config_.te_sequence_closure_enable) {
-        return evidence;
-    }
+    const EventReadEvidence& event_evidence,
+    const EventConsensus& event_consensus,
+    const EventSegmentation& event_segmentation,
+    const TEAlignmentEvidence& te_alignment,
+    const GenotypeCall& genotype,
+    const FinalBoundaryDecision& boundary,
+    const FinalTeAcceptanceDecision& acceptance) const {
+    FinalCall call;
+    call.chrom = component.chrom;
+    call.tid = component.tid;
+    call.bp_left = std::min(
+        event_segmentation.left_ref_end,
+        event_segmentation.right_ref_start);
+    call.bp_right = std::max(
+        event_segmentation.left_ref_end,
+        event_segmentation.right_ref_start);
+    call.pos = (call.bp_left >= 0 && call.bp_right >= 0)
+        ? (call.bp_left + ((call.bp_right - call.bp_left) / 2))
+        : component.anchor_pos;
+    call.window_start = component.bin_start;
+    call.window_end = component.bin_end;
 
-    evidence.enabled = true;
-    if (!tsd_detector_.can_fetch_reference()) {
-        evidence.enabled = false;
-        evidence.qc = "SEQ_CLOSURE_NO_REFERENCE";
-        return evidence;
-    }
+    call.family = te_alignment.best_family.empty() ? "NA" : te_alignment.best_family;
+    call.subfamily = te_alignment.best_subfamily.empty() ? "NA" : te_alignment.best_subfamily;
+    call.te_name = (call.subfamily != "NA") ? call.subfamily : call.family;
+    call.strand = "NA";
+    call.insert_len = static_cast<int32_t>(event_segmentation.insert_seq.size());
+    call.best_te_identity = te_alignment.best_identity;
+    call.best_te_query_coverage = te_alignment.best_query_coverage;
+    call.cross_family_margin = te_alignment.cross_family_margin;
+    call.left_flank_align_len = event_segmentation.left_flank_align_len;
+    call.right_flank_align_len = event_segmentation.right_flank_align_len;
+    call.event_consensus_len = event_consensus.consensus_len;
 
-    const int32_t flank_bases = std::max(1, config_.te_sequence_closure_flank_bases);
-    const int32_t min_anchor_len = std::max(1, config_.te_sequence_closure_min_anchor_len);
-    const double min_anchor_identity = std::clamp(
-        config_.te_sequence_closure_min_anchor_identity,
-        0.0,
-        1.0);
+    call.te_qc = te_alignment.qc_reason;
+    call.final_qc = acceptance.qc;
+    append_qc_token(call.final_qc, te_alignment.qc_reason.c_str());
+    append_qc_token(call.final_qc, boundary.qc.c_str());
+    append_qc_token(call.final_qc, event_consensus.qc_reason.c_str());
+    append_qc_token(call.final_qc, event_segmentation.qc_reason.c_str());
 
-    std::unordered_map<size_t, double> best_left_identity;
-    std::unordered_map<size_t, double> best_right_identity;
-    best_left_identity.reserve(fragments.size());
-    best_right_identity.reserve(fragments.size());
+    call.tsd_type = boundary.boundary_type;
+    call.tsd_len = boundary.boundary_len;
+    call.tsd_seq = "NA";
+    call.tsd_bg_p = 1.0;
 
-    auto extract_left_anchor = [&](const ReadView& read, const InsertionFragment& fragment) {
-        if (!fragment_supports_left_anchor(fragment) || fragment.start <= 0) {
-            return std::string();
-        }
-        const int32_t len = std::min(flank_bases, fragment.start);
-        if (len < min_anchor_len) {
-            return std::string();
-        }
-        return upper_acgt(read.decode_subsequence(fragment.start - len, len));
-    };
+    call.support_reads = event_evidence.alt_struct_reads;
+    call.alt_struct_reads = event_evidence.alt_struct_reads;
+    call.ref_span_reads = event_evidence.ref_span_reads;
+    call.low_mapq_ref_span_reads = event_evidence.low_mapq_ref_span_reads;
 
-    auto extract_right_anchor = [&](const ReadView& read, const InsertionFragment& fragment) {
-        if (!fragment_supports_right_anchor(fragment)) {
-            return std::string();
-        }
-        const int32_t insert_end = fragment.start + fragment.length;
-        const int32_t available = std::max(0, read.seq_len() - insert_end);
-        const int32_t len = std::min(flank_bases, available);
-        if (len < min_anchor_len) {
-            return std::string();
-        }
-        return upper_acgt(read.decode_subsequence(insert_end, len));
-    };
-
-    auto fetch_left_ref = [&](const InsertionFragment& fragment, int32_t len) {
-        return tsd_detector_.fetch_window(fragment.chrom, fragment.ref_junc_pos - len, fragment.ref_junc_pos);
-    };
-
-    auto fetch_right_ref = [&](const InsertionFragment& fragment, int32_t len) {
-        return tsd_detector_.fetch_window(fragment.chrom, fragment.ref_junc_pos, fragment.ref_junc_pos + len);
-    };
-
-    auto anchored_context = [&](const std::string& seq, bool left, size_t len) {
-        if (len == 0 || seq.empty() || len > seq.size()) {
-            return std::string();
-        }
-        if (left) {
-            return seq.substr(seq.size() - len, len);
-        }
-        return seq.substr(0, len);
-    };
-
-    for (const auto& fragment : fragments) {
-        if (fragment.read_index >= bin_records.size() || !bin_records[fragment.read_index]) {
-            continue;
-        }
-        ReadView read(bin_records[fragment.read_index]);
-
-        const std::string left_anchor = extract_left_anchor(read, fragment);
-        if (!left_anchor.empty()) {
-            const std::string left_ref = fetch_left_ref(
-                fragment,
-                static_cast<int32_t>(left_anchor.size()));
-            const size_t usable_len = std::min(left_anchor.size(), left_ref.size());
-            if (static_cast<int32_t>(usable_len) >= min_anchor_len) {
-                const std::string lhs = anchored_context(left_anchor, true, usable_len);
-                const std::string rhs = anchored_context(left_ref, true, usable_len);
-                const double identity = edit_identity(lhs, rhs);
-                if (identity >= min_anchor_identity) {
-                    auto& slot = best_left_identity[fragment.read_index];
-                    slot = std::max(slot, identity);
-                }
-            }
-        }
-
-        const std::string right_anchor = extract_right_anchor(read, fragment);
-        if (!right_anchor.empty()) {
-            const std::string right_ref = fetch_right_ref(
-                fragment,
-                static_cast<int32_t>(right_anchor.size()));
-            const size_t usable_len = std::min(right_anchor.size(), right_ref.size());
-            if (static_cast<int32_t>(usable_len) >= min_anchor_len) {
-                const std::string lhs = anchored_context(right_anchor, false, usable_len);
-                const std::string rhs = anchored_context(right_ref, false, usable_len);
-                const double identity = edit_identity(lhs, rhs);
-                if (identity >= min_anchor_identity) {
-                    auto& slot = best_right_identity[fragment.read_index];
-                    slot = std::max(slot, identity);
-                }
-            }
-        }
-    }
-
-    std::unordered_set<size_t> anchor_reads;
-    anchor_reads.reserve(best_left_identity.size() + best_right_identity.size());
-
-    double sum_identity = 0.0;
-    int32_t matched_anchor_sides = 0;
-    for (const auto& row : best_left_identity) {
-        anchor_reads.insert(row.first);
-        sum_identity += row.second;
-        matched_anchor_sides += 1;
-    }
-    for (const auto& row : best_right_identity) {
-        anchor_reads.insert(row.first);
-        sum_identity += row.second;
-        matched_anchor_sides += 1;
-    }
-
-    evidence.left_anchor_reads = static_cast<int32_t>(best_left_identity.size());
-    evidence.right_anchor_reads = static_cast<int32_t>(best_right_identity.size());
-    evidence.total_anchor_reads = static_cast<int32_t>(anchor_reads.size());
-    evidence.mean_anchor_identity = matched_anchor_sides > 0
-        ? (sum_identity / static_cast<double>(matched_anchor_sides))
-        : 0.0;
-
-    for (const auto& row : best_left_identity) {
-        if (best_right_identity.find(row.first) != best_right_identity.end()) {
-            evidence.dual_anchor_reads += 1;
-        }
-    }
-
-    std::unordered_set<size_t> split_like_reads(
-        component.split_sa_read_indices.begin(),
-        component.split_sa_read_indices.end());
-    split_like_reads.insert(
-        component.insertion_read_indices.begin(),
-        component.insertion_read_indices.end());
-    evidence.split_like_support_reads = static_cast<int32_t>(split_like_reads.size());
-
-    std::unordered_set<size_t> support_reads(
-        component.read_indices.begin(),
-        component.read_indices.end());
-    const int32_t empty_window = std::max(1, config_.te_sequence_closure_empty_window);
-    const int32_t empty_start = component.anchor_pos - empty_window;
-    const int32_t empty_end = component.anchor_pos + empty_window;
-    for (size_t idx = 0; idx < read_spans.size(); ++idx) {
-        const auto& span = read_spans[idx];
-        if (!span.valid || span.tid != component.tid) {
-            continue;
-        }
-        if (span.start > empty_start || span.end < empty_end) {
-            continue;
-        }
-        if (support_reads.find(idx) != support_reads.end()) {
-            continue;
-        }
-        evidence.empty_span_reads += 1;
-    }
-
-    SequenceClosureInput input;
-    input.enabled = true;
-    input.left_anchor_reads = evidence.left_anchor_reads;
-    input.right_anchor_reads = evidence.right_anchor_reads;
-    input.dual_anchor_reads = evidence.dual_anchor_reads;
-    input.total_anchor_reads = evidence.total_anchor_reads;
-    input.empty_span_reads = evidence.empty_span_reads;
-    input.split_like_support_reads = evidence.split_like_support_reads;
-
-    SequenceClosureParams params;
-    params.min_side_reads = config_.te_sequence_closure_min_side_reads;
-    params.min_total_anchor_reads = config_.te_sequence_closure_min_total_reads;
-    params.min_dual_anchor_reads = config_.te_sequence_closure_min_dual_reads;
-    params.split_like_rescue_min_reads = config_.te_sequence_closure_split_like_rescue_min_reads;
-    params.max_empty_span_ratio_pass = config_.te_sequence_closure_max_empty_ratio_pass;
-    params.max_empty_span_ratio_certain = config_.te_sequence_closure_max_empty_ratio_certain;
-
-    const SequenceClosureDecision decision = evaluate_sequence_closure(input, params);
-    evidence.pass = decision.pass;
-    evidence.certain = decision.certain;
-    evidence.force_non_te = decision.force_non_te;
-    evidence.qc = decision.qc;
-    return evidence;
-}
-
-PlaceabilityReport Pipeline::score_placeability(
-    const AssemblyCall& assembly,
-    const EvidenceFeatures& evidence) const {
-    PlaceabilityReport report;
-    report.tid = assembly.tid;
-    report.pos = assembly.pos;
-    report.depth_reads = evidence.depth_reads;
-    report.support_reads = evidence.alt_support_reads;
-    report.ref_support_reads = evidence.ref_support_reads;
-    report.min_support_required = evidence.min_support_required;
-    report.breakpoint_mad = evidence.breakpoint_mad;
-    report.low_complex_softclip_frac = evidence.low_complex_softclip_frac;
-    report.hard_filtered = evidence.hard_filtered;
-
-    if (evidence.hard_filtered) {
-        report.delta_score = 0.0;
-        report.evidence_p = 0.0;
-        report.evidence_q = 0.0;
-        report.tier = 3;
-        return report;
-    }
-
-    const double anchor_bonus = evidence.anchor_consensus_ok ? 1.0 : 0.0;
-    const double mad_term = std::exp(-std::max(0.0, evidence.breakpoint_mad) / 25.0);
-    const double z =
-        (1.8 * std::log1p(std::max(0.0, evidence.effective_alt_support))) +
-        (1.2 * mad_term) +
-        (1.2 * evidence.te_vote_fraction) +
-        (1.0 * evidence.te_median_identity) +
-        (0.7 * anchor_bonus) -
-        (1.2 * evidence.ambiguous_frac) -
-        (0.8 * evidence.low_complex_softclip_frac) -
-        (0.9 * evidence.breakpoint_inconsistency_penalty);
-
-    const double p = std::clamp(sigmoid(z - config_.evidence_logit_bias), 0.0, 1.0);
-    const double q = -10.0 * std::log10(std::max(1e-9, 1.0 - p));
-    report.evidence_p = p;
-    report.evidence_q = q;
-    report.delta_score = q;
-
-    const double tier1 = std::clamp(config_.evidence_tier1_prob, 0.0, 1.0);
-    const double tier2 = std::clamp(config_.evidence_tier2_prob, 0.0, tier1);
-    if (p >= tier1) {
-        report.tier = 1;
-    } else if (p >= tier2) {
-        report.tier = 2;
-    } else {
-        report.tier = 3;
-    }
-    return report;
-}
-
-GenotypeCall Pipeline::genotype_call(
-    const AssemblyCall& assembly,
-    const PlaceabilityReport& placeability) const {
-    GenotypeCall call;
-    call.tid = assembly.tid;
-    call.pos = assembly.pos;
-
-    int32_t depth = std::max(0, placeability.depth_reads);
-    int32_t alt = std::max(0, placeability.support_reads);
-    int32_t ref = std::max(0, placeability.ref_support_reads);
-
-    if (depth <= 0) {
-        depth = alt + ref;
-    }
-    if (depth <= 0) {
-        call.genotype = "./.";
-        call.af = 0.0;
-        call.gq = 0;
-        return call;
-    }
-    if ((alt + ref) <= 0) {
-        alt = std::min(alt, depth);
-        ref = std::max(0, depth - alt);
-    } else if ((alt + ref) != depth) {
-        depth = alt + ref;
-    }
-
-    alt = std::max(0, std::min(alt, depth));
-    ref = std::max(0, depth - alt);
-    call.af = std::clamp(
-        static_cast<double>(alt) / static_cast<double>(std::max(1, depth)),
-        0.0,
-        1.0);
-
-    if (depth < std::max(1, config_.genotype_min_depth)) {
-        call.genotype = "./.";
-        call.gq = 0;
-        return call;
-    }
-
-    const double error_rate = std::clamp(config_.genotype_error_rate, 1e-4, 0.25);
-    const double ll_00 = log_binomial_likelihood(alt, ref, error_rate);
-    const double ll_01 = log_binomial_likelihood(alt, ref, 0.5);
-    const double ll_11 = log_binomial_likelihood(alt, ref, 1.0 - error_rate);
-
-    std::string best_gt = "0/0";
-    double best_ll = ll_00;
-    double second_ll = -std::numeric_limits<double>::infinity();
-
-    auto update_best = [&](const char* gt, double ll) {
-        if (ll > best_ll) {
-            second_ll = best_ll;
-            best_ll = ll;
-            best_gt = gt;
-        } else if (ll > second_ll) {
-            second_ll = ll;
-        }
-    };
-
-    update_best("0/1", ll_01);
-    update_best("1/1", ll_11);
-    call.genotype = best_gt;
-
-    const double delta_ll = std::max(0.0, best_ll - second_ll);
-    const double gq = 4.3429448190325175 * delta_ll;  // -10*log10(exp(-delta_ll))
-    call.gq = std::max(0, std::min(99, static_cast<int32_t>(std::lround(gq))));
-
+    call.genotype = genotype.genotype;
+    call.af = genotype.af;
+    call.gq = genotype.gq;
     return call;
 }
 
@@ -3114,174 +2695,271 @@ void Pipeline::process_bin_records(
     auto components = component_module_.build(bin_records, chrom, tid, bin_start, bin_end);
     result.built_components += static_cast<int64_t>(components.size());
 
-    std::vector<ReadReferenceSpan> read_spans(bin_records.size());
-    for (size_t idx = 0; idx < bin_records.size(); ++idx) {
-        if (!bin_records[idx]) {
-            continue;
-        }
-        ReadView view(bin_records[idx]);
-        ReadReferenceSpan span;
-        span.valid = true;
-        span.tid = view.tid();
-        span.start = view.pos();
-        span.end = compute_ref_end(view);
-        read_spans[idx] = span;
+    struct BinStageStats {
+        int64_t event_consensus_calls = 0;
+        int64_t event_consensus_rejected = 0;
+        int64_t genotype_calls = 0;
+        int64_t final_calls = 0;
+    } bin_stats;
+
+    if (config_.log_stage_bins) {
+        std::ostringstream oss;
+        oss << "[Pipeline][bin][start]"
+            << " chrom=" << chrom
+            << " tid=" << tid
+            << " start=" << bin_start
+            << " end=" << bin_end
+            << " records=" << bin_records.size()
+            << " components=" << components.size();
+        emit_pipeline_log_line(oss.str());
     }
 
+    const auto log_component = [&](
+        const char* outcome,
+        const ComponentCall& component,
+        const std::vector<InsertionFragment>& fragments,
+        const GenotypeCall* genotype,
+        const FinalCall* final_call) {
+        if (!config_.log_stage_components) {
+            return;
+        }
+
+        std::ostringstream oss;
+        oss << "[Pipeline][component]"
+            << " outcome=" << outcome
+            << " chrom=" << component.chrom
+            << " anchor=" << component.anchor_pos
+            << " bin=" << component.bin_start << "-" << component.bin_end
+            << " reads=" << component.read_indices.size()
+            << " softclip_reads=" << component.soft_clip_read_indices.size()
+            << " split_reads=" << component.split_sa_read_indices.size()
+            << " indel_reads=" << component.insertion_read_indices.size()
+            << " breakpoints=" << component.breakpoint_candidates.size()
+            << " fragments=" << fragments.size();
+
+        if (genotype != nullptr) {
+            oss << " gt=" << display_or_na(genotype->genotype)
+                << " af=" << genotype->af
+                << " gq=" << genotype->gq;
+        }
+
+        if (final_call != nullptr) {
+            oss << " final_te=" << display_or_na(final_call->te_name)
+                << " final_support=" << final_call->support_reads
+                << " final_qc=" << display_or_na(final_call->final_qc)
+                << " te_qc=" << display_or_na(final_call->te_qc);
+        }
+
+        emit_pipeline_log_line(oss.str());
+    };
+
     for (const auto& component : components) {
-        std::vector<InsertionFragment> fragments = ins_fragment_module_.extract(component, bin_records);
-        std::vector<FragmentTEHit> hits;
-        ClusterTECall te_call;
+        const std::vector<InsertionFragment> empty_fragments;
 
-        if (te_classifier_module_.is_enabled()) {
-            hits = te_classifier_module_.classify(fragments);
-            te_call = te_classifier_module_.vote_cluster(hits);
-        }
-
-        AnchorLockedReport anchor_report;
-        if (anchor_locked_module_.is_enabled()) {
-            anchor_report = anchor_locked_module_.resolve(component, fragments, hits, te_call);
-        }
-
-        auto evidence = collect_evidence(
-            component,
-            bin_records,
-            read_spans,
-            fragments,
-            te_call,
-            anchor_report);
-        result.evidence_rows += static_cast<int64_t>(evidence.evidence_point_count);
-        if (evidence.hard_filtered) {
-            continue;
-        }
-
-        AssemblyCall assembly = assemble_component(component, fragments, hits, te_call);
-        result.assembled_calls += 1;
-        if (!assembly.qc_pass) {
-            continue;
-        }
-
-        const ClusterTECall te_call_eval = enrich_te_call_with_consensus_proxy(
-            te_call,
-            te_classifier_module_,
-            assembly);
-        const PostAssemblyTeDecision te_decision =
-            evaluate_post_assembly_te_decision(te_call_eval, assembly, component, config_);
-        PlaceabilityReport placeability = score_placeability(assembly, evidence);
-        const InsertionAcceptanceDecision insertion_decision =
-            evaluate_insertion_acceptance_for_pipeline(placeability, config_);
-        if (!insertion_decision.pass) {
-            continue;
-        }
-        result.placeability_calls += 1;
-
-        GenotypeCall genotype = genotype_call(assembly, placeability);
-        result.genotype_calls += 1;
-        const StructuralSupportSummary structural_support =
-            summarize_structural_support(component, bin_records);
-        const SequenceClosureEvidence sequence_closure =
-            build_sequence_closure_evidence(component, bin_records, read_spans, fragments);
-
-        FinalCall call;
-        call.chrom = component.chrom;
-        call.tid = assembly.tid;
-        call.pos = assembly.pos;
-        call.window_start = component.bin_start;
-        call.window_end = component.bin_end;
-        call.te_name = te_call_eval.te_name.empty() ? "UNK" : te_call_eval.te_name;
-        call.te_vote_fraction = te_call_eval.vote_fraction;
-        call.te_median_identity = te_call_eval.median_identity;
-        call.te_multik_support = te_call_eval.multik_support;
-        call.te_rescue_frac = te_call_eval.rescue_frac;
-        call.te_fragment_count = te_call_eval.fragment_count;
-        call.te_top1_name = te_call_eval.top1_te_name;
-        call.te_top2_name = te_call_eval.top2_te_name;
-        call.te_posterior_top1 = te_call_eval.posterior_top1;
-        call.te_posterior_top2 = te_call_eval.posterior_top2;
-        call.te_posterior_margin = te_call_eval.posterior_margin;
-        call.te_theta = theta_tag(anchor_report.theta0);
-        call.te_mad_fwd = anchor_report.mad_fwd;
-        call.te_mad_rev = anchor_report.mad_rev;
-        call.te_breakpoint_core = anchor_report.te_breakpoint_core;
-        call.te_breakpoint_window_start = anchor_report.te_breakpoint_window_start;
-        call.te_breakpoint_window_end = anchor_report.te_breakpoint_window_end;
-        call.te_core_candidates = anchor_report.core_candidate_count;
-        call.te_core_set = anchor_report.core_set_count;
-        call.te_split_sa_core_frac = anchor_report.split_sa_core_frac;
-        call.te_ref_junc_pos_min = anchor_report.ref_junc_pos_min;
-        call.te_ref_junc_pos_max = anchor_report.ref_junc_pos_max;
-        call.bp_source_counts = format_bp_source_counts(evidence);
-        call.bp_fallback_used = evidence.bp_fallback_used;
-        call.te_qc = te_decision.qc + "|" + anchor_qc_tag(anchor_report);
-        call.te_confidence_prob = calibrate_te_confidence_prob(
-            te_call_eval,
-            assembly,
-            placeability,
-            te_decision,
-            config_);
-        const auto bp_bounds = infer_tsd_breakpoint_bounds(component, anchor_report);
-        const TsdDetection tsd = tsd_detector_.detect(
+        const auto bp_bounds = infer_component_breakpoint_bounds(component);
+        const int32_t fetch_start = std::max(
+            0,
+            std::min(bp_bounds.first, bp_bounds.second) - kLocalEventFetchSlackBp);
+        const int32_t fetch_end = std::max(
+            fetch_start + 1,
+            std::max(bp_bounds.first, bp_bounds.second) + kLocalEventFetchSlackBp);
+        LocalFetchedReads local_reads;
+        const bool fetch_ok = bam_reader_->fetch(
             component.chrom,
-            bp_bounds.first,
-            bp_bounds.second);
-        apply_tsd_to_call(tsd, config_, call);
-        call.te_qc += "|TSD_" + call.tsd_type;
-        apply_tsd_consistency_gate(tsd, config_, call);
-        call.insertion_qc = insertion_decision.low_confidence ?
-            "PASS_LOW_CONF_ACCEPTED" :
-            "PASS_HIGH_CONF";
-        if (insertion_decision.low_confidence) {
-            call.confidence = "LOW";
-        } else {
-            call.confidence = "HIGH";
+            fetch_start,
+            fetch_end,
+            [&](BamRecordPtr&& record) {
+                if (!record) {
+                    return true;
+                }
+                local_reads.owned_records.push_back(std::move(record));
+                const bam1_t* ptr = local_reads.owned_records.back().get();
+                local_reads.records.push_back(ptr);
+                ReadView view(ptr);
+                ReadReferenceSpan span;
+                span.valid = true;
+                span.tid = view.tid();
+                span.start = view.pos();
+                span.end = compute_ref_end(view);
+                local_reads.read_spans.push_back(span);
+                return true;
+            });
+        if (!fetch_ok || local_reads.records.empty()) {
+            log_component(
+                "LOCAL_EVENT_RECOLLECTION_FAILED",
+                component,
+                empty_fragments,
+                nullptr,
+                nullptr);
+            continue;
         }
-        call.softclip_support_reads = structural_support.softclip_support_reads;
-        call.split_sa_support_reads = structural_support.split_sa_support_reads;
-        call.indel_support_reads = structural_support.indel_support_reads;
-        call.split_like_support_reads = structural_support.split_like_support_reads;
-        call.support_low_mapq_reads = structural_support.support_low_mapq_reads;
-        call.support_low_mapq_frac = structural_support.support_low_mapq_frac;
-        call.seq_closure_enabled = sequence_closure.enabled;
-        call.seq_closure_pass = sequence_closure.pass;
-        call.seq_closure_certain = sequence_closure.certain;
-        call.seq_closure_force_non_te = sequence_closure.force_non_te;
-        call.seq_closure_left_anchor_reads = sequence_closure.left_anchor_reads;
-        call.seq_closure_right_anchor_reads = sequence_closure.right_anchor_reads;
-        call.seq_closure_dual_anchor_reads = sequence_closure.dual_anchor_reads;
-        call.seq_closure_total_anchor_reads = sequence_closure.total_anchor_reads;
-        call.seq_closure_empty_span_reads = sequence_closure.empty_span_reads;
-        call.seq_closure_mean_anchor_identity = sequence_closure.mean_anchor_identity;
-        call.seq_closure_qc = sequence_closure.qc;
-        append_qc_token(call.te_qc, sequence_closure.qc.c_str());
-        apply_te_open_set_classification(call, te_call_eval, assembly, te_decision, config_);
 
-        call.tier = placeability.tier;
-        call.support_reads = placeability.support_reads;
-        call.genotype = genotype.genotype;
-        call.af = genotype.af;
-        call.gq = genotype.gq;
-        call.asm_mode = assembly.assembly_mode;
-        call.asm_input_fragments = assembly.input_fragments;
-        call.asm_used_fragments = assembly.used_fragments;
-        call.asm_consensus_len = assembly.consensus_len;
-        call.asm_identity_est = assembly.identity_est;
-        call.asm_qc = assembly.qc;
-        if (call.te_status == "TE_CERTAIN") {
-            result.final_te_certain += 1;
-        } else if (call.te_status == "TE_UNCERTAIN") {
-            result.final_te_uncertain += 1;
-        } else {
-            result.final_non_te += 1;
+        const ComponentCall local_component = build_local_fragment_component(
+            config_,
+            component,
+            local_reads.records);
+        const std::vector<InsertionFragment> fragments = ins_fragment_module_.extract(
+            local_component,
+            local_reads.records);
+
+        const EventReadEvidence event_evidence = collect_event_read_evidence(
+            component,
+            local_reads.records,
+            local_reads.read_spans,
+            fragments);
+        const EventConsensus event_consensus = build_event_consensus(
+            component,
+            local_reads.records,
+            fragments,
+            event_evidence);
+        result.event_consensus_calls += 1;
+        bin_stats.event_consensus_calls += 1;
+        GenotypeCall genotype = genotype_call(component, event_evidence);
+        result.genotype_calls += 1;
+        bin_stats.genotype_calls += 1;
+        const bool event_existence_pass =
+            genotype.genotype != "0/0" &&
+            genotype.genotype != "./." &&
+            genotype.gq >= 20;
+        if (!event_existence_pass) {
+            log_component(
+                "REJECT_EVENT_EXISTENCE",
+                component,
+                fragments,
+                &genotype,
+                nullptr);
+            continue;
         }
-        if (call.confidence == "LOW") {
-            result.final_low_confidence += 1;
-        } else {
-            result.final_high_confidence += 1;
+        if (!event_consensus.qc_pass) {
+            bin_stats.event_consensus_rejected += 1;
+            log_component(
+                event_consensus.qc_reason.c_str(),
+                component,
+                fragments,
+                &genotype,
+                nullptr);
+            continue;
         }
-        if (append_bootstrap_export(config_, call, assembly)) {
-            result.bootstrap_exported_calls += 1;
+
+        const EventSegmentation event_segmentation = segment_event_consensus(
+            component,
+            event_evidence,
+            event_consensus);
+        if (!event_segmentation.pass) {
+            if (config_.log_stage_components) {
+                std::ostringstream oss;
+                oss << "[Pipeline][component][event_debug]"
+                    << " chrom=" << component.chrom
+                    << " anchor=" << component.anchor_pos
+                    << " bp_left=" << event_evidence.bp_left
+                    << " bp_right=" << event_evidence.bp_right
+                    << " support_qnames=" << event_evidence.support_qnames.size()
+                    << " consensus_len=" << event_consensus.consensus_len
+                    << " consensus_ends=" << summarize_seq_ends(event_consensus.consensus_seq);
+                emit_pipeline_log_line(oss.str());
+
+                std::ofstream event_debug_out("event_debug.tsv", std::ios::out | std::ios::app);
+                if (event_debug_out.is_open()) {
+                    event_debug_out
+                        << component.chrom << "\t"
+                        << component.anchor_pos << "\t"
+                        << event_evidence.bp_left << "\t"
+                        << event_evidence.bp_right << "\t"
+                        << event_consensus.consensus_len << "\t"
+                        << event_segmentation.qc_reason << "\t"
+                        << event_consensus.consensus_seq << "\n";
+                }
+            }
+            log_component(
+                event_segmentation.qc_reason.c_str(),
+                component,
+                fragments,
+                &genotype,
+                nullptr);
+            continue;
         }
-        result.final_calls.push_back(std::move(call));
+
+        const TEAlignmentEvidence te_alignment = align_insert_seq_to_te(
+            event_segmentation);
+        if (!te_alignment.pass) {
+            log_component(
+                te_alignment.qc_reason.c_str(),
+                component,
+                fragments,
+                &genotype,
+                nullptr);
+            continue;
+        }
+
+        FinalBoundaryInput boundary_input;
+        boundary_input.left_ref_start = event_segmentation.left_ref_start;
+        boundary_input.left_ref_end = event_segmentation.left_ref_end;
+        boundary_input.right_ref_start = event_segmentation.right_ref_start;
+        boundary_input.right_ref_end = event_segmentation.right_ref_end;
+        boundary_input.tsd_min_len = std::max(1, config_.tsd_min_len);
+        boundary_input.tsd_max_len = std::max(boundary_input.tsd_min_len, config_.tsd_max_len);
+        const FinalBoundaryDecision boundary = check_boundary_consistency(boundary_input);
+        if (!boundary.pass) {
+            log_component(
+                boundary.qc.c_str(),
+                component,
+                fragments,
+                &genotype,
+                nullptr);
+            continue;
+        }
+
+        FinalTeAcceptanceInput acceptance_input;
+        acceptance_input.event_existence_pass = event_existence_pass;
+        acceptance_input.event_closure_pass = event_segmentation.pass;
+        acceptance_input.te_sequence_pass = te_alignment.pass;
+        acceptance_input.boundary_pass = boundary.pass;
+        const FinalTeAcceptanceDecision acceptance = evaluate_final_te_acceptance(
+            acceptance_input);
+        if (!acceptance.pass) {
+            log_component(
+                acceptance.qc.c_str(),
+                component,
+                fragments,
+                &genotype,
+                nullptr);
+            continue;
+        }
+
+        FinalCall final_call = emit_final_te_call(
+            component,
+            event_evidence,
+            event_consensus,
+            event_segmentation,
+            te_alignment,
+            genotype,
+            boundary,
+            acceptance);
+        result.final_calls.push_back(final_call);
+        bin_stats.final_calls += 1;
+
+        log_component(
+            acceptance.qc.c_str(),
+            component,
+            fragments,
+            &genotype,
+            &result.final_calls.back());
+    }
+
+    if (config_.log_stage_bins) {
+        std::ostringstream oss;
+        oss << "[Pipeline][bin][done]"
+            << " chrom=" << chrom
+            << " tid=" << tid
+            << " start=" << bin_start
+            << " end=" << bin_end
+            << " records=" << bin_records.size()
+            << " components=" << components.size()
+            << " event_consensus_calls=" << bin_stats.event_consensus_calls
+            << " event_consensus_rejected=" << bin_stats.event_consensus_rejected
+            << " genotype_calls=" << bin_stats.genotype_calls
+            << " final_calls=" << bin_stats.final_calls;
+        emit_pipeline_log_line(oss.str());
     }
 }
 

@@ -55,6 +55,7 @@ private:
 };
 
 using RecordHandler = std::function<void(BamRecordPtr&&)>;
+using FetchRecordHandler = std::function<bool(BamRecordPtr&&)>;
 using ProgressHandler = std::function<bool(int64_t processed, int32_t current_tid)>;
 
 class BamStreamReader {
@@ -65,6 +66,12 @@ public:
     virtual const std::string& bam_path() const = 0;
     virtual int32_t chromosome_count() const = 0;
     virtual std::string chromosome_name(int32_t tid) const = 0;
+    virtual bool can_fetch() const = 0;
+    virtual bool fetch(
+        const std::string& chrom,
+        int32_t start,
+        int32_t end,
+        const FetchRecordHandler& record_handler) const = 0;
 
     virtual int64_t stream(
         const RecordHandler& record_handler,

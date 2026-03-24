@@ -75,11 +75,11 @@ int main() {
     {
         std::ofstream out(child_scientific);
         out << "#PLACER streaming pipeline summary\n";
-        out << "schema_version\t0.0.2\n";
-        out << "#chrom\tpos\tte\tte_status\tconfidence\ttier\tsupport_reads\tte_bp_win_start\tte_bp_win_end\tte_ref_junc_min\tte_ref_junc_max\n";
-        out << "chr1\t100\tLINE1HS\tTE_CANDIDATE\tHIGH\t1\t3\t80\t120\t95\t105\n";
-        out << "chr2\t200\tALU\tTE_CANDIDATE\tHIGH\t2\t2\t195\t205\t-1\t-1\n";
-        out << "chr3\t300\tNA\tNON_TE\tHIGH\t1\t5\t295\t305\t-1\t-1\n";
+        out << "schema_version\t0.2.0\n";
+        out << "#chrom\tpos\tbp_left\tbp_right\tte\tsupport_reads\tgt\tgq\n";
+        out << "chr1\t100\t95\t105\tLINE1HS\t3\t0/1\t28\n";
+        out << "chr2\t200\t195\t205\tALU\t2\t0/1\t25\n";
+        out << "chr3\t300\t295\t305\tNA\t5\t0/1\t24\n";
     }
 
     const fs::path parent_bams = temp_dir / "parents.fofn";

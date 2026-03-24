@@ -102,7 +102,6 @@ add_library(placer_pipeline
     src/gate1/gate1_module.cpp
     src/component/insert_fragment_module.cpp
     src/component/te_quick_classifier.cpp
-    src/component/te_consensus_module.cpp
     src/component/tsd_detector.cpp
 )
 target_include_directories(placer_pipeline PUBLIC include)

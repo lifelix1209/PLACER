@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -74,6 +75,22 @@ bool env_try_string(const char* key, std::string& out) {
     return true;
 }
 
+std::string safe_current_path() {
+    try {
+        return std::filesystem::current_path().string();
+    } catch (const std::exception&) {
+        return ".";
+    }
+}
+
+std::string safe_absolute_path(const std::string& path) {
+    try {
+        return std::filesystem::absolute(path).string();
+    } catch (const std::exception&) {
+        return path;
+    }
+}
+
 void write_scientific_txt(const PipelineResult& result, const std::string& output_path) {
     std::ofstream out(output_path);
     if (!out.is_open()) {
@@ -85,98 +102,44 @@ void write_scientific_txt(const PipelineResult& result, const std::string& outpu
     out << "gate1_passed\t" << result.gate1_passed << "\n";
     out << "processed_bins\t" << result.processed_bins << "\n";
     out << "components\t" << result.built_components << "\n";
-    out << "evidence_rows\t" << result.evidence_rows << "\n";
-    out << "assemblies\t" << result.assembled_calls << "\n";
-    out << "placeability_calls\t" << result.placeability_calls << "\n";
+    out << "event_consensus_calls\t" << result.event_consensus_calls << "\n";
     out << "genotype_calls\t" << result.genotype_calls << "\n";
-    out << "final_te_certain\t" << result.final_te_certain << "\n";
-    out << "final_te_uncertain\t" << result.final_te_uncertain << "\n";
-    out << "final_non_te\t" << result.final_non_te << "\n";
-    out << "final_high_confidence\t" << result.final_high_confidence << "\n";
-    out << "final_low_confidence\t" << result.final_low_confidence << "\n";
-    out << "bootstrap_exported_calls\t" << result.bootstrap_exported_calls << "\n";
-    out << "schema_version\t0.0.4\n";
+    out << "final_pass_calls\t" << result.final_pass_calls << "\n";
+    out << "schema_version\t1.0.0\n";
 
-    out << "\n#chrom\ttid\tpos\twindow_start\twindow_end\tte\tte_vote_frac\tte_median_ident\tte_multik_support\tte_rescue_frac\tte_fragments"
-        << "\tte_theta\tte_mad_fwd\tte_mad_rev\tte_bp_core\tte_bp_win_start\tte_bp_win_end"
-        << "\tte_core_candidates\tte_core_set\tsplit_sa_core_frac\tte_ref_junc_min\tte_ref_junc_max"
-        << "\tbp_source_counts\tbp_fallback_used\tinsertion_qc\tte_qc"
-        << "\ttsd_type\ttsd_len\ttsd_seq\ttsd_bg_p"
-        << "\tte_status\tte_top1_name\tte_top2_name\tte_post_top1\tte_post_top2\tte_post_margin\tte_conf_prob\tconfidence"
-        << "\ttier\tsupport_reads\tsoftclip_support_reads\tsplit_sa_support_reads\tindel_support_reads"
-        << "\tsplit_like_support_reads\tsupport_low_mapq_reads\tsupport_low_mapq_frac"
-        << "\tseq_closure_enabled\tseq_closure_pass\tseq_closure_certain"
-        << "\tseq_closure_left_anchor_reads\tseq_closure_right_anchor_reads"
-        << "\tseq_closure_dual_anchor_reads\tseq_closure_total_anchor_reads"
-        << "\tseq_closure_empty_span_reads\tseq_closure_mean_anchor_identity\tseq_closure_qc"
-        << "\tgt\taf\tgq\tasm_mode\tasm_input_fragments\tasm_used_fragments"
-        << "\tasm_consensus_len\tasm_identity_est\tasm_qc\n";
+    out << "\n#chrom\tpos\tbp_left\tbp_right\tte\tfamily\tsubfamily\tstrand\tinsert_len"
+        << "\tsupport_reads\talt_struct_reads\tref_span_reads\tlow_mapq_ref_span_reads"
+        << "\tgt\taf\tgq"
+        << "\tbest_te_identity\tbest_te_query_coverage\tcross_family_margin"
+        << "\ttsd_type\ttsd_len"
+        << "\tleft_flank_align_len\tright_flank_align_len\tconsensus_len"
+        << "\tqc\n";
     for (const auto& call : result.final_calls) {
         out << call.chrom << "\t"
-            << call.tid << "\t"
             << call.pos << "\t"
-            << call.window_start << "\t"
-            << call.window_end << "\t"
+            << call.bp_left << "\t"
+            << call.bp_right << "\t"
             << (call.te_name.empty() ? "NA" : call.te_name) << "\t"
-            << call.te_vote_fraction << "\t"
-            << call.te_median_identity << "\t"
-            << call.te_multik_support << "\t"
-            << call.te_rescue_frac << "\t"
-            << call.te_fragment_count << "\t"
-            << call.te_theta << "\t"
-            << call.te_mad_fwd << "\t"
-            << call.te_mad_rev << "\t"
-            << call.te_breakpoint_core << "\t"
-            << call.te_breakpoint_window_start << "\t"
-            << call.te_breakpoint_window_end << "\t"
-            << call.te_core_candidates << "\t"
-            << call.te_core_set << "\t"
-            << call.te_split_sa_core_frac << "\t"
-            << call.te_ref_junc_pos_min << "\t"
-            << call.te_ref_junc_pos_max << "\t"
-            << call.bp_source_counts << "\t"
-            << (call.bp_fallback_used ? 1 : 0) << "\t"
-            << call.insertion_qc << "\t"
-            << call.te_qc << "\t"
-            << call.tsd_type << "\t"
-            << call.tsd_len << "\t"
-            << call.tsd_seq << "\t"
-            << call.tsd_bg_p << "\t"
-            << call.te_status << "\t"
-            << (call.te_top1_name.empty() ? "NA" : call.te_top1_name) << "\t"
-            << (call.te_top2_name.empty() ? "NA" : call.te_top2_name) << "\t"
-            << call.te_posterior_top1 << "\t"
-            << call.te_posterior_top2 << "\t"
-            << call.te_posterior_margin << "\t"
-            << call.te_confidence_prob << "\t"
-            << call.confidence << "\t"
-            << call.tier << "\t"
+            << call.family << "\t"
+            << call.subfamily << "\t"
+            << call.strand << "\t"
+            << call.insert_len << "\t"
             << call.support_reads << "\t"
-            << call.softclip_support_reads << "\t"
-            << call.split_sa_support_reads << "\t"
-            << call.indel_support_reads << "\t"
-            << call.split_like_support_reads << "\t"
-            << call.support_low_mapq_reads << "\t"
-            << call.support_low_mapq_frac << "\t"
-            << (call.seq_closure_enabled ? 1 : 0) << "\t"
-            << (call.seq_closure_pass ? 1 : 0) << "\t"
-            << (call.seq_closure_certain ? 1 : 0) << "\t"
-            << call.seq_closure_left_anchor_reads << "\t"
-            << call.seq_closure_right_anchor_reads << "\t"
-            << call.seq_closure_dual_anchor_reads << "\t"
-            << call.seq_closure_total_anchor_reads << "\t"
-            << call.seq_closure_empty_span_reads << "\t"
-            << call.seq_closure_mean_anchor_identity << "\t"
-            << call.seq_closure_qc << "\t"
+            << call.alt_struct_reads << "\t"
+            << call.ref_span_reads << "\t"
+            << call.low_mapq_ref_span_reads << "\t"
             << call.genotype << "\t"
             << call.af << "\t"
             << call.gq << "\t"
-            << call.asm_mode << "\t"
-            << call.asm_input_fragments << "\t"
-            << call.asm_used_fragments << "\t"
-            << call.asm_consensus_len << "\t"
-            << call.asm_identity_est << "\t"
-            << call.asm_qc << "\n";
+            << call.best_te_identity << "\t"
+            << call.best_te_query_coverage << "\t"
+            << call.cross_family_margin << "\t"
+            << call.tsd_type << "\t"
+            << call.tsd_len << "\t"
+            << call.left_flank_align_len << "\t"
+            << call.right_flank_align_len << "\t"
+            << call.event_consensus_len << "\t"
+            << call.final_qc << "\n";
     }
 }
 
@@ -188,61 +151,30 @@ int main(int argc, char** argv) {
         return placer::run_denovo_cli(argc - 1, argv + 1);
     }
 
-    if (argc < 3) {
-        std::cerr << "Usage: placer <input.bam> <ref.fa> [te.fa]" << std::endl;
+    if (argc < 4) {
+        std::cerr << "Usage: placer <input.bam> <ref.fa> <te.fa>" << std::endl;
         return 1;
     }
 
     placer::PipelineConfig config;
     config.bam_path = argv[1];
     config.reference_fasta_path = argv[2];
-    if (argc >= 4) {
-        config.te_fasta_path = argv[3];
-    }
+    config.te_fasta_path = argv[3];
 
     config.enable_parallel = placer::env_flag_enabled("PLACER_PARALLEL");
-    config.emit_low_confidence_calls = placer::env_flag_enabled("PLACER_EMIT_LOW_CONFIDENCE_CALLS");
-    config.bootstrap_export_enable = placer::env_flag_enabled("PLACER_BOOTSTRAP_EXPORT");
     {
         double v = 0.0;
         bool b = false;
-        if (placer::env_try_bool("PLACER_BOOTSTRAP_EXPORT_INCLUDE_NON_TE", b)) {
-            config.bootstrap_export_include_non_te = b;
-        }
-        if (placer::env_try_double("PLACER_TE_MEDIAN_IDENTITY_MIN", v)) {
-            config.te_median_identity_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_VOTE_FRACTION_MIN", v)) {
-            config.te_vote_fraction_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_RESCUE_VOTE_FRACTION_MIN", v)) {
-            config.te_rescue_vote_fraction_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_RESCUE_MEDIAN_IDENTITY_MIN", v)) {
-            config.te_rescue_median_identity_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_LOW_KMER_RESCUE_IDENTITY_MIN", v)) {
-            config.te_low_kmer_rescue_identity_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_LOW_KMER_RESCUE_MARGIN_MAX", v)) {
-            config.te_low_kmer_rescue_margin_max = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_NO_SOFTCLIP_IDENTITY_MIN", v)) {
-            config.te_no_softclip_identity_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_ONE_SIDED_BREAKPOINT_MAD_MAX", v)) {
-            config.te_one_sided_breakpoint_mad_max = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_TE_MIXED_MIN_NON_SOFTCLIP_FRAC", v)) {
-            config.te_mixed_min_non_softclip_frac = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_MIXED_CLIP_DOMINANT_RATIO", v)) {
-            config.te_mixed_clip_dominant_ratio = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_SHORT_INS_KMER_RELAX_IDENTITY", v)) {
-            config.short_ins_kmer_relax_identity = std::clamp(v, 0.0, 1.0);
-        }
         int32_t i = 0;
+        if (placer::env_try_int32("PLACER_PROGRESS_INTERVAL", i)) {
+            config.progress_interval = std::max<int64_t>(0, static_cast<int64_t>(i));
+        }
+        if (placer::env_try_bool("PLACER_LOG_STAGE_BINS", b)) {
+            config.log_stage_bins = b;
+        }
+        if (placer::env_try_bool("PLACER_LOG_STAGE_COMPONENTS", b)) {
+            config.log_stage_components = b;
+        }
         std::string s;
         if (placer::env_try_string("PLACER_INS_FRAGMENTS_FASTA_PATH", s)) {
             config.ins_fragments_fasta_path = s;
@@ -259,65 +191,11 @@ int main(int argc, char** argv) {
         if (placer::env_try_int32("PLACER_BAM_THREADS", i)) {
             config.bam_threads = std::max(1, i);
         }
-        if (placer::env_try_int32("PLACER_TE_MIN_FRAGMENTS_FOR_VOTE", i)) {
-            config.te_min_fragments_for_vote = std::max(1, i);
-        }
         if (placer::env_try_int32("PLACER_PARALLEL_WORKERS", i)) {
             config.parallel_workers = std::max(1, i);
         }
         if (placer::env_try_int32("PLACER_PARALLEL_QUEUE_MAX_TASKS", i)) {
             config.parallel_queue_max_tasks = i;
-        }
-        if (placer::env_try_int32("PLACER_TE_SOFTCLIP_LOW_COMPLEXITY_HOMOPOLYMER_MIN", i)) {
-            config.te_softclip_low_complexity_homopolymer_min = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_PURE_SOFTCLIP_MIN_READS", i)) {
-            config.te_pure_softclip_min_reads = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_PURE_SOFTCLIP_MIN_FRAGMENTS", i)) {
-            config.te_pure_softclip_min_fragments = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_SOFTCLIP_MIN_ANCHOR_LEN", i)) {
-            config.te_softclip_min_anchor_len = std::max(1, i);
-        }
-        if (placer::env_try_bool("PLACER_TE_LOW_KMER_RESCUE_ENABLE", b)) {
-            config.te_low_kmer_rescue_enable = b;
-        }
-        if (placer::env_try_int32("PLACER_TE_LOW_KMER_RESCUE_TOPN", i)) {
-            config.te_low_kmer_rescue_topn = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_LOW_KMER_RESCUE_MIN_FRAG_LEN", i)) {
-            config.te_low_kmer_rescue_min_frag_len = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_NO_SOFTCLIP_MIN_READS", i)) {
-            config.te_no_softclip_min_reads = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_NO_SOFTCLIP_MIN_FRAGMENTS", i)) {
-            config.te_no_softclip_min_fragments = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_MIXED_MIN_NON_SOFTCLIP_READS", i)) {
-            config.te_mixed_min_non_softclip_reads = std::max(1, i);
-        }
-        if (placer::env_try_bool("PLACER_SHORT_INS_ENABLE", b)) {
-            config.short_ins_enable = b;
-        }
-        if (placer::env_try_int32("PLACER_SHORT_INS_MIN_LEN", i)) {
-            config.short_ins_min_len = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_SHORT_INS_MAX_LEN", i)) {
-            config.short_ins_max_len = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_SHORT_INS_MIN_READS", i)) {
-            config.short_ins_min_reads = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_LOW_CONF_MIN_SUPPORT_READS", i)) {
-            config.low_conf_min_support_reads = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_LOW_CONF_MAX_TIER", i)) {
-            config.low_conf_max_tier = std::clamp(i, 1, 3);
-        }
-        if (placer::env_try_int32("PLACER_BOOTSTRAP_MIN_CONSENSUS_LEN", i)) {
-            config.bootstrap_export_min_consensus_len = std::max(20, i);
         }
         if (placer::env_try_bool("PLACER_TSD_ENABLE", b)) {
             config.tsd_enable = b;
@@ -332,209 +210,41 @@ int main(int argc, char** argv) {
             config.tsd_flank_window = std::max(10, i);
         }
 
-        if (placer::env_try_double("PLACER_TE_SOFTCLIP_LOW_COMPLEXITY_AT_FRAC_MIN", v)) {
-            config.te_softclip_low_complexity_at_frac_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_SOFTCLIP_MIN_ENTROPY", v)) {
-            config.te_softclip_entropy_min = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_TE_SOFTCLIP_MIN_KMER_UNIQUENESS", v)) {
-            config.te_softclip_kmer_uniqueness_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_SOFTCLIP_MAX_NM_PER_BP", v)) {
-            config.te_softclip_max_nm_per_bp = std::max(0.0, v);
-        }
         if (placer::env_try_double("PLACER_TSD_BG_P_MAX", v)) {
             config.tsd_bg_p_max = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_PURE_SOFTCLIP_MIN_IDENTITY", v)) {
-            config.te_pure_softclip_min_identity = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_PROXY_POST_TOP1_MIN", v)) {
-            config.te_proxy_posterior_top1_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_PROXY_POST_MARGIN_MIN", v)) {
-            config.te_proxy_posterior_margin_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_PROXY_MIN_IDENTITY", v)) {
-            config.te_proxy_identity_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_BIAS", v)) {
-            config.te_confidence_bias = v;
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_W_TOP1", v)) {
-            config.te_confidence_w_top1 = v;
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_W_MARGIN", v)) {
-            config.te_confidence_w_margin = v;
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_W_ASM_IDENTITY", v)) {
-            config.te_confidence_w_asm_identity = v;
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_W_SUPPORT", v)) {
-            config.te_confidence_w_support = v;
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_W_VOTE", v)) {
-            config.te_confidence_w_vote = v;
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_W_TE_IDENTITY", v)) {
-            config.te_confidence_w_te_identity = v;
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_W_BREAKPOINT_MAD", v)) {
-            config.te_confidence_w_breakpoint_mad = v;
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_RESCUE_PENALTY", v)) {
-            config.te_confidence_rescue_penalty = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_CERTAIN_MIN", v)) {
-            config.te_confidence_prob_certain_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_UNCERTAIN_MIN", v)) {
-            config.te_confidence_prob_uncertain_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_CERTAIN_POST_MARGIN_MIN", v)) {
-            config.te_certain_posterior_margin_min = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_SAME_FAMILY_AMBIG_MARGIN_MAX", v)) {
-            config.te_same_family_ambiguity_margin_max = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_ANCHOR_FAIL_PENALTY", v)) {
-            config.te_confidence_anchor_fail_penalty = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_NO_TSD_PENALTY", v)) {
-            config.te_confidence_no_tsd_penalty = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_TE_CONF_LOW_MARGIN_PENALTY", v)) {
-            config.te_confidence_low_margin_penalty = std::max(0.0, v);
-        }
-        if (placer::env_try_string("PLACER_BOOTSTRAP_FASTA_PATH", s)) {
-            config.bootstrap_consensus_fasta_path = s;
-        }
-        if (placer::env_try_string("PLACER_BOOTSTRAP_TSV_PATH", s)) {
-            config.bootstrap_metadata_tsv_path = s;
-        }
-        if (placer::env_try_double("PLACER_EVIDENCE_MIN_SUPPORT_ALPHA", v)) {
-            config.evidence_min_support_alpha = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_EVIDENCE_MIN_SUPPORT_LAMBDA", v)) {
-            config.evidence_min_support_lambda = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_EVIDENCE_BREAKPOINT_MAD_MAX", v)) {
-            config.evidence_breakpoint_mad_max = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_EVIDENCE_CLIP_BREAKPOINT_MAD_MAX", v)) {
-            config.evidence_clip_breakpoint_mad_max = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_EVIDENCE_SPLIT_CLIP_CORE_DELTA_MAX", v)) {
-            config.evidence_split_clip_core_delta_max = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_EVIDENCE_LOW_COMPLEX_SOFTCLIP_FRAC_MAX", v)) {
-            config.evidence_low_complex_softclip_frac_max = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_EVIDENCE_TIER1_PROB", v)) {
-            config.evidence_tier1_prob = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_EVIDENCE_TIER2_PROB", v)) {
-            config.evidence_tier2_prob = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_EVIDENCE_LOGIT_BIAS", v)) {
-            config.evidence_logit_bias = std::max(0.0, v);
-        }
-        if (config.evidence_tier2_prob > config.evidence_tier1_prob) {
-            config.evidence_tier2_prob = config.evidence_tier1_prob;
         }
         if (placer::env_try_int32("PLACER_GENOTYPE_MIN_DEPTH", i)) {
             config.genotype_min_depth = std::max(1, i);
         }
-        if (placer::env_try_bool("PLACER_TE_FAIL_ON_TSD_INCONSISTENT", b)) {
-            config.te_fail_on_tsd_inconsistent = b;
-        }
-        if (placer::env_try_bool("PLACER_TE_SEQUENCE_CLOSURE_ENABLE", b)) {
-            config.te_sequence_closure_enable = b;
-        }
-        if (placer::env_try_bool("PLACER_TE_FORCE_NON_TE_COMBINED_WEAKNESS", b)) {
-            config.te_force_non_te_on_combined_weakness = b;
-        }
-        if (placer::env_try_bool("PLACER_TE_FORCE_NON_TE_ANCHOR_WEAK_TSD", b)) {
-            config.te_force_non_te_on_anchor_weak_tsd = b;
-        }
         if (placer::env_try_double("PLACER_GENOTYPE_ERROR_RATE", v)) {
             config.genotype_error_rate = std::clamp(v, 1e-4, 0.25);
         }
-        if (placer::env_try_int32("PLACER_ASSEMBLY_POA_MIN_READS", i)) {
-            config.assembly_poa_min_reads = std::max(2, i);
+        if (placer::env_try_int32("PLACER_EVENT_CONSENSUS_POA_MIN_READS", i)) {
+            config.event_consensus_poa_min_reads = std::max(2, i);
         }
-        if (placer::env_try_int32("PLACER_ASSEMBLY_POA_MAX_READS", i)) {
-            config.assembly_poa_max_reads = std::max(2, i);
+        if (placer::env_try_int32("PLACER_EVENT_CONSENSUS_POA_MAX_READS", i)) {
+            config.event_consensus_poa_max_reads = std::max(2, i);
         }
-        if (placer::env_try_int32("PLACER_ASSEMBLY_MIN_FRAGMENT_LEN", i)) {
-            config.assembly_min_fragment_len = std::max(20, i);
-        }
-        if (placer::env_try_int32("PLACER_ASSEMBLY_MIN_CONSENSUS_LEN", i)) {
-            config.assembly_min_consensus_len = std::max(20, i);
-        }
-        if (placer::env_try_int32("PLACER_ASSEMBLY_KMER_SIZE", i)) {
-            config.assembly_kmer_size = std::max(5, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_FLANK_BASES", i)) {
-            config.te_sequence_closure_flank_bases = std::max(8, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_MIN_ANCHOR_LEN", i)) {
-            config.te_sequence_closure_min_anchor_len = std::max(8, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_MIN_SIDE_READS", i)) {
-            config.te_sequence_closure_min_side_reads = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_MIN_TOTAL_READS", i)) {
-            config.te_sequence_closure_min_total_reads = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_MIN_DUAL_READS", i)) {
-            config.te_sequence_closure_min_dual_reads = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_SPLIT_RESCUE_MIN_READS", i)) {
-            config.te_sequence_closure_split_like_rescue_min_reads = std::max(1, i);
-        }
-        if (placer::env_try_int32("PLACER_TE_SEQUENCE_CLOSURE_EMPTY_WINDOW", i)) {
-            config.te_sequence_closure_empty_window = std::max(1, i);
-        }
-        if (placer::env_try_double("PLACER_ASSEMBLY_MIN_IDENTITY_EST", v)) {
-            config.assembly_min_identity_est = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_SEQUENCE_CLOSURE_MIN_ANCHOR_IDENTITY", v)) {
-            config.te_sequence_closure_min_anchor_identity = std::clamp(v, 0.0, 1.0);
-        }
-        if (placer::env_try_double("PLACER_TE_SEQUENCE_CLOSURE_MAX_EMPTY_RATIO_PASS", v)) {
-            config.te_sequence_closure_max_empty_ratio_pass = std::max(0.0, v);
-        }
-        if (placer::env_try_double("PLACER_TE_SEQUENCE_CLOSURE_MAX_EMPTY_RATIO_CERTAIN", v)) {
-            config.te_sequence_closure_max_empty_ratio_certain = std::max(0.0, v);
-        }
-        config.te_rescue_vote_fraction_min = std::min(
-            config.te_rescue_vote_fraction_min,
-            config.te_vote_fraction_min);
-        config.te_rescue_median_identity_min = std::min(
-            config.te_rescue_median_identity_min,
-            config.te_median_identity_min);
         config.tsd_max_len = std::max(config.tsd_min_len, config.tsd_max_len);
-        config.short_ins_max_len = std::max(config.short_ins_min_len, config.short_ins_max_len);
-        if (config.te_confidence_prob_uncertain_min > config.te_confidence_prob_certain_min) {
-            config.te_confidence_prob_uncertain_min = config.te_confidence_prob_certain_min;
-        }
-        config.assembly_poa_min_reads = std::min(
-            config.assembly_poa_min_reads,
-            config.assembly_poa_max_reads);
-        config.te_sequence_closure_min_anchor_len = std::min(
-            config.te_sequence_closure_min_anchor_len,
-            config.te_sequence_closure_flank_bases);
-        config.te_sequence_closure_min_total_reads = std::max(
-            config.te_sequence_closure_min_side_reads,
-            config.te_sequence_closure_min_total_reads);
-        config.te_sequence_closure_max_empty_ratio_certain = std::min(
-            config.te_sequence_closure_max_empty_ratio_certain,
-            config.te_sequence_closure_max_empty_ratio_pass);
+        config.event_consensus_poa_min_reads = std::min(
+            config.event_consensus_poa_min_reads,
+            config.event_consensus_poa_max_reads);
     }
 
     try {
+        const std::string scientific_path = placer::safe_absolute_path("scientific.txt");
+        std::cerr << "[PLACER] run started\n"
+                  << "  cwd=" << placer::safe_current_path() << "\n"
+                  << "  bam=" << config.bam_path << "\n"
+                  << "  reference=" << config.reference_fasta_path << "\n"
+                  << "  te_fasta=" << (config.te_fasta_path.empty() ? "NA" : config.te_fasta_path) << "\n"
+                  << "  mode=" << (config.enable_parallel ? "parallel" : "streaming") << "\n"
+                  << "  bam_threads=" << config.bam_threads << "\n"
+                  << "  progress_interval=" << config.progress_interval << "\n"
+                  << "  log_stage_bins=" << (config.log_stage_bins ? 1 : 0) << "\n"
+                  << "  log_stage_components=" << (config.log_stage_components ? 1 : 0) << "\n"
+                  << "  scientific_txt=" << scientific_path << std::endl;
+
         auto pipeline = placer::build_default_pipeline(config);
         placer::PipelineResult result = pipeline->run();
 
@@ -544,16 +254,12 @@ int main(int argc, char** argv) {
                   << "  gate1_passed=" << result.gate1_passed << "\n"
                   << "  processed_bins=" << result.processed_bins << "\n"
                   << "  components=" << result.built_components << "\n"
-                  << "  assemblies=" << result.assembled_calls << "\n"
+                  << "  event_consensus_calls=" << result.event_consensus_calls << "\n"
                   << "  genotype_calls=" << result.genotype_calls << "\n"
-                  << "  final_te_certain=" << result.final_te_certain << "\n"
-                  << "  final_te_uncertain=" << result.final_te_uncertain << "\n"
-                  << "  final_non_te=" << result.final_non_te << "\n"
-                  << "  final_high_confidence=" << result.final_high_confidence << "\n"
-                  << "  final_low_confidence=" << result.final_low_confidence << "\n"
-                  << "  bootstrap_exported_calls=" << result.bootstrap_exported_calls << std::endl;
+                  << "  final_pass_calls=" << result.final_pass_calls << std::endl;
 
         placer::write_scientific_txt(result, "scientific.txt");
+        std::cerr << "[PLACER] wrote scientific.txt path=" << scientific_path << std::endl;
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[PLACER] fatal: " << ex.what() << std::endl;

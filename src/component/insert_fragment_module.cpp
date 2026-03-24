@@ -699,7 +699,7 @@ std::vector<InsertionFragment> SplitSAFragmentModule::extract(
         aln.anchor_len = anchor_len;
         aln.has_large_indel_near_bp = has_large_indel;
 
-        const std::string read_id = sanitize_fragment_token(std::string(read.qname()));
+        const std::string read_id = std::string(read.qname());
         supplementary_by_read[read_id].push_back(std::move(aln));
     }
 
@@ -727,7 +727,8 @@ std::vector<InsertionFragment> SplitSAFragmentModule::extract(
             continue;
         }
 
-        const std::string read_id = sanitize_fragment_token(std::string(read.qname()));
+        const std::string read_id = std::string(read.qname());
+        const std::string read_token = sanitize_fragment_token(read_id);
         const int32_t read_len = read.seq_len();
         const bool is_reverse = (flag & BAM_FREVERSE) != 0;
 
@@ -945,7 +946,7 @@ std::vector<InsertionFragment> SplitSAFragmentModule::extract(
                         frag.sequence = read.decode_subsequence(frag.start, frag.length);
                         frag.fragment_id =
                             component.chrom + ":" + std::to_string(component.anchor_pos) +
-                            "|read=" + read_id +
+                            "|read=" + read_token +
                             "|idx=" + std::to_string(idx_in_bin) +
                             "|strand=" + std::string(is_reverse ? "-" : "+") +
                             "|src=" + source_tag(frag.source) +
@@ -993,7 +994,7 @@ std::vector<InsertionFragment> SplitSAFragmentModule::extract(
             frag.sequence = read.decode_subsequence(frag.start, frag.length);
             frag.fragment_id =
                 component.chrom + ":" + std::to_string(component.anchor_pos) +
-                "|read=" + read_id +
+                "|read=" + read_token +
                 "|idx=" + std::to_string(idx_in_bin) +
                 "|strand=" + std::string(is_reverse ? "-" : "+") +
                 "|src=" + source_tag(frag.source) +
@@ -1073,7 +1074,8 @@ std::vector<InsertionFragment> CigarInsertionFragmentModule::extract(
         }
 
         ReadView read(bin_records[idx_in_bin]);
-        const std::string read_id = sanitize_fragment_token(std::string(read.qname()));
+        const std::string read_id = std::string(read.qname());
+        const std::string read_token = sanitize_fragment_token(read_id);
 
         const uint16_t flag = read.flag();
         const bool is_reverse = (flag & BAM_FREVERSE) != 0;
@@ -1115,7 +1117,7 @@ std::vector<InsertionFragment> CigarInsertionFragmentModule::extract(
             frag.sequence = read.decode_subsequence(frag.start, frag.length);
             frag.fragment_id =
                 component.chrom + ":" + std::to_string(component.anchor_pos) +
-                "|read=" + read_id +
+                "|read=" + read_token +
                 "|idx=" + std::to_string(idx_in_bin) +
                 "|strand=" + std::string(is_reverse ? "-" : "+") +
                 "|src=" + source_tag(frag.source) +
@@ -1143,7 +1145,7 @@ std::vector<InsertionFragment> CigarInsertionFragmentModule::extract(
             frag.sequence = read.decode_subsequence(frag.start, frag.length);
             frag.fragment_id =
                 component.chrom + ":" + std::to_string(component.anchor_pos) +
-                "|read=" + read_id +
+                "|read=" + read_token +
                 "|idx=" + std::to_string(idx_in_bin) +
                 "|strand=" + std::string(is_reverse ? "-" : "+") +
                 "|src=" + source_tag(frag.source) +
@@ -1179,7 +1181,7 @@ std::vector<InsertionFragment> CigarInsertionFragmentModule::extract(
                 frag.sequence = read.decode_subsequence(frag.start, frag.length);
                 frag.fragment_id =
                     component.chrom + ":" + std::to_string(component.anchor_pos) +
-                    "|read=" + read_id +
+                    "|read=" + read_token +
                     "|idx=" + std::to_string(idx_in_bin) +
                     "|strand=" + std::string(is_reverse ? "-" : "+") +
                     "|src=" + source_tag(frag.source) +

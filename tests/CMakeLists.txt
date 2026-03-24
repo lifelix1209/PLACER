@@ -1,3 +1,5 @@
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
 add_executable(test_decision_policy
     test_decision_policy.cpp
 )
@@ -22,21 +24,45 @@ target_link_libraries(test_tsd_detector PRIVATE placer_pipeline)
 
 add_test(NAME test_tsd_detector COMMAND test_tsd_detector)
 
-add_executable(test_no_softclip_rescue
-    test_no_softclip_rescue.cpp
+add_executable(test_event_segmentation
+    test_event_segmentation.cpp
 )
-target_include_directories(test_no_softclip_rescue PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(test_no_softclip_rescue PRIVATE placer_pipeline)
+target_include_directories(test_event_segmentation PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_event_segmentation PRIVATE placer_pipeline)
 
-add_test(NAME test_no_softclip_rescue COMMAND test_no_softclip_rescue)
+add_test(NAME test_event_segmentation COMMAND test_event_segmentation)
 
-add_executable(test_short_insertion_rescue
-    test_short_insertion_rescue.cpp
+add_executable(test_event_read_evidence
+    test_event_read_evidence.cpp
 )
-target_include_directories(test_short_insertion_rescue PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(test_short_insertion_rescue PRIVATE placer_pipeline)
+target_include_directories(test_event_read_evidence PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_event_read_evidence PRIVATE placer_pipeline)
 
-add_test(NAME test_short_insertion_rescue COMMAND test_short_insertion_rescue)
+add_test(NAME test_event_read_evidence COMMAND test_event_read_evidence)
+
+add_executable(test_insert_te_alignment
+    test_insert_te_alignment.cpp
+)
+target_include_directories(test_insert_te_alignment PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_insert_te_alignment PRIVATE placer_pipeline)
+
+add_test(NAME test_insert_te_alignment COMMAND test_insert_te_alignment)
+
+add_executable(test_local_recollection_fragment_refresh
+    test_local_recollection_fragment_refresh.cpp
+)
+target_include_directories(test_local_recollection_fragment_refresh PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_local_recollection_fragment_refresh PRIVATE placer_pipeline)
+
+add_test(NAME test_local_recollection_fragment_refresh COMMAND test_local_recollection_fragment_refresh)
+
+add_executable(test_ref_span_dominant_rejection
+    test_ref_span_dominant_rejection.cpp
+)
+target_include_directories(test_ref_span_dominant_rejection PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_ref_span_dominant_rejection PRIVATE placer_pipeline)
+
+add_test(NAME test_ref_span_dominant_rejection COMMAND test_ref_span_dominant_rejection)
 
 add_executable(test_denovo_cli
     test_denovo_cli.cpp
@@ -45,3 +71,8 @@ target_include_directories(test_denovo_cli PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(test_denovo_cli PRIVATE placer_denovo)
 
 add_test(NAME test_denovo_cli COMMAND test_denovo_cli)
+
+add_test(
+    NAME test_run_sharded_placer
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_run_sharded_placer.py
+)

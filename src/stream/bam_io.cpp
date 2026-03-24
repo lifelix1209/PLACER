@@ -3,6 +3,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -33,10 +34,38 @@ public:
             return;
         }
 
+        fetch_file_ = hts_open(bam_path_.c_str(), "r");
+        if (!fetch_file_) {
+            std::cerr << "[BAM_IO] failed to open BAM for indexed fetch: " << bam_path_ << '\n';
+            return;
+        }
+        if (decompression_threads > 1) {
+            hts_set_threads(fetch_file_, decompression_threads);
+        }
+        fetch_header_ = sam_hdr_read(fetch_file_);
+        if (!fetch_header_) {
+            std::cerr << "[BAM_IO] failed to read BAM header for indexed fetch: " << bam_path_ << '\n';
+            return;
+        }
+        index_ = sam_index_load(fetch_file_, bam_path_.c_str());
+        if (!index_) {
+            std::cerr << "[BAM_IO] missing BAM index for local event fetch: " << bam_path_ << '\n';
+            return;
+        }
+
         valid_ = true;
     }
 
     ~HtslibBamStreamReader() override {
+        if (index_ != nullptr) {
+            hts_idx_destroy(index_);
+        }
+        if (fetch_header_ != nullptr) {
+            bam_hdr_destroy(fetch_header_);
+        }
+        if (fetch_file_ != nullptr) {
+            hts_close(fetch_file_);
+        }
         if (header_ != nullptr) {
             bam_hdr_destroy(header_);
         }
@@ -58,6 +87,61 @@ public:
             return "";
         }
         return header_->target_name[tid];
+    }
+
+    bool can_fetch() const override {
+        return valid_ && fetch_file_ != nullptr && fetch_header_ != nullptr && index_ != nullptr;
+    }
+
+    bool fetch(
+        const std::string& chrom,
+        int32_t start,
+        int32_t end,
+        const FetchRecordHandler& record_handler) const override {
+        if (!can_fetch() || !record_handler) {
+            return false;
+        }
+
+        const std::lock_guard<std::mutex> lock(fetch_mutex_);
+        const int32_t tid = sam_hdr_name2tid(fetch_header_, chrom.c_str());
+        if (tid < 0) {
+            return false;
+        }
+
+        const int32_t query_start = std::max<int32_t>(0, start);
+        const int32_t query_end = std::max(query_start + 1, end);
+        hts_itr_t* iter = sam_itr_queryi(index_, tid, query_start, query_end);
+        if (!iter) {
+            return false;
+        }
+
+        bam1_t* record = bam_init1();
+        if (!record) {
+            sam_itr_destroy(iter);
+            return false;
+        }
+
+        bool ok = true;
+        while (sam_itr_next(fetch_file_, iter, record) >= 0) {
+            if (record->core.flag & BAM_FUNMAP) {
+                continue;
+            }
+            if (record->core.flag & BAM_FSECONDARY) {
+                continue;
+            }
+            BamRecordPtr copy(bam_dup1(record));
+            if (!copy) {
+                ok = false;
+                break;
+            }
+            if (!record_handler(std::move(copy))) {
+                break;
+            }
+        }
+
+        bam_destroy1(record);
+        sam_itr_destroy(iter);
+        return ok;
     }
 
     int64_t stream(
@@ -115,6 +199,10 @@ private:
     std::string bam_path_;
     htsFile* file_ = nullptr;
     bam_hdr_t* header_ = nullptr;
+    mutable std::mutex fetch_mutex_;
+    htsFile* fetch_file_ = nullptr;
+    bam_hdr_t* fetch_header_ = nullptr;
+    hts_idx_t* index_ = nullptr;
     bool valid_ = false;
 };
 

@@ -9,698 +9,59 @@ int main() {
     using namespace placer;
 
     {
-        InsertionEvidence e;
-        e.tier = 1;
-        e.support_reads = 1;
-        InsertionAcceptanceParams p;
-        p.emit_low_confidence_calls = false;
-        const auto d = evaluate_insertion_acceptance(e, p);
-        assert(d.pass);
-        assert(!d.low_confidence);
-    }
-
-    {
-        InsertionEvidence e;
-        e.tier = 3;
-        e.support_reads = 10;
-        InsertionAcceptanceParams p;
-        p.emit_low_confidence_calls = false;
-        const auto d = evaluate_insertion_acceptance(e, p);
-        assert(!d.pass);
-    }
-
-    {
-        InsertionEvidence e;
-        e.tier = 2;
-        e.support_reads = 2;
-        InsertionAcceptanceParams p;
-        p.emit_low_confidence_calls = true;
-        p.low_conf_min_support_reads = 3;
-        p.low_conf_max_tier = 3;
-        const auto d = evaluate_insertion_acceptance(e, p);
-        assert(d.pass);
-        assert(!d.low_confidence);
-    }
-
-    {
-        InsertionEvidence e;
-        e.tier = 3;
-        e.support_reads = 5;
-        InsertionAcceptanceParams p;
-        p.emit_low_confidence_calls = true;
-        p.low_conf_min_support_reads = 4;
-        p.low_conf_max_tier = 3;
-        const auto d = evaluate_insertion_acceptance(e, p);
-        assert(d.pass);
-        assert(d.low_confidence);
-    }
-
-    {
-        InsertionEvidence e;
-        e.tier = 3;
-        e.support_reads = 2;
-        InsertionAcceptanceParams p;
-        p.emit_low_confidence_calls = true;
-        p.low_conf_min_support_reads = 4;
-        p.low_conf_max_tier = 3;
-        const auto d = evaluate_insertion_acceptance(e, p);
-        assert(!d.pass);
-    }
-
-    {
-        TeOpenSetInput in;
-        in.te_gate_pass = true;
-        in.te_gate_uncertain_path = false;
-        in.has_proxy_signal = false;
-        in.proxy_certain = false;
-        in.te_confidence_prob = 0.95;
-        TeOpenSetParams p;
-        const auto d = classify_te_open_set(in, p);
-        assert(d.status == "TE_CERTAIN");
-        assert(!d.promote_top1_name);
-        assert(d.qc_proxy_tag.empty());
-    }
-
-    {
-        TeOpenSetInput in;
-        in.te_gate_pass = true;
-        in.te_gate_uncertain_path = true;
-        in.has_proxy_signal = true;
-        in.proxy_certain = true;
-        in.te_confidence_prob = 0.10;
-        TeOpenSetParams p;
-        const auto d = classify_te_open_set(in, p);
-        assert(d.status == "TE_CERTAIN");
-        assert(d.promote_top1_name);
-        assert(d.qc_proxy_tag == "TE_PROXY_CERTAIN");
-    }
-
-    {
-        TeOpenSetInput in;
-        in.te_gate_pass = true;
-        in.te_gate_uncertain_path = true;
-        in.has_proxy_signal = true;
-        in.proxy_certain = false;
-        in.te_confidence_prob = 0.50;
-        TeOpenSetParams p;
-        p.conf_certain_min = 0.85;
-        p.conf_uncertain_min = 0.35;
-        const auto d = classify_te_open_set(in, p);
-        assert(d.status == "TE_UNCERTAIN");
-        assert(!d.promote_top1_name);
-        assert(d.qc_proxy_tag == "TE_PROXY_WEAK");
-    }
-
-    {
-        TeOpenSetInput in;
-        in.te_gate_pass = true;
-        in.te_gate_uncertain_path = true;
-        in.has_proxy_signal = false;
-        in.proxy_certain = false;
-        in.te_confidence_prob = 0.90;
-        TeOpenSetParams p;
-        const auto d = classify_te_open_set(in, p);
-        assert(d.status == "NON_TE");
-        assert(d.qc_proxy_tag == "TE_PROXY_NONE");
-    }
-
-    {
-        TeOpenSetInput in;
-        in.te_gate_pass = false;
-        in.te_gate_uncertain_path = false;
-        in.has_proxy_signal = true;
-        in.proxy_certain = false;
-        in.te_confidence_prob = 0.20;
-        TeOpenSetParams p;
-        const auto d = classify_te_open_set(in, p);
-        assert(d.add_te_gate_fail_tag);
-    }
-
-    {
-        BreakpointConsistencyInput in;
-        in.split_count = 2;
-        in.clip_count = 6;
-        in.indel_count = 0;
-        in.all_breakpoint_mad = 72.0;
-        in.split_breakpoint_mad = 6.0;
-        in.split_like_breakpoint_mad = 6.0;
-        in.clip_breakpoint_mad = 150.0;
-        in.indel_breakpoint_mad = 0.0;
-        in.split_clip_core_delta = 180.0;
-
-        BreakpointConsistencyParams p;
-        p.breakpoint_mad_max = 80.0;
-        p.clip_breakpoint_mad_max = 120.0;
-        p.split_clip_core_delta_max = 150.0;
-        p.tight_split_like_breakpoint_mad_max = 40.0;
-        p.min_split_like_count = 1;
-        p.min_clip_count = 2;
-
-        const auto d = evaluate_breakpoint_consistency(in, p);
-        assert(d.pass_breakpoint_mad);
-        assert(!d.pass_split_clip_consistency);
-        assert(d.severe_inconsistency);
-        assert(d.placeability_penalty >= 1.0);
-    }
-
-    {
-        BreakpointConsistencyInput in;
-        in.split_count = 0;
-        in.clip_count = 4;
-        in.indel_count = 3;
-        in.all_breakpoint_mad = 44.0;
-        in.split_breakpoint_mad = 0.0;
-        in.split_like_breakpoint_mad = 8.0;
-        in.clip_breakpoint_mad = 24.0;
-        in.indel_breakpoint_mad = 7.0;
-        in.split_clip_core_delta = 165.0;
-
-        BreakpointConsistencyParams p;
-        p.breakpoint_mad_max = 80.0;
-        p.clip_breakpoint_mad_max = 120.0;
-        p.split_clip_core_delta_max = 150.0;
-        p.tight_split_like_breakpoint_mad_max = 40.0;
-        p.min_split_like_count = 1;
-        p.min_clip_count = 2;
-
-        const auto d = evaluate_breakpoint_consistency(in, p);
-        assert(d.pass_breakpoint_mad);
-        assert(!d.pass_split_clip_consistency);
-        assert(d.severe_inconsistency);
-    }
-
-    {
-        BreakpointConsistencyInput in;
-        in.split_count = 3;
-        in.clip_count = 5;
-        in.indel_count = 1;
-        in.all_breakpoint_mad = 18.0;
-        in.split_breakpoint_mad = 7.0;
-        in.split_like_breakpoint_mad = 8.0;
-        in.clip_breakpoint_mad = 20.0;
-        in.indel_breakpoint_mad = 5.0;
-        in.split_clip_core_delta = 12.0;
-
-        BreakpointConsistencyParams p;
-        p.breakpoint_mad_max = 80.0;
-        p.clip_breakpoint_mad_max = 120.0;
-        p.split_clip_core_delta_max = 150.0;
-        p.tight_split_like_breakpoint_mad_max = 40.0;
-        p.min_split_like_count = 1;
-        p.min_clip_count = 2;
-
-        const auto d = evaluate_breakpoint_consistency(in, p);
-        assert(d.pass_breakpoint_mad);
-        assert(d.pass_split_clip_consistency);
-        assert(!d.severe_inconsistency);
-        assert(d.placeability_penalty > 0.0);
-        assert(d.placeability_penalty < 0.2);
-    }
-
-    {
-        TeOpenSetInput in;
-        in.te_gate_pass = true;
-        in.force_non_te = true;
-        in.has_proxy_signal = true;
-        in.proxy_certain = true;
-        in.te_confidence_prob = 0.99;
-        TeOpenSetParams p;
-        const auto d = classify_te_open_set(in, p);
-        assert(d.status == "NON_TE");
-    }
-
-    {
-        SequenceClosureInput in;
-        in.enabled = true;
-        in.left_anchor_reads = 2;
-        in.right_anchor_reads = 2;
-        in.dual_anchor_reads = 1;
-        in.total_anchor_reads = 3;
-        in.empty_span_reads = 1;
-        in.split_like_support_reads = 3;
-
-        SequenceClosureParams p;
-        p.min_side_reads = 1;
-        p.min_total_anchor_reads = 2;
-        p.min_dual_anchor_reads = 1;
-        p.split_like_rescue_min_reads = 3;
-        p.max_empty_span_ratio_pass = 3.0;
-        p.max_empty_span_ratio_certain = 1.5;
-
-        const auto d = evaluate_sequence_closure(in, p);
-        assert(d.pass);
-        assert(d.certain);
-        assert(!d.force_non_te);
-        assert(d.qc == "SEQ_CLOSURE_CERTAIN");
-    }
-
-    {
-        SequenceClosureInput in;
-        in.enabled = true;
-        in.left_anchor_reads = 2;
-        in.right_anchor_reads = 1;
-        in.dual_anchor_reads = 0;
-        in.total_anchor_reads = 2;
-        in.empty_span_reads = 4;
-        in.split_like_support_reads = 1;
-
-        SequenceClosureParams p;
-        p.min_side_reads = 1;
-        p.min_total_anchor_reads = 2;
-        p.min_dual_anchor_reads = 1;
-        p.split_like_rescue_min_reads = 3;
-        p.max_empty_span_ratio_pass = 3.0;
-        p.max_empty_span_ratio_certain = 1.5;
-
-        const auto d = evaluate_sequence_closure(in, p);
-        assert(d.pass);
-        assert(!d.certain);
-        assert(!d.force_non_te);
-        assert(d.qc == "SEQ_CLOSURE_WEAK");
-    }
-
-    {
-        SequenceClosureInput in;
-        in.enabled = true;
-        in.left_anchor_reads = 0;
-        in.right_anchor_reads = 0;
-        in.dual_anchor_reads = 0;
-        in.total_anchor_reads = 0;
-        in.empty_span_reads = 5;
-        in.split_like_support_reads = 0;
-
-        SequenceClosureParams p;
-        p.min_side_reads = 1;
-        p.min_total_anchor_reads = 2;
-        p.min_dual_anchor_reads = 1;
-        p.split_like_rescue_min_reads = 3;
-
-        const auto d = evaluate_sequence_closure(in, p);
-        assert(!d.pass);
-        assert(!d.certain);
-        assert(d.force_non_te);
-        assert(d.qc == "SEQ_CLOSURE_FAIL_NO_ANCHORS");
-    }
-
-    {
-        FinalCall call;
-        call.te_qc = "PASS_CLASSIC|ANCHOR_FAIL_THETA_UNCERTAIN";
-        call.tsd_type = "NONE";
-        call.bp_source_counts = "split:1,clip:6,indel:0";
-        call.softclip_support_reads = 6;
-        call.split_sa_support_reads = 1;
-        call.indel_support_reads = 0;
-        call.split_like_support_reads = 1;
-        call.te_top1_name = "L1:L1HS";
-        call.te_top2_name = "L1:L1PA2";
-        call.te_posterior_top2 = 0.31;
-        call.te_posterior_margin = 0.08;
-        call.te_confidence_prob = 0.93;
-
-        PipelineConfig config;
-        config.te_certain_posterior_margin_min = 0.20;
-        config.te_confidence_anchor_fail_penalty = 0.15;
-        config.te_confidence_no_tsd_penalty = 0.10;
-        config.te_confidence_low_margin_penalty = 0.12;
-        config.te_force_non_te_on_combined_weakness = true;
-        config.te_force_non_te_on_anchor_weak_tsd = true;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(d.force_te_uncertain);
-        assert(d.force_non_te);
-        assert(call.te_confidence_prob <= 0.175);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_ANCHOR") != std::string::npos);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_NO_TSD") != std::string::npos);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_LOW_MARGIN") != std::string::npos);
-        assert(call.te_qc.find("TE_FORCE_NON_TE_ANCHOR_WEAK_TSD") != std::string::npos);
-        assert(call.te_qc.find("TE_FORCE_NON_TE_COMBINED_WEAKNESS") != std::string::npos);
-    }
-
-    {
-        FinalCall call;
-        call.te_qc = "PASS_CLASSIC|ANCHOR_PASS";
-        call.tsd_type = "NONE";
-        call.bp_source_counts = "split:4,clip:2,indel:1";
-        call.softclip_support_reads = 2;
-        call.split_sa_support_reads = 4;
-        call.indel_support_reads = 1;
-        call.split_like_support_reads = 5;
-        call.te_top1_name = "ALU:Ya5";
-        call.te_top2_name = "ALU:Yb8";
-        call.te_posterior_top2 = 0.12;
-        call.te_posterior_margin = 0.30;
-        call.te_confidence_prob = 0.88;
-
-        PipelineConfig config;
-        config.te_certain_posterior_margin_min = 0.20;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(!d.force_te_uncertain);
-        assert(!d.force_non_te);
-        assert(call.te_confidence_prob == 0.88);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_") == std::string::npos);
-    }
-
-    {
-        FinalCall call;
-        call.te_qc = "PASS_CLASSIC|ANCHOR_PASS";
-        call.tsd_type = "DEL";
-        call.bp_source_counts = "split:5,clip:1,indel:1";
-        call.softclip_support_reads = 1;
-        call.split_sa_support_reads = 5;
-        call.indel_support_reads = 1;
-        call.split_like_support_reads = 6;
-        call.te_top1_name = "Gypsy:Gypsy-95";
-        call.te_top2_name = "Gypsy:Gypsy-40";
-        call.te_posterior_top2 = 0.26;
-        call.te_posterior_margin = 0.28;
-        call.te_confidence_prob = 0.90;
-
-        PipelineConfig config;
-        config.te_certain_posterior_margin_min = 0.20;
-        config.te_same_family_ambiguity_margin_max = 0.30;
-        config.te_confidence_low_margin_penalty = 0.16;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(d.force_te_uncertain);
-        assert(!d.force_non_te);
-        assert(call.te_confidence_prob <= 0.60);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_FAMILY_AMBIGUOUS") != std::string::npos);
-    }
-
-    {
-        FinalCall call;
-        call.te_qc = "PASS_CLASSIC|ANCHOR_NO_CORE_RESULT";
-        call.tsd_type = "DEL";
-        call.bp_source_counts = "split:2,clip:1,indel:1";
-        call.softclip_support_reads = 1;
-        call.split_sa_support_reads = 2;
-        call.indel_support_reads = 1;
-        call.split_like_support_reads = 3;
-        call.te_top1_name = "ALU:Ya5";
-        call.te_top2_name = "ALU:Yb8";
-        call.te_posterior_top2 = 0.12;
-        call.te_posterior_margin = 0.35;
-        call.te_confidence_prob = 0.92;
-
-        PipelineConfig config;
-        config.te_confidence_prob_certain_min = 0.85;
-        config.te_confidence_prob_uncertain_min = 0.35;
-        config.te_confidence_anchor_fail_penalty = 0.15;
-        config.te_force_non_te_on_anchor_weak_tsd = true;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(d.force_te_uncertain);
-        assert(!d.force_non_te);
-        assert(call.te_confidence_prob <= 0.60);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_ANCHOR") != std::string::npos);
-        assert(call.te_qc.find("TE_FORCE_NON_TE_ANCHOR_WEAK_TSD") == std::string::npos);
-    }
-
-    {
-        FinalCall call;
-        call.te_name = "L1:L1HS";
-        call.te_median_identity = 0.01;
-        call.te_qc = "PASS_SPLIT_INDEL_RESCUE|ANCHOR_PASS";
-        call.tsd_type = "DEL";
-        call.bp_source_counts = "split:6,clip:0,indel:4";
-        call.softclip_support_reads = 0;
-        call.split_sa_support_reads = 6;
-        call.indel_support_reads = 4;
-        call.split_like_support_reads = 10;
-        call.te_confidence_prob = 0.91;
-
-        PipelineConfig config;
-        config.te_rescue_median_identity_min = 0.20;
-        config.te_confidence_prob_uncertain_min = 0.35;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(!d.force_te_uncertain);
-        assert(d.force_non_te);
-        assert(call.te_qc.find("TE_FORCE_NON_TE_LOW_IDENTITY") != std::string::npos);
-        assert(call.te_confidence_prob <= 0.175);
-    }
-
-    {
-        FinalCall call;
-        call.te_qc = "PASS_ASM_RESCUE|ANCHOR_PASS";
-        call.tsd_type = "UNCERTAIN";
-        call.bp_source_counts = "split:0,clip:5,indel:0";
-        call.softclip_support_reads = 5;
-        call.split_sa_support_reads = 0;
-        call.indel_support_reads = 0;
-        call.split_like_support_reads = 0;
-        call.te_confidence_prob = 0.81;
-
-        PipelineConfig config;
-        config.te_confidence_prob_certain_min = 0.85;
-        config.te_confidence_prob_uncertain_min = 0.35;
-        config.te_confidence_no_tsd_penalty = 0.10;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(d.force_te_uncertain);
-        assert(!d.force_non_te);
-        assert(call.te_confidence_prob <= 0.60);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_TSD_UNCERTAIN") != std::string::npos);
-    }
-
-    {
-        FinalCall call;
-        call.te_qc = "PASS_ASM_RESCUE|ANCHOR_PASS";
-        call.tsd_type = "NONE";
-        call.bp_source_counts = "split:1,clip:7,indel:0";
-        call.softclip_support_reads = 7;
-        call.split_sa_support_reads = 1;
-        call.indel_support_reads = 0;
-        call.split_like_support_reads = 1;
-        call.te_top1_name = "Gypsy:Gypsy-95";
-        call.te_top2_name = "ERV1:ERV1-5";
-        call.te_posterior_top2 = 0.20;
-        call.te_posterior_margin = 0.14;
-        call.te_confidence_prob = 0.91;
-
-        PipelineConfig config;
-        config.te_certain_posterior_margin_min = 0.20;
-        config.te_confidence_prob_uncertain_min = 0.35;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(d.force_te_uncertain);
-        assert(d.force_non_te);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_CLIP_DOMINANT_WEAK_STRUCTURAL") != std::string::npos);
-        assert(call.te_qc.find("TE_FORCE_NON_TE_CLIP_DOMINANT_LOW_MARGIN") != std::string::npos);
-        assert(call.te_confidence_prob <= 0.175);
-    }
-
-    {
-        FinalCall call;
-        call.te_qc = "PASS_ASM_RESCUE|ANCHOR_PASS";
-        call.tsd_type = "NONE";
-        call.bp_source_counts = "split:0,clip:6,indel:0";
-        call.softclip_support_reads = 6;
-        call.split_sa_support_reads = 0;
-        call.indel_support_reads = 0;
-        call.split_like_support_reads = 0;
-        call.support_low_mapq_reads = 3;
-        call.support_low_mapq_frac = 0.50;
-        call.te_confidence_prob = 0.88;
-
-        PipelineConfig config;
-        config.te_confidence_prob_uncertain_min = 0.35;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(d.force_te_uncertain);
-        assert(d.force_non_te);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_CLIP_DOMINANT_WEAK_STRUCTURAL") != std::string::npos);
-        assert(call.te_qc.find("TE_FORCE_NON_TE_CLIP_DOMINANT_LOW_MAPQ") != std::string::npos);
-        assert(call.te_confidence_prob <= 0.175);
-    }
-
-    {
-        FinalCall call;
-        call.te_qc = "PASS_CLASSIC|ANCHOR_PASS";
-        call.tsd_type = "DEL";
-        call.bp_source_counts = "split:4,clip:1,indel:2";
-        call.softclip_support_reads = 1;
-        call.split_sa_support_reads = 4;
-        call.indel_support_reads = 2;
-        call.split_like_support_reads = 6;
-        call.seq_closure_enabled = true;
-        call.seq_closure_pass = false;
-        call.seq_closure_qc = "SEQ_CLOSURE_FAIL_MISSING_SIDE";
-        call.te_confidence_prob = 0.91;
-
-        PipelineConfig config;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(d.force_te_uncertain);
-        assert(!d.force_non_te);
-        assert(call.te_qc.find("TE_FORCE_UNCERTAIN_SEQUENCE_CLOSURE_FAIL") != std::string::npos);
-    }
-
-    {
-        FinalCall call;
-        call.te_qc = "PASS_CLASSIC|ANCHOR_PASS";
-        call.tsd_type = "NONE";
-        call.bp_source_counts = "split:0,clip:5,indel:0";
-        call.softclip_support_reads = 5;
-        call.split_sa_support_reads = 0;
-        call.indel_support_reads = 0;
-        call.split_like_support_reads = 0;
-        call.seq_closure_enabled = true;
-        call.seq_closure_pass = false;
-        call.seq_closure_force_non_te = true;
-        call.seq_closure_qc = "SEQ_CLOSURE_FAIL_EMPTY_DOMINANT";
-        call.te_confidence_prob = 0.84;
-
-        PipelineConfig config;
-
-        const auto d = apply_te_evidence_gates(call, config);
-        assert(d.force_te_uncertain);
-        assert(d.force_non_te);
-        assert(call.te_qc.find("TE_FORCE_NON_TE_SEQUENCE_CLOSURE_FAIL") != std::string::npos);
-    }
-
-    {
-        ClusterTECall te_call;
-        te_call.te_name = "Gypsy:Gypsy-95";
-        te_call.fragment_count = 6;
-        te_call.vote_fraction = 0.62;
-        te_call.median_identity = 0.71;
-
-        AssemblyCall assembly;
-        assembly.qc_pass = true;
-        assembly.identity_est = 0.92;
-        assembly.consensus_len = 420;
-
-        ComponentCall component;
-        component.soft_clip_read_indices = {0, 1, 2, 3, 4, 5, 6, 7, 8};
-        component.split_sa_read_indices = {9, 10, 11};
-        component.breakpoint_candidates.push_back({"1", 1000, false, 0, 0, 0, "r0", 0, kCandidateSoftClip});
-        component.breakpoint_candidates.push_back({"1", 1002, false, 0, 0, 0, "r1", 9, kCandidateSplitSaSupplementary});
-
-        PipelineConfig config;
-        config.te_min_fragments_for_vote = 2;
-        config.te_vote_fraction_min = 0.40;
-        config.te_median_identity_min = 0.30;
-        config.te_mixed_min_non_softclip_reads = 4;
-        config.te_mixed_min_non_softclip_frac = 0.35;
-        config.te_mixed_clip_dominant_ratio = 2.0;
-
-        const auto d = evaluate_post_assembly_te_decision(
-            te_call,
-            assembly,
-            component,
-            config);
-        assert(d.pass);
-        assert(d.force_te_uncertain);
-        assert(d.qc == "PASS_INSERTION_TE_UNCERTAIN_CLIP_DOMINANT");
-    }
-
-    {
-        ClusterTECall te_call;
-        te_call.te_name = "Gypsy:Gypsy-95";
-        te_call.fragment_count = 6;
-        te_call.vote_fraction = 0.62;
-        te_call.median_identity = 0.71;
-
-        AssemblyCall assembly;
-        assembly.qc_pass = true;
-        assembly.identity_est = 0.92;
-        assembly.consensus_len = 420;
-
-        ComponentCall component;
-        component.soft_clip_read_indices = {0, 1, 2, 3, 4, 5};
-        component.split_sa_read_indices = {6, 7, 8, 9};
-        component.breakpoint_candidates.push_back({"1", 1000, false, 0, 0, 0, "r0", 0, kCandidateSoftClip});
-        component.breakpoint_candidates.push_back({"1", 1002, false, 0, 0, 0, "r1", 6, kCandidateSplitSaSupplementary});
-
-        PipelineConfig config;
-        config.te_min_fragments_for_vote = 2;
-        config.te_vote_fraction_min = 0.40;
-        config.te_median_identity_min = 0.30;
-        config.te_mixed_min_non_softclip_reads = 4;
-        config.te_mixed_min_non_softclip_frac = 0.35;
-        config.te_mixed_clip_dominant_ratio = 2.0;
-
-        const auto d = evaluate_post_assembly_te_decision(
-            te_call,
-            assembly,
-            component,
-            config);
-        assert(d.pass);
-        assert(!d.force_te_uncertain);
-        assert(d.qc == "PASS_CLASSIC");
-    }
-
-    {
-        TeOpenSetInput in;
-        in.te_gate_pass = true;
-        in.force_te_uncertain = true;
-        in.has_proxy_signal = true;
-        in.proxy_certain = true;
-        in.te_confidence_prob = 0.99;
-        TeOpenSetParams p;
-        const auto d = classify_te_open_set(in, p);
-        assert(d.status == "TE_UNCERTAIN");
-    }
-
-    {
         auto make_call = [](
                              int32_t pos,
                              const std::string& te_name,
                              int32_t support_reads,
-                             double te_confidence_prob,
-                             double te_posterior_margin,
-                             const std::string& te_status) {
+                             double cross_family_margin,
+                             int32_t gq) {
             FinalCall call;
             call.chrom = "1";
             call.tid = 0;
             call.pos = pos;
             call.te_name = te_name;
             call.support_reads = support_reads;
-            call.te_confidence_prob = te_confidence_prob;
-            call.te_posterior_margin = te_posterior_margin;
-            call.te_status = te_status;
-            call.confidence = "HIGH";
+            call.cross_family_margin = cross_family_margin;
+            call.gq = gq;
             return call;
         };
 
         PipelineResult result;
-        result.final_calls.push_back(make_call(1000, "ALU:Ya5", 8, 0.82, 0.20, "TE_UNCERTAIN"));
-        result.final_calls.push_back(make_call(1040, "L1:L1HS", 12, 0.91, 0.45, "TE_CERTAIN"));
+        result.final_calls.push_back(make_call(1000, "ALU:Ya5", 8, 0.20, 18));
+        result.final_calls.push_back(make_call(1040, "L1:L1HS", 12, 0.45, 27));
         finalize_final_calls(result);
         assert(result.final_calls.size() == 1);
         assert(result.final_calls.front().pos == 1040);
         assert(result.final_calls.front().te_name == "L1:L1HS");
-        assert(result.final_te_certain == 1);
-        assert(result.final_te_uncertain == 0);
+        assert(result.final_pass_calls == 1);
     }
 
     {
         auto make_call = [](
                              int32_t pos,
                              int32_t support_reads,
-                             double te_confidence_prob) {
+                             int32_t gq,
+                             double cross_family_margin) {
             FinalCall call;
             call.chrom = "1";
             call.tid = 0;
             call.pos = pos;
             call.te_name = "ALU:Ya5";
             call.support_reads = support_reads;
-            call.te_confidence_prob = te_confidence_prob;
-            call.te_status = "TE_CERTAIN";
-            call.confidence = "HIGH";
+            call.gq = gq;
+            call.cross_family_margin = cross_family_margin;
             return call;
         };
 
         PipelineResult result;
-        result.final_calls.push_back(make_call(1000, 5, 0.70));
-        result.final_calls.push_back(make_call(1080, 9, 0.92));
-        result.final_calls.push_back(make_call(1185, 7, 0.88));
+        result.final_calls.push_back(make_call(1000, 5, 12, 0.30));
+        result.final_calls.push_back(make_call(1080, 9, 20, 0.55));
+        result.final_calls.push_back(make_call(1185, 7, 16, 0.40));
         finalize_final_calls(result);
         assert(result.final_calls.size() == 2);
         assert(result.final_calls[0].pos == 1080);
         assert(result.final_calls[1].pos == 1185);
+        assert(result.final_pass_calls == 2);
     }
 
     {
@@ -907,6 +268,130 @@ int main() {
         assert(components.empty());
 
         bam_destroy1(record);
+    }
+
+    {
+        EventGenotypeInput in;
+        in.alt_struct_reads = 6;
+        in.ref_span_reads = 4;
+        in.min_depth = 3;
+        in.min_gq = 20;
+        in.error_rate = 0.02;
+
+        const auto d = genotype_event_from_alt_vs_ref(in);
+        assert(d.best_gt == "0/1");
+        assert(d.allele_fraction > 0.55 && d.allele_fraction < 0.65);
+        assert(d.gq >= 20);
+        assert(d.pass);
+    }
+
+    {
+        EventGenotypeInput in;
+        in.alt_struct_reads = 5;
+        in.ref_span_reads = 1;
+        in.min_depth = 3;
+        in.min_gq = 20;
+        in.error_rate = 0.02;
+
+        const auto d = genotype_event_from_alt_vs_ref(in);
+        assert(d.best_gt == "1/1");
+        assert(d.allele_fraction > 0.80);
+        assert(d.gq >= 20);
+        assert(d.pass);
+    }
+
+    {
+        EventGenotypeInput in;
+        in.alt_struct_reads = 0;
+        in.ref_span_reads = 8;
+        in.min_depth = 3;
+        in.min_gq = 20;
+        in.error_rate = 0.02;
+
+        const auto d = genotype_event_from_alt_vs_ref(in);
+        assert(d.best_gt == "0/0");
+        assert(!d.pass);
+    }
+
+    {
+        FinalBoundaryInput in;
+        in.left_ref_start = 100;
+        in.left_ref_end = 220;
+        in.right_ref_start = 211;
+        in.right_ref_end = 330;
+        in.tsd_min_len = 3;
+        in.tsd_max_len = 50;
+
+        const auto d = check_boundary_consistency(in);
+        assert(d.pass);
+        assert(d.boundary_type == "TSD");
+        assert(d.boundary_len == 9);
+        assert(d.qc == "PASS_BOUNDARY_TSD");
+    }
+
+    {
+        FinalBoundaryInput in;
+        in.left_ref_start = 100;
+        in.left_ref_end = 220;
+        in.right_ref_start = 220;
+        in.right_ref_end = 340;
+
+        const auto d = check_boundary_consistency(in);
+        assert(d.pass);
+        assert(d.boundary_type == "BLUNT");
+        assert(d.qc == "PASS_BOUNDARY_BLUNT");
+    }
+
+    {
+        FinalBoundaryInput in;
+        in.left_ref_start = 100;
+        in.left_ref_end = 220;
+        in.right_ref_start = 227;
+        in.right_ref_end = 340;
+
+        const auto d = check_boundary_consistency(in);
+        assert(d.pass);
+        assert(d.boundary_type == "SMALL_DEL");
+        assert(d.boundary_len == 7);
+        assert(d.qc == "PASS_BOUNDARY_SMALL_DEL");
+    }
+
+    {
+        FinalBoundaryInput in;
+        in.left_ref_start = 100;
+        in.left_ref_end = 220;
+        in.right_ref_start = 160;
+        in.right_ref_end = 340;
+        in.tsd_min_len = 3;
+        in.tsd_max_len = 50;
+
+        const auto d = check_boundary_consistency(in);
+        assert(!d.pass);
+        assert(d.qc == "REJECT_BOUNDARY_TSD_RANGE");
+    }
+
+    {
+        FinalTeAcceptanceInput in;
+        in.event_existence_pass = true;
+        in.event_closure_pass = true;
+        in.te_sequence_pass = true;
+        in.boundary_pass = true;
+
+        const auto d = evaluate_final_te_acceptance(in);
+        assert(d.pass);
+        assert(d.qc == "PASS_FINAL_TE_CALL");
+    }
+
+    {
+        FinalTeAcceptanceInput in;
+        in.event_existence_pass = true;
+        in.event_closure_pass = false;
+        in.te_sequence_pass = true;
+        in.boundary_pass = true;
+
+        const auto d = evaluate_final_te_acceptance(in);
+        assert(!d.pass);
+        assert(d.qc == "REJECT_EVENT_CLOSURE");
     }
 
     return 0;

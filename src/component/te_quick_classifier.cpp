@@ -19,6 +19,12 @@
 namespace placer {
 namespace {
 
+constexpr int32_t kInsertSequenceShortlistTopN = 16;
+constexpr int32_t kInsertSequenceMinLen = 80;
+constexpr double kInsertSequenceMinIdentity = 0.80;
+constexpr double kInsertSequenceMinQueryCoverage = 0.80;
+constexpr double kInsertSequenceMinCrossFamilyMargin = 0.10;
+
 struct TeEntry {
     std::string name;
     std::string sequence;
@@ -86,6 +92,13 @@ std::string upper_acgt(const std::string& s) {
     return out;
 }
 
+std::string upper_ascii(std::string s) {
+    for (char& c : s) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+
 char complement_base(char c) {
     switch (c) {
         case 'A': return 'T';
@@ -103,6 +116,221 @@ std::string reverse_complement(const std::string& s) {
         out.push_back(complement_base(*it));
     }
     return out;
+}
+
+struct TeNameParts {
+    std::string exact_name = "NA";
+    std::string family = "NA";
+    std::string family_key = "NA";
+    std::string subfamily = "NA";
+};
+
+TeNameParts parse_te_name_parts(const std::string& te_name) {
+    TeNameParts parts;
+    const std::string token = take_header_token(te_name);
+    if (token.empty()) {
+        return parts;
+    }
+    parts.exact_name = token;
+
+    std::string family;
+    const size_t hash = token.find('#');
+    if (hash != std::string::npos) {
+        const std::string left = token.substr(0, hash);
+        const std::string right = token.substr(hash + 1);
+        parts.subfamily = left.empty() ? token : left;
+        family = right.empty() ? parts.subfamily : right;
+
+        const size_t slash = family.rfind('/');
+        if (slash != std::string::npos && (slash + 1) < family.size()) {
+            family = family.substr(slash + 1);
+        }
+    } else {
+        const size_t colon = token.find(':');
+        if (colon != std::string::npos) {
+            family = token.substr(0, colon);
+            if ((colon + 1) < token.size()) {
+                parts.subfamily = token.substr(colon + 1);
+            } else {
+                parts.subfamily = token;
+            }
+        } else {
+            parts.subfamily = token;
+            family = token;
+        }
+    }
+
+    if (parts.subfamily.empty()) {
+        parts.subfamily = token;
+    }
+    parts.exact_name = parts.subfamily;
+    if (family.empty()) {
+        family = parts.subfamily;
+    }
+
+    const std::string family_key = upper_ascii(family);
+    if (family_key.rfind("ALU", 0) == 0) {
+        parts.exact_name = parts.subfamily;
+        parts.family = "ALU";
+        parts.family_key = "ALU";
+        return parts;
+    }
+    if (family_key.rfind("L1", 0) == 0) {
+        parts.exact_name = parts.subfamily;
+        parts.family = "L1";
+        parts.family_key = "L1";
+        return parts;
+    }
+    if (family_key.rfind("SVA", 0) == 0) {
+        parts.exact_name = parts.subfamily;
+        parts.family = "SVA";
+        parts.family_key = "SVA";
+        return parts;
+    }
+    if (family_key.rfind("HERV", 0) == 0) {
+        parts.exact_name = parts.subfamily;
+        parts.family = "HERV";
+        parts.family_key = "HERV";
+        return parts;
+    }
+
+    parts.family = family;
+    parts.family_key = family_key.empty() ? "NA" : family_key;
+    return parts;
+}
+
+struct LocalAlignmentCell {
+    int32_t score = 0;
+    int32_t matches = 0;
+    int32_t alignment_len = 0;
+    int32_t query_bases = 0;
+};
+
+struct LocalAlignmentSummary {
+    double identity = 0.0;
+    double query_coverage = 0.0;
+    double score = 0.0;
+};
+
+bool better_local_alignment_cell(
+    const LocalAlignmentCell& lhs,
+    const LocalAlignmentCell& rhs,
+    int32_t query_len) {
+    if (lhs.score != rhs.score) {
+        return lhs.score > rhs.score;
+    }
+
+    const double lhs_cov = query_len > 0
+        ? static_cast<double>(lhs.query_bases) / static_cast<double>(query_len)
+        : 0.0;
+    const double rhs_cov = query_len > 0
+        ? static_cast<double>(rhs.query_bases) / static_cast<double>(query_len)
+        : 0.0;
+    if (lhs_cov != rhs_cov) {
+        return lhs_cov > rhs_cov;
+    }
+
+    const double lhs_identity = lhs.alignment_len > 0
+        ? static_cast<double>(lhs.matches) / static_cast<double>(lhs.alignment_len)
+        : 0.0;
+    const double rhs_identity = rhs.alignment_len > 0
+        ? static_cast<double>(rhs.matches) / static_cast<double>(rhs.alignment_len)
+        : 0.0;
+    if (lhs_identity != rhs_identity) {
+        return lhs_identity > rhs_identity;
+    }
+
+    if (lhs.query_bases != rhs.query_bases) {
+        return lhs.query_bases > rhs.query_bases;
+    }
+    return lhs.alignment_len > rhs.alignment_len;
+}
+
+LocalAlignmentSummary local_alignment_summary(
+    const std::string& query,
+    const std::string& target) {
+    LocalAlignmentSummary summary;
+    const int32_t n = static_cast<int32_t>(query.size());
+    const int32_t m = static_cast<int32_t>(target.size());
+    if (n <= 0 || m <= 0) {
+        return summary;
+    }
+
+    constexpr int32_t kMatchScore = 2;
+    constexpr int32_t kMismatchPenalty = 2;
+    constexpr int32_t kGapPenalty = 2;
+
+    std::vector<LocalAlignmentCell> prev(static_cast<size_t>(m + 1));
+    std::vector<LocalAlignmentCell> curr(static_cast<size_t>(m + 1));
+    LocalAlignmentCell best;
+
+    for (int32_t i = 1; i <= n; ++i) {
+        curr[0] = LocalAlignmentCell{};
+        for (int32_t j = 1; j <= m; ++j) {
+            LocalAlignmentCell cell;
+
+            const LocalAlignmentCell& diag_prev = prev[static_cast<size_t>(j - 1)];
+            LocalAlignmentCell diag = diag_prev;
+            diag.score +=
+                (query[static_cast<size_t>(i - 1)] == target[static_cast<size_t>(j - 1)])
+                ? kMatchScore
+                : -kMismatchPenalty;
+            diag.alignment_len += 1;
+            diag.query_bases += 1;
+            if (query[static_cast<size_t>(i - 1)] == target[static_cast<size_t>(j - 1)]) {
+                diag.matches += 1;
+            }
+            if (diag.score > 0) {
+                cell = diag;
+            }
+
+            const LocalAlignmentCell& up_prev = prev[static_cast<size_t>(j)];
+            LocalAlignmentCell up = up_prev;
+            up.score -= kGapPenalty;
+            up.alignment_len += 1;
+            up.query_bases += 1;
+            if (up.score > 0 && better_local_alignment_cell(up, cell, n)) {
+                cell = up;
+            }
+
+            const LocalAlignmentCell& left_prev = curr[static_cast<size_t>(j - 1)];
+            LocalAlignmentCell left = left_prev;
+            left.score -= kGapPenalty;
+            left.alignment_len += 1;
+            if (left.score > 0 && better_local_alignment_cell(left, cell, n)) {
+                cell = left;
+            }
+
+            curr[static_cast<size_t>(j)] = cell;
+            if (better_local_alignment_cell(cell, best, n)) {
+                best = cell;
+            }
+        }
+        std::swap(prev, curr);
+        std::fill(curr.begin(), curr.end(), LocalAlignmentCell{});
+    }
+
+    if (best.alignment_len <= 0 || best.query_bases <= 0) {
+        return summary;
+    }
+    summary.identity = static_cast<double>(best.matches) /
+        static_cast<double>(best.alignment_len);
+    summary.query_coverage = static_cast<double>(best.query_bases) /
+        static_cast<double>(n);
+    summary.score = summary.identity * summary.query_coverage;
+    return summary;
+}
+
+bool better_local_alignment_summary(
+    const LocalAlignmentSummary& lhs,
+    const LocalAlignmentSummary& rhs) {
+    if (lhs.score != rhs.score) {
+        return lhs.score > rhs.score;
+    }
+    if (lhs.identity != rhs.identity) {
+        return lhs.identity > rhs.identity;
+    }
+    return lhs.query_coverage > rhs.query_coverage;
 }
 
 bool is_softclip_source(InsertionFragmentSource source) {
@@ -396,6 +624,34 @@ struct TEKmerQuickClassifierModule::Index {
     }
 };
 
+struct TEKmerQuickClassifierModule::AlignmentShortlistDb {
+    explicit AlignmentShortlistDb(int32_t kmer_size) : k(kmer_size) {}
+
+    int32_t k = 11;
+    std::vector<std::unordered_set<uint64_t>> te_kmers;
+
+    bool build_from_entries(const std::vector<TeEntry>& entries) {
+        te_kmers.clear();
+        te_kmers.resize(entries.size());
+
+        for (size_t i = 0; i < entries.size(); ++i) {
+            auto& kmers = te_kmers[i];
+            kmers.reserve(entries[i].sequence.size());
+
+            for_each_valid_kmer(entries[i].sequence, k, [&](int32_t /*start*/, uint64_t key) {
+                kmers.insert(key);
+            });
+
+            const std::string rc = reverse_complement(entries[i].sequence);
+            for_each_valid_kmer(rc, k, [&](int32_t /*start*/, uint64_t key) {
+                kmers.insert(key);
+            });
+        }
+
+        return !te_kmers.empty();
+    }
+};
+
 TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
     : config_(std::move(config)) {
     if (!config_.ins_fragment_hits_tsv_path.empty()) {
@@ -437,6 +693,12 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
         return;
     }
 
+    auto shortlist_db = std::make_shared<AlignmentShortlistDb>(
+        std::max(7, std::min(31, config_.te_kmer_size)));
+    if (shortlist_db->build_from_entries(entries)) {
+        alignment_shortlist_db_ = std::move(shortlist_db);
+    }
+
     auto best_primary = indices_.front();
     for (const auto& idx : indices_) {
         if (std::abs(idx->k - config_.te_kmer_size) < std::abs(best_primary->k - config_.te_kmer_size)) {
@@ -475,7 +737,7 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
     const double rescue_margin_max =
         std::clamp(config_.te_low_kmer_rescue_margin_max, 0.0, 1.0);
     const double support_gate =
-        std::clamp(config_.te_median_identity_min, 0.0, 1.0);
+        std::clamp(config_.te_low_kmer_support_trigger, 0.0, 1.0);
 
     std::ostringstream tsv_buffer;
 
@@ -576,9 +838,12 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
         hit.multik_support = best_score;
         hit.coverage = best_score;
         hit.kmer_support = best_score;
-        hit.te_name = (best_id >= 0 && best_id < static_cast<int32_t>(te_names_.size()))
-            ? te_names_[static_cast<size_t>(best_id)]
-            : std::string();
+        if (best_id >= 0 && best_id < static_cast<int32_t>(te_names_.size())) {
+            hit.te_name = parse_te_name_parts(
+                te_names_[static_cast<size_t>(best_id)]).exact_name;
+        } else {
+            hit.te_name.clear();
+        }
 
         const auto& count_source = (primary_total > 0) ? primary_counts : fallback_counts;
         hit.total_kmers = (primary_total > 0) ? primary_total : fallback_total;
@@ -646,7 +911,8 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
                 }
                 if (rescue_best_id >= 0 && rescue_best_identity >= rescue_identity_min) {
                     hit.rescue_used = true;
-                    hit.te_name = te_names_[static_cast<size_t>(rescue_best_id)];
+                    hit.te_name = parse_te_name_parts(
+                        te_names_[static_cast<size_t>(rescue_best_id)]).exact_name;
                     hit.kmer_support = std::max(hit.kmer_support, rescue_best_identity);
                     hit.coverage = hit.kmer_support;
                     if (hit.total_kmers > 0) {
@@ -683,119 +949,207 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
     return hits;
 }
 
-ClusterTECall TEKmerQuickClassifierModule::vote_cluster(
-    const std::vector<FragmentTEHit>& hits) const {
-    ClusterTECall call;
-
-    std::vector<const FragmentTEHit*> filtered;
-    filtered.reserve(hits.size());
-    for (const auto& h : hits) {
-        if (!h.te_name.empty()) {
-            filtered.push_back(&h);
-        }
+TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
+    const std::string& raw_insert_seq) const {
+    TEAlignmentEvidence evidence;
+    if (!is_enabled() || !alignment_shortlist_db_) {
+        evidence.qc_reason = "TE_LIBRARY_UNAVAILABLE";
+        return evidence;
     }
 
-    call.fragment_count = static_cast<int32_t>(filtered.size());
-    if (call.fragment_count <= 0) {
-        return call;
+    const std::string insert_seq = upper_acgt(raw_insert_seq);
+    if (insert_seq.empty()) {
+        evidence.qc_reason = "EMPTY_INSERT_SEQUENCE";
+        return evidence;
+    }
+    if (static_cast<int32_t>(insert_seq.size()) < kInsertSequenceMinLen) {
+        evidence.qc_reason = "INSERT_SEQ_TOO_SHORT";
+        return evidence;
     }
 
-    std::unordered_map<std::string, double> weighted_votes;
-    std::unordered_map<std::string, int32_t> raw_votes;
-    double total_weight = 0.0;
-
-    for (const auto* h : filtered) {
-        const double w = std::max(1e-6, std::clamp(h->kmer_support, 0.0, 1.0));
-        weighted_votes[h->te_name] += w;
-        raw_votes[h->te_name] += 1;
-        total_weight += w;
+    std::unordered_set<uint64_t> query_kmers;
+    query_kmers.reserve(insert_seq.size());
+    for_each_valid_kmer(insert_seq, alignment_shortlist_db_->k, [&](int32_t /*start*/, uint64_t key) {
+        query_kmers.insert(key);
+    });
+    if (query_kmers.empty()) {
+        evidence.qc_reason = "NO_TE_ALIGNMENT_SHORTLIST";
+        return evidence;
     }
 
-    std::string best_te;
-    std::string second_te;
-    double best_w = -1.0;
-    double second_w = -1.0;
-    int32_t best_raw = -1;
-    int32_t second_raw = -1;
-
-    for (const auto& kv : weighted_votes) {
-        const auto raw_it = raw_votes.find(kv.first);
-        const int32_t raw = (raw_it == raw_votes.end()) ? 0 : raw_it->second;
-        const bool better_than_best =
-            kv.second > best_w ||
-            (kv.second == best_w && raw > best_raw) ||
-            (kv.second == best_w && raw == best_raw && (best_te.empty() || kv.first < best_te));
-        if (better_than_best) {
-            second_te = best_te;
-            second_w = best_w;
-            second_raw = best_raw;
-            best_te = kv.first;
-            best_w = kv.second;
-            best_raw = raw;
+    std::vector<std::pair<int32_t, double>> ranked;
+    ranked.reserve(alignment_shortlist_db_->te_kmers.size());
+    for (size_t te_id = 0; te_id < alignment_shortlist_db_->te_kmers.size(); ++te_id) {
+        const auto& te_kmers = alignment_shortlist_db_->te_kmers[te_id];
+        if (te_kmers.empty()) {
             continue;
         }
 
-        const bool better_than_second =
-            kv.second > second_w ||
-            (kv.second == second_w && raw > second_raw) ||
-            (kv.second == second_w && raw == second_raw && (second_te.empty() || kv.first < second_te));
-        if (better_than_second) {
-            second_te = kv.first;
-            second_w = kv.second;
-            second_raw = raw;
-        }
-    }
-
-    call.top1_te_name = best_te;
-    call.top2_te_name = second_te;
-    if (total_weight > 0.0) {
-        call.posterior_top1 = std::clamp(best_w / total_weight, 0.0, 1.0);
-        call.posterior_top2 = std::clamp(std::max(0.0, second_w) / total_weight, 0.0, 1.0);
-    }
-    call.posterior_margin = std::max(0.0, call.posterior_top1 - call.posterior_top2);
-
-    if (call.fragment_count < config_.te_min_fragments_for_vote) {
-        return call;
-    }
-
-    call.te_name = best_te;
-    call.vote_fraction = call.posterior_top1;
-
-    std::vector<double> supports;
-    std::vector<double> multik_supports;
-    int32_t rescue_count = 0;
-    for (const auto* h : filtered) {
-        if (h->te_name == best_te) {
-            supports.push_back(h->kmer_support);
-            multik_supports.push_back(h->multik_support);
-            if (h->rescue_used) {
-                rescue_count += 1;
+        int32_t shared = 0;
+        for (uint64_t key : query_kmers) {
+            if (te_kmers.find(key) != te_kmers.end()) {
+                shared += 1;
             }
         }
+        if (shared <= 0) {
+            continue;
+        }
+
+        const double support =
+            static_cast<double>(shared) /
+            static_cast<double>(query_kmers.size());
+        ranked.push_back({static_cast<int32_t>(te_id), support});
     }
-    std::sort(supports.begin(), supports.end());
-    std::sort(multik_supports.begin(), multik_supports.end());
-    if (!supports.empty()) {
-        const size_t mid = supports.size() / 2;
-        call.median_identity = (supports.size() % 2 == 1)
-            ? supports[mid]
-            : 0.5 * (supports[mid - 1] + supports[mid]);
-    }
-    if (!multik_supports.empty()) {
-        const size_t mid = multik_supports.size() / 2;
-        call.multik_support = (multik_supports.size() % 2 == 1)
-            ? multik_supports[mid]
-            : 0.5 * (multik_supports[mid - 1] + multik_supports[mid]);
-        call.rescue_frac =
-            static_cast<double>(rescue_count) /
-            static_cast<double>(multik_supports.size());
+    std::sort(ranked.begin(), ranked.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.second != rhs.second) {
+            return lhs.second > rhs.second;
+        }
+        return lhs.first < rhs.first;
+    });
+    if (ranked.empty()) {
+        evidence.qc_reason = "NO_TE_ALIGNMENT_SHORTLIST";
+        return evidence;
     }
 
-    call.passed =
-        call.vote_fraction >= config_.te_vote_fraction_min &&
-        call.median_identity >= config_.te_median_identity_min;
+    std::vector<std::pair<int32_t, double>> shortlisted;
+    shortlisted.reserve(std::min<int32_t>(
+        kInsertSequenceShortlistTopN,
+        static_cast<int32_t>(ranked.size())));
+    std::unordered_map<std::string, int32_t> per_family_counts;
+    for (const auto& row : ranked) {
+        if (row.first < 0 || row.first >= static_cast<int32_t>(te_names_.size())) {
+            continue;
+        }
+        const TeNameParts parts = parse_te_name_parts(
+            te_names_[static_cast<size_t>(row.first)]);
+        int32_t& count = per_family_counts[parts.family_key];
+        if (count >= 2) {
+            continue;
+        }
+        shortlisted.push_back(row);
+        count += 1;
+        if (static_cast<int32_t>(shortlisted.size()) >= kInsertSequenceShortlistTopN) {
+            break;
+        }
+    }
+    if (!shortlisted.empty()) {
+        ranked.swap(shortlisted);
+    }
 
-    return call;
+    struct BestAlignmentHit {
+        std::string te_name;
+        TeNameParts name_parts;
+        LocalAlignmentSummary alignment;
+    };
+    struct FamilyBestScore {
+        std::string family = "NA";
+        double score = 0.0;
+    };
+
+    BestAlignmentHit best_hit;
+    bool have_best_hit = false;
+    std::unordered_map<std::string, FamilyBestScore> best_family_scores;
+    best_family_scores.reserve(ranked.size());
+
+    for (const auto& row : ranked) {
+        const int32_t te_id = row.first;
+        if (te_id < 0 || te_id >= static_cast<int32_t>(te_sequences_.size()) ||
+            te_id >= static_cast<int32_t>(te_names_.size())) {
+            continue;
+        }
+
+        const std::string& te_seq = te_sequences_[static_cast<size_t>(te_id)];
+        if (te_seq.empty()) {
+            continue;
+        }
+
+        const LocalAlignmentSummary forward = local_alignment_summary(insert_seq, te_seq);
+        const LocalAlignmentSummary reverse = local_alignment_summary(
+            insert_seq,
+            reverse_complement(te_seq));
+        const LocalAlignmentSummary alignment = better_local_alignment_summary(reverse, forward)
+            ? reverse
+            : forward;
+        if (alignment.score <= 0.0) {
+            continue;
+        }
+
+        const TeNameParts name_parts = parse_te_name_parts(
+            te_names_[static_cast<size_t>(te_id)]);
+
+        const auto better_hit = [&](const BestAlignmentHit& lhs, const BestAlignmentHit& rhs) {
+            if (lhs.alignment.score != rhs.alignment.score) {
+                return lhs.alignment.score > rhs.alignment.score;
+            }
+            if (lhs.alignment.identity != rhs.alignment.identity) {
+                return lhs.alignment.identity > rhs.alignment.identity;
+            }
+            if (lhs.alignment.query_coverage != rhs.alignment.query_coverage) {
+                return lhs.alignment.query_coverage > rhs.alignment.query_coverage;
+            }
+            return lhs.te_name < rhs.te_name;
+        };
+
+        BestAlignmentHit hit;
+        hit.name_parts = name_parts;
+        hit.te_name = name_parts.exact_name;
+        hit.alignment = alignment;
+        if (!have_best_hit || better_hit(hit, best_hit)) {
+            best_hit = hit;
+            have_best_hit = true;
+        }
+
+        auto family_it = best_family_scores.find(name_parts.family_key);
+        if (family_it == best_family_scores.end() ||
+            alignment.score > family_it->second.score) {
+            FamilyBestScore family_best;
+            family_best.family = name_parts.family;
+            family_best.score = alignment.score;
+            best_family_scores[name_parts.family_key] = family_best;
+        }
+    }
+
+    if (!have_best_hit) {
+        evidence.qc_reason = "NO_TE_ALIGNMENT_MATCH";
+        return evidence;
+    }
+
+    evidence.best_family = best_hit.name_parts.family;
+    evidence.best_subfamily = best_hit.name_parts.subfamily;
+    evidence.best_identity = best_hit.alignment.identity;
+    evidence.best_query_coverage = best_hit.alignment.query_coverage;
+    evidence.best_score = best_hit.alignment.score;
+
+    const std::string best_family_key = best_hit.name_parts.family_key;
+    for (const auto& kv : best_family_scores) {
+        if (kv.first == best_family_key) {
+            continue;
+        }
+        if (kv.second.score > evidence.second_score ||
+            (kv.second.score == evidence.second_score &&
+             (evidence.second_family == "NA" || kv.second.family < evidence.second_family))) {
+            evidence.second_family = kv.second.family;
+            evidence.second_score = kv.second.score;
+        }
+    }
+    evidence.cross_family_margin = std::max(0.0, evidence.best_score - evidence.second_score);
+
+    if (evidence.best_identity + 1e-9 < kInsertSequenceMinIdentity) {
+        evidence.qc_reason = "TE_ALIGNMENT_LOW_IDENTITY";
+        return evidence;
+    }
+    if (evidence.best_query_coverage + 1e-9 < kInsertSequenceMinQueryCoverage) {
+        evidence.qc_reason = "TE_ALIGNMENT_LOW_QUERY_COVERAGE";
+        return evidence;
+    }
+    if (evidence.cross_family_margin + 1e-9 < kInsertSequenceMinCrossFamilyMargin) {
+        evidence.qc_reason = "TE_ALIGNMENT_CROSS_FAMILY_AMBIGUOUS";
+        return evidence;
+    }
+
+    evidence.pass = true;
+    evidence.qc_reason = "PASS_INSERT_TE_ALIGNMENT";
+    return evidence;
 }
 
 }  // namespace placer
