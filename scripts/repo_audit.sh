@@ -47,7 +47,7 @@ for path in tracked_paths:
 
 text_like_suffixes = {
     ".md", ".txt", ".sh", ".py", ".cpp", ".c", ".h", ".hpp",
-    ".cmake", ".yml", ".yaml", ".toml", ".json",
+    ".cmake", ".yml", ".yaml", ".toml", ".json", ".slurm",
 }
 text_like_names = {"CMakeLists.txt", ".gitignore"}
 abs_pattern = re.compile(r"(/Users/|/mnt/|/home/|[A-Za-z]:\\\\)")
@@ -60,6 +60,8 @@ for path in tracked_paths:
     except (UnicodeDecodeError, FileNotFoundError):
         continue
     for lineno, line in enumerate(text.splitlines(), start=1):
+        if path == Path("scripts/repo_audit.sh") and line.strip().startswith("abs_pattern = re.compile("):
+            continue
         if abs_pattern.search(line):
             absolute_path_hits.append(f"{path}:{lineno}:{line.strip()}")
 

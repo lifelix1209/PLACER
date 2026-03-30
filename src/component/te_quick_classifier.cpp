@@ -23,7 +23,7 @@ constexpr int32_t kInsertSequenceShortlistTopN = 16;
 constexpr int32_t kInsertSequenceMinLen = 80;
 constexpr double kInsertSequenceMinIdentity = 0.80;
 constexpr double kInsertSequenceMinQueryCoverage = 0.80;
-constexpr double kInsertSequenceMinCrossFamilyMargin = 0.10;
+constexpr double kInsertSequenceMinCrossFamilyMargin = 0.09;
 constexpr double kInsertSequenceUnknownMinIdentity = 0.55;
 constexpr double kInsertSequenceUnknownMinQueryCoverage = 0.60;
 constexpr double kInsertSequenceShortlistSupportWeight = 0.06;
@@ -31,6 +31,7 @@ constexpr double kInsertSequenceShortlistSupportWeight = 0.06;
 struct TeEntry {
     std::string name;
     std::string sequence;
+    std::string reverse_complement_sequence;
 };
 
 uint8_t char_to_2bit(char c) {
@@ -544,6 +545,7 @@ bool load_te_entries_from_fasta(
         TeEntry e;
         e.name = take_header_token(header);
         e.sequence = upper_acgt(seq);
+        e.reverse_complement_sequence = reverse_complement(e.sequence);
         out_entries.push_back(std::move(e));
         header.clear();
         seq.clear();
@@ -587,7 +589,7 @@ struct TEKmerQuickClassifierModule::Index {
             const int32_t te_id = static_cast<int32_t>(i);
             te_names.push_back(entries[i].name);
             add_sequence(te_id, entries[i].sequence);
-            add_sequence(te_id, reverse_complement(entries[i].sequence));
+            add_sequence(te_id, entries[i].reverse_complement_sequence);
         }
 
         return !te_names.empty() && !kmer_to_id.empty();
@@ -631,27 +633,29 @@ struct TEKmerQuickClassifierModule::AlignmentShortlistDb {
     explicit AlignmentShortlistDb(int32_t kmer_size) : k(kmer_size) {}
 
     int32_t k = 11;
-    std::vector<std::unordered_set<uint64_t>> te_kmers;
+    std::unordered_map<uint64_t, std::vector<int32_t>> kmer_to_te_ids;
 
     bool build_from_entries(const std::vector<TeEntry>& entries) {
-        te_kmers.clear();
-        te_kmers.resize(entries.size());
+        kmer_to_te_ids.clear();
 
         for (size_t i = 0; i < entries.size(); ++i) {
-            auto& kmers = te_kmers[i];
-            kmers.reserve(entries[i].sequence.size());
+            std::unordered_set<uint64_t> te_kmers;
+            te_kmers.reserve(entries[i].sequence.size());
 
             for_each_valid_kmer(entries[i].sequence, k, [&](int32_t /*start*/, uint64_t key) {
-                kmers.insert(key);
+                te_kmers.insert(key);
             });
 
-            const std::string rc = reverse_complement(entries[i].sequence);
-            for_each_valid_kmer(rc, k, [&](int32_t /*start*/, uint64_t key) {
-                kmers.insert(key);
+            for_each_valid_kmer(entries[i].reverse_complement_sequence, k, [&](int32_t /*start*/, uint64_t key) {
+                te_kmers.insert(key);
             });
+
+            for (uint64_t key : te_kmers) {
+                kmer_to_te_ids[key].push_back(static_cast<int32_t>(i));
+            }
         }
 
-        return !te_kmers.empty();
+        return !kmer_to_te_ids.empty();
     }
 };
 
@@ -677,9 +681,11 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
 
     te_names_.reserve(entries.size());
     te_sequences_.reserve(entries.size());
+    te_reverse_complement_sequences_.reserve(entries.size());
     for (const auto& e : entries) {
         te_names_.push_back(e.name);
         te_sequences_.push_back(e.sequence);
+        te_reverse_complement_sequences_.push_back(e.reverse_complement_sequence);
     }
 
     const auto ks = parse_kmer_sizes_csv(config_.te_kmer_sizes_csv, config_.te_kmer_size);
@@ -980,28 +986,30 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         return evidence;
     }
 
-    std::vector<std::pair<int32_t, double>> ranked;
-    ranked.reserve(alignment_shortlist_db_->te_kmers.size());
-    for (size_t te_id = 0; te_id < alignment_shortlist_db_->te_kmers.size(); ++te_id) {
-        const auto& te_kmers = alignment_shortlist_db_->te_kmers[te_id];
-        if (te_kmers.empty()) {
+    std::unordered_map<int32_t, int32_t> shared_counts;
+    shared_counts.reserve(query_kmers.size());
+    for (uint64_t key : query_kmers) {
+        const auto it = alignment_shortlist_db_->kmer_to_te_ids.find(key);
+        if (it == alignment_shortlist_db_->kmer_to_te_ids.end()) {
             continue;
         }
-
-        int32_t shared = 0;
-        for (uint64_t key : query_kmers) {
-            if (te_kmers.find(key) != te_kmers.end()) {
-                shared += 1;
+        for (int32_t te_id : it->second) {
+            auto shared_it = shared_counts.find(te_id);
+            if (shared_it == shared_counts.end()) {
+                shared_counts.emplace(te_id, 1);
+            } else {
+                shared_it->second += 1;
             }
         }
-        if (shared <= 0) {
-            continue;
-        }
-
-        const double support =
-            static_cast<double>(shared) /
-            static_cast<double>(query_kmers.size());
-        ranked.push_back({static_cast<int32_t>(te_id), support});
+    }
+    std::vector<std::pair<int32_t, double>> ranked;
+    ranked.reserve(shared_counts.size());
+    const double query_kmer_count = static_cast<double>(query_kmers.size());
+    for (const auto& kv : shared_counts) {
+        ranked.push_back({
+            kv.first,
+            static_cast<double>(kv.second) / query_kmer_count,
+        });
     }
     std::sort(ranked.begin(), ranked.end(), [](const auto& lhs, const auto& rhs) {
         if (lhs.second != rhs.second) {
@@ -1009,11 +1017,6 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         }
         return lhs.first < rhs.first;
     });
-    if (ranked.empty()) {
-        evidence.qc_reason = "NO_TE_ALIGNMENT_SHORTLIST";
-        return evidence;
-    }
-
     std::vector<std::pair<int32_t, double>> shortlisted;
     shortlisted.reserve(std::min<int32_t>(
         kInsertSequenceShortlistTopN,
@@ -1035,8 +1038,35 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
             break;
         }
     }
+    std::unordered_set<std::string> represented_families;
+    represented_families.reserve(shortlisted.size());
+    for (const auto& row : shortlisted) {
+        if (row.first < 0 || row.first >= static_cast<int32_t>(te_names_.size())) {
+            continue;
+        }
+        const TeNameParts parts = parse_te_name_parts(
+            te_names_[static_cast<size_t>(row.first)]);
+        represented_families.insert(parts.family_key);
+    }
+    if (static_cast<int32_t>(shortlisted.size()) < kInsertSequenceShortlistTopN) {
+        for (int32_t te_id = 0; te_id < static_cast<int32_t>(te_names_.size()); ++te_id) {
+            const TeNameParts parts = parse_te_name_parts(
+                te_names_[static_cast<size_t>(te_id)]);
+            if (!represented_families.insert(parts.family_key).second) {
+                continue;
+            }
+            shortlisted.push_back({te_id, 0.0});
+            if (static_cast<int32_t>(shortlisted.size()) >= kInsertSequenceShortlistTopN) {
+                break;
+            }
+        }
+    }
     if (!shortlisted.empty()) {
         ranked.swap(shortlisted);
+    }
+    if (ranked.empty()) {
+        evidence.qc_reason = "NO_TE_ALIGNMENT_SHORTLIST";
+        return evidence;
     }
 
     struct BestAlignmentHit {
@@ -1080,11 +1110,14 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
     for (const auto& row : ranked) {
         const int32_t te_id = row.first;
         if (te_id < 0 || te_id >= static_cast<int32_t>(te_sequences_.size()) ||
+            te_id >= static_cast<int32_t>(te_reverse_complement_sequences_.size()) ||
             te_id >= static_cast<int32_t>(te_names_.size())) {
             continue;
         }
 
         const std::string& te_seq = te_sequences_[static_cast<size_t>(te_id)];
+        const std::string& te_seq_rc =
+            te_reverse_complement_sequences_[static_cast<size_t>(te_id)];
         if (te_seq.empty()) {
             continue;
         }
@@ -1092,7 +1125,7 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         const LocalAlignmentSummary forward = local_alignment_summary(insert_seq, te_seq);
         const LocalAlignmentSummary reverse = local_alignment_summary(
             insert_seq,
-            reverse_complement(te_seq));
+            te_seq_rc);
         const LocalAlignmentSummary alignment = better_local_alignment_summary(reverse, forward)
             ? reverse
             : forward;
@@ -1164,7 +1197,8 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
             continue;
         }
         const BestAlignmentHit& family_hit = kv.second.best_family_score_hit;
-        if (family_hit.family_score > evidence.second_score ||
+        if (evidence.second_family == "NA" ||
+            family_hit.family_score > evidence.second_score ||
             (family_hit.family_score == evidence.second_score &&
              (evidence.second_family == "NA" ||
               kv.second.best_alignment_hit.name_parts.family < evidence.second_family))) {

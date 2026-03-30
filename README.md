@@ -1,6 +1,6 @@
 # PLACER
 
-Current release: `0.0.1`
+Current release: `0.0.3`
 
 PLACER detects non-reference transposable element (TE) insertions from long-read BAM alignments (ONT/PacBio). The current pipeline includes evidence scoring, abPOA-only local assembly, and likelihood-based genotyping.
 
@@ -33,13 +33,14 @@ cmake --build build -j
 (cd build && ctest --output-on-failure)
 ```
 
-Current CTest includes `test_decision_policy` (runtime decision matrix checks).
+Current CTest covers the C++ pipeline units plus Python regression tests for shard merging and random-truth evaluation.
 
 ## Repository Hygiene
 
 This repository is intended to publish source code only.
 
 - Local outputs such as `build/`, `placer_out/`, shard outputs, bootstrap outputs, and assistant notes are ignored by `.gitignore`.
+- `test_data/` is reserved for small reproducible fixtures. Large local references and TE libraries should stay outside the tracked set and are ignored when kept under their current local filenames.
 - Keep real BAM/VCF/IGV screenshots and validation exports outside the tracked tree.
 - Before pushing to GitHub, run:
 
@@ -52,7 +53,7 @@ The audit script fails if tracked files include large binaries, data-like output
 ## Run
 
 ```bash
-./build/placer <input.bam> <ref.fa> [te.fa]
+./build/placer <input.bam> <ref.fa> <te.fa>
 ```
 
 Default output:
@@ -64,7 +65,7 @@ Optional debug outputs (off by default to reduce I/O on large runs):
 ```bash
 PLACER_INS_FRAGMENTS_FASTA_PATH=ins_fragments.fasta \
 PLACER_INS_FRAGMENT_HITS_TSV_PATH=ins_fragment_hits.tsv \
-./build/placer <input.bam> <ref.fa> [te.fa]
+./build/placer <input.bam> <ref.fa> <te.fa>
 ```
 
 `scientific.txt` now contains only final PASS TE insertion calls. The row schema is:
@@ -111,6 +112,42 @@ PLACER_PARALLEL_WORKERS=8 \
 PLACER_PARALLEL_QUEUE_MAX_TASKS=64 \
 ./build/placer <input.bam> <ref.fa> <te.fa>
 ```
+
+## Random Truth Evaluation
+
+Run a deterministic local cohort evaluation against a truth table:
+
+```bash
+python3 scripts/random_truth_interval_eval.py \
+  --ground-truth <truth.tsv> \
+  --bam <input.bam> \
+  --ref <ref.fa> \
+  --te <te.fa> \
+  --placer ./build/placer \
+  --sample-size 10 \
+  --seed 20260330 \
+  --threads 1 \
+  --workers 1 \
+  --outdir placer_out/random_truth_eval_serial
+```
+
+Replay the same sampled cohort in parallel:
+
+```bash
+python3 scripts/random_truth_interval_eval.py \
+  --ground-truth <truth.tsv> \
+  --bam <input.bam> \
+  --ref <ref.fa> \
+  --te <te.fa> \
+  --placer ./build/placer \
+  --sampled-truth-tsv placer_out/random_truth_eval_serial/sampled_truth.tsv \
+  --seed 20260330 \
+  --threads 1 \
+  --workers 4 \
+  --outdir placer_out/random_truth_eval_parallel
+```
+
+`evaluation.tsv` records per-sample detection calls, timing fields, and parsed joint-decision diagnostics from `run.log`.
 
 ## Tuning
 

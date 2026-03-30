@@ -78,12 +78,15 @@ def write_scientific(path: Path, summary, rows, header=None):
 
 
 class RunShardedPlacerTest(unittest.TestCase):
-    def test_parse_scientific_rejects_legacy_schema(self):
+    def test_parse_scientific_rejects_unexpected_schema(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "legacy.scientific.txt"
-            legacy_header = [col for col in MODULE.EXPECTED_SCIENTIFIC_HEADER if col != "cross_family_margin"]
-            legacy_header.insert(18, "te_post_margin")
-            write_scientific(path, make_summary(), [make_row()], header=legacy_header)
+            path = Path(tmpdir) / "unexpected.scientific.txt"
+            malformed_header = [
+                col for col in MODULE.EXPECTED_SCIENTIFIC_HEADER
+                if col != "cross_family_margin"
+            ]
+            malformed_header.insert(18, "unexpected_margin")
+            write_scientific(path, make_summary(), [make_row()], header=malformed_header)
 
             with self.assertRaisesRegex(RuntimeError, "unexpected scientific.txt schema"):
                 MODULE.parse_scientific(path)

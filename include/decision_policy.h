@@ -6,6 +6,9 @@
 
 namespace placer {
 
+struct EventSegmentation;
+struct TEAlignmentEvidence;
+
 struct EventGenotypeInput {
     int32_t alt_struct_reads = 0;
     int32_t ref_span_reads = 0;
@@ -18,6 +21,8 @@ struct EventGenotypeDecision {
     std::string best_gt = "./.";
     double allele_fraction = 0.0;
     int32_t gq = 0;
+    int32_t depth = 0;
+    double best_nonref_minus_ref_ll = 0.0;
     bool pass = false;
 };
 
@@ -42,6 +47,89 @@ struct FinalBoundaryDecision {
 
 FinalBoundaryDecision check_boundary_consistency(
     const FinalBoundaryInput& input);
+
+enum class FinalHypothesisKind : uint8_t {
+    kReference = 0,
+    kInsertionNonTe = 1,
+    kTeUnknown = 2,
+    kTeResolved = 3
+};
+
+struct EventExistenceEvidence {
+    std::string best_gt = "./.";
+    double af = 0.0;
+    int32_t gq = 0;
+    int32_t alt_struct_reads = 0;
+    int32_t ref_span_reads = 0;
+    int32_t depth = 0;
+    double best_nonref_minus_ref_ll = 0.0;
+    double score = -3.0;
+};
+
+struct EventSegmentationEvidence {
+    bool has_consensus = false;
+    bool has_left_flank = false;
+    bool has_right_flank = false;
+    bool has_insert_seq = false;
+    bool pair_valid = false;
+    int32_t left_align_len = 0;
+    int32_t right_align_len = 0;
+    double left_identity = 0.0;
+    double right_identity = 0.0;
+    int32_t insert_len = 0;
+    double score = -3.0;
+    std::string qc = "NO_EVENT_SEGMENTATION";
+};
+
+struct BoundaryEvidence {
+    bool geometry_defined = false;
+    bool canonical_pass = false;
+    bool evidence_consistent = false;
+    std::string boundary_type = "REJECT";
+    int32_t boundary_len = 0;
+    double score = -3.0;
+    std::string qc = "REJECT_BOUNDARY_UNSET";
+};
+
+struct JointHypothesisScore {
+    FinalHypothesisKind kind = FinalHypothesisKind::kReference;
+    double total = -1e9;
+    double existence = 0.0;
+    double segmentation = 0.0;
+    double te = 0.0;
+    double boundary = 0.0;
+    bool hard_veto = false;
+    std::string reason;
+};
+
+struct JointDecisionResult {
+    JointHypothesisScore best;
+    JointHypothesisScore runner_up;
+    bool emit_te_call = false;
+    bool emit_unknown_te = false;
+    std::string final_qc = "REJECT_EVENT_EXISTENCE";
+};
+
+EventExistenceEvidence build_event_existence_evidence(
+    const EventGenotypeInput& input);
+
+JointDecisionResult evaluate_joint_hypotheses(
+    const EventExistenceEvidence& existence,
+    const EventSegmentationEvidence& segmentation,
+    const TEAlignmentEvidence& te_alignment,
+    const BoundaryEvidence& boundary);
+
+bool should_emit_te_call(
+    const JointHypothesisScore& best_te,
+    const JointHypothesisScore& best_non_te);
+
+EventSegmentationEvidence analyze_event_segmentation_for_test(
+    bool has_consensus,
+    const EventSegmentation& segmentation);
+
+BoundaryEvidence evaluate_boundary_evidence(
+    const FinalBoundaryInput& input,
+    int32_t breakpoint_envelope_width);
 
 struct FinalTeAcceptanceInput {
     bool event_existence_pass = false;

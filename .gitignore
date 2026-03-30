@@ -36,6 +36,12 @@ pass1_bootstrap_consensus.fasta
 pass1_bootstrap_calls.tsv
 bootstrap_pass2/
 
+# Local large datasets (keep small test fixtures in test_data/ tracked)
+test_data/Astatotilapia_calliptera.fAstCal1.3.dna.toplevel.fa
+test_data/Astatotilapia_calliptera.fAstCal1.3.dna.toplevel.fa.fai
+test_data/MWCichlidTE-3.2.splitted.namefixed_renamed_all_all.fa
+test_data/MWCichlidTE-3.2.splitted.namefixed_renamed_all_all.fa.fai
+
 # Python cache
 __pycache__/
 *.pyc
@@ -59,3 +65,14 @@ CLAUDE.md
 *.private.md
 *.local.md
 scripts/rebuild_igv_validation_bams.py
+
+# Local analysis / assistant workspace
+.understand-anything/
+Testing/
+build-debug/
+docs/superpowers/
+
+# Local large evaluation datasets
+test_data/final_merged_Yohann_D23.bam
+test_data/final_merged_Yohann_D23.bam.bai
+test_data/Yohann_D23.table.txt

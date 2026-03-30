@@ -14,6 +14,7 @@
 #include <queue>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -236,6 +237,20 @@ int bool_as_int(bool value) {
     return value ? 1 : 0;
 }
 
+const char* final_hypothesis_kind_name(FinalHypothesisKind kind) {
+    switch (kind) {
+        case FinalHypothesisKind::kReference:
+            return "REFERENCE";
+        case FinalHypothesisKind::kInsertionNonTe:
+            return "NON_TE_INSERTION";
+        case FinalHypothesisKind::kTeUnknown:
+            return "TE_UNKNOWN";
+        case FinalHypothesisKind::kTeResolved:
+            return "TE_RESOLVED";
+    }
+    return "UNKNOWN";
+}
+
 int32_t evidence_specificity_rank(EvidenceKind kind) {
     switch (kind) {
         case EvidenceKind::kIndel:
@@ -288,9 +303,6 @@ bool better_read_window_assignment_score(
 bool better_event_flank_placement(
     const EventFlankPlacement& lhs,
     const EventFlankPlacement& rhs) {
-    if (lhs.align_len != rhs.align_len) {
-        return lhs.align_len > rhs.align_len;
-    }
     if (lhs.identity != rhs.identity) {
         return lhs.identity > rhs.identity;
     }
@@ -299,6 +311,9 @@ bool better_event_flank_placement(
     }
     if (lhs.endpoint_offset != rhs.endpoint_offset) {
         return lhs.endpoint_offset < rhs.endpoint_offset;
+    }
+    if (lhs.align_len != rhs.align_len) {
+        return lhs.align_len > rhs.align_len;
     }
     if (lhs.ref_start != rhs.ref_start) {
         return lhs.ref_start < rhs.ref_start;
@@ -454,63 +469,9 @@ std::string collect_aligned_query_bases_before(
     if (query_limit <= 0 || max_bases <= 0) {
         return {};
     }
-
-    const uint32_t* cigar = read.cigar();
-    const int32_t n_cigar = read.n_cigar();
-    if (!cigar || n_cigar <= 0) {
-        return {};
-    }
-
-    struct QueryMatchSpan {
-        int32_t start = 0;
-        int32_t end = 0;
-    };
-    std::vector<QueryMatchSpan> spans;
-    spans.reserve(static_cast<size_t>(n_cigar));
-
-    int32_t query_pos = 0;
-    for (int32_t ci = 0; ci < n_cigar; ++ci) {
-        const int op = bam_cigar_op(cigar[ci]);
-        const int32_t len = static_cast<int32_t>(bam_cigar_oplen(cigar[ci]));
-        if (len <= 0) {
-            continue;
-        }
-        if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
-            spans.push_back({query_pos, query_pos + len});
-            query_pos += len;
-            continue;
-        }
-        if ((bam_cigar_type(op) & 1) != 0) {
-            query_pos += len;
-        }
-    }
-
-    std::string out;
-    out.reserve(static_cast<size_t>(max_bases));
-    int32_t remaining = max_bases;
-    for (auto it = spans.rbegin(); it != spans.rend() && remaining > 0; ++it) {
-        if (it->start >= query_limit) {
-            continue;
-        }
-        const int32_t take_end = std::min(it->end, query_limit);
-        const int32_t available = take_end - it->start;
-        if (available <= 0) {
-            continue;
-        }
-        const int32_t take_len = std::min(remaining, available);
-        const int32_t take_start = take_end - take_len;
-        const std::string chunk = upper_acgt(read.decode_subsequence(take_start, take_len));
-        if (static_cast<int32_t>(chunk.size()) != take_len) {
-            return {};
-        }
-        out.insert(0, chunk);
-        remaining -= take_len;
-    }
-
-    if (remaining > 0) {
-        return {};
-    }
-    return out;
+    const int32_t take_start = std::max(0, query_limit - max_bases);
+    const int32_t take_len = query_limit - take_start;
+    return upper_acgt(read.decode_subsequence(take_start, take_len));
 }
 
 std::string collect_aligned_query_bases_after(
@@ -520,51 +481,7 @@ std::string collect_aligned_query_bases_after(
     if (query_start < 0 || max_bases <= 0) {
         return {};
     }
-
-    const uint32_t* cigar = read.cigar();
-    const int32_t n_cigar = read.n_cigar();
-    if (!cigar || n_cigar <= 0) {
-        return {};
-    }
-
-    std::string out;
-    out.reserve(static_cast<size_t>(max_bases));
-    int32_t remaining = max_bases;
-    int32_t query_pos = 0;
-
-    for (int32_t ci = 0; ci < n_cigar && remaining > 0; ++ci) {
-        const int op = bam_cigar_op(cigar[ci]);
-        const int32_t len = static_cast<int32_t>(bam_cigar_oplen(cigar[ci]));
-        if (len <= 0) {
-            continue;
-        }
-
-        if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
-            const int32_t span_start = query_pos;
-            const int32_t span_end = query_pos + len;
-            if (span_end > query_start) {
-                const int32_t take_start = std::max(span_start, query_start);
-                const int32_t take_len = std::min(remaining, span_end - take_start);
-                const std::string chunk = upper_acgt(read.decode_subsequence(take_start, take_len));
-                if (static_cast<int32_t>(chunk.size()) != take_len) {
-                    return {};
-                }
-                out += chunk;
-                remaining -= take_len;
-            }
-            query_pos = span_end;
-            continue;
-        }
-
-        if ((bam_cigar_type(op) & 1) != 0) {
-            query_pos += len;
-        }
-    }
-
-    if (remaining > 0) {
-        return {};
-    }
-    return out;
+    return upper_acgt(read.decode_subsequence(query_start, max_bases));
 }
 
 std::string build_event_string_from_fragment(
@@ -851,9 +768,10 @@ int32_t breakpoint_hypothesis_support_weight(int32_t priority) {
     switch (priority) {
         case 0: return 8;  // fragment split
         case 1: return 8;  // fragment indel
-        case 2: return 1;  // fragment clip pair
-        case 3: return 6;  // raw indel
-        case 4: return 1;  // raw clip pair
+        case 2: return 7;  // raw split
+        case 3: return 1;  // fragment clip pair
+        case 4: return 6;  // raw indel
+        case 5: return 1;  // raw clip pair
         default: return 1;
     }
 }
@@ -1156,22 +1074,76 @@ std::string upper_acgt(const std::string& s) {
     return out;
 }
 
-double edit_identity(const std::string& lhs, const std::string& rhs) {
+struct EditDistanceWorkspace {
+    std::vector<int32_t> prev;
+    std::vector<int32_t> curr;
+
+    void ensure_columns(int32_t m) {
+        const size_t columns = static_cast<size_t>(m + 1);
+        if (prev.size() < columns) {
+            prev.resize(columns, 0);
+        }
+        if (curr.size() < columns) {
+            curr.resize(columns, 0);
+        }
+    }
+};
+
+int32_t max_edits_for_identity_threshold(
+    int32_t lhs_len,
+    int32_t rhs_len,
+    double min_identity) {
+    const int32_t denom = std::max(lhs_len, rhs_len);
+    if (denom <= 0) {
+        return 0;
+    }
+    const double clamped = std::clamp(min_identity, 0.0, 1.0);
+    return std::max(
+        0,
+        static_cast<int32_t>(
+            std::floor(((1.0 - clamped) * static_cast<double>(denom)) + 1e-9)));
+}
+
+bool edit_identity_if_at_least(
+    std::string_view lhs,
+    std::string_view rhs,
+    int32_t max_edits,
+    EditDistanceWorkspace& workspace,
+    double& identity_out) {
+    identity_out = 0.0;
     const int32_t n = static_cast<int32_t>(lhs.size());
     const int32_t m = static_cast<int32_t>(rhs.size());
-    if (n <= 0 || m <= 0) {
-        return 0.0;
+    if (n <= 0 || m <= 0 || max_edits < 0) {
+        return false;
+    }
+    if (std::abs(n - m) > max_edits) {
+        return false;
     }
 
-    std::vector<int32_t> prev(static_cast<size_t>(m + 1), 0);
-    std::vector<int32_t> curr(static_cast<size_t>(m + 1), 0);
-    for (int32_t j = 0; j <= m; ++j) {
+    workspace.ensure_columns(m);
+    auto& prev = workspace.prev;
+    auto& curr = workspace.curr;
+    const size_t columns = static_cast<size_t>(m + 1);
+    const int32_t inf = max_edits + 1;
+    std::fill(prev.begin(), prev.begin() + columns, inf);
+    std::fill(curr.begin(), curr.begin() + columns, inf);
+    for (int32_t j = 0; j <= std::min(m, max_edits); ++j) {
         prev[static_cast<size_t>(j)] = j;
     }
 
     for (int32_t i = 1; i <= n; ++i) {
-        curr[0] = i;
-        for (int32_t j = 1; j <= m; ++j) {
+        std::fill(curr.begin(), curr.begin() + columns, inf);
+        if (i <= max_edits) {
+            curr[0] = i;
+        }
+
+        const int32_t j_lo = std::max(1, i - max_edits);
+        const int32_t j_hi = std::min(m, i + max_edits);
+        if (j_lo > j_hi) {
+            return false;
+        }
+
+        for (int32_t j = j_lo; j <= j_hi; ++j) {
             const int32_t sub_cost =
                 prev[static_cast<size_t>(j - 1)] +
                 ((lhs[static_cast<size_t>(i - 1)] == rhs[static_cast<size_t>(j - 1)]) ? 0 : 1);
@@ -1183,8 +1155,13 @@ double edit_identity(const std::string& lhs, const std::string& rhs) {
     }
 
     const int32_t dist = prev[static_cast<size_t>(m)];
+    if (dist > max_edits) {
+        return false;
+    }
+
     const double denom = static_cast<double>(std::max(n, m));
-    return std::clamp(1.0 - (static_cast<double>(dist) / denom), 0.0, 1.0);
+    identity_out = std::clamp(1.0 - (static_cast<double>(dist) / denom), 0.0, 1.0);
+    return true;
 }
 
 uint8_t nt_to_abpoa_code(char c) {
@@ -1345,12 +1322,13 @@ std::pair<int32_t, int32_t> infer_component_breakpoint_bounds(
     return {fallback, fallback};
 }
 
-std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
+std::vector<BreakpointHypothesis> enumerate_breakpoint_hypotheses(
     const ComponentCall& component,
     const std::vector<const bam1_t*>& local_records,
     const std::vector<InsertionFragment>& fragments,
     int32_t seed_left,
-    int32_t seed_right) {
+    int32_t seed_right,
+    size_t top_k) {
     constexpr int32_t kEventBreakpointSearchSlackBp = 200;
 
     const int32_t search_start = std::max(
@@ -1365,6 +1343,8 @@ std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
     std::vector<int32_t> fragment_indel_positions;
     std::vector<int32_t> fragment_clip_left_positions;
     std::vector<int32_t> fragment_clip_right_positions;
+    std::vector<int32_t> raw_split_left_positions;
+    std::vector<int32_t> raw_split_right_positions;
     std::vector<int32_t> raw_indel_positions;
     std::vector<int32_t> raw_clip_left_positions;
     std::vector<int32_t> raw_clip_right_positions;
@@ -1388,6 +1368,21 @@ std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
             record,
             search_start,
             search_end);
+        const bool has_raw_split_left = signal.split_left_pos >= 0;
+        const bool has_raw_split_right = signal.split_right_pos >= 0;
+        if (has_raw_split_left && has_raw_split_right) {
+            const int32_t left_dist = std::abs(signal.split_left_pos - component.anchor_pos);
+            const int32_t right_dist = std::abs(signal.split_right_pos - component.anchor_pos);
+            if (left_dist < right_dist ||
+                (left_dist == right_dist && signal.split_left_pos <= signal.split_right_pos)) {
+                add_position(raw_split_left_positions, signal.split_left_pos);
+            } else {
+                add_position(raw_split_right_positions, signal.split_right_pos);
+            }
+        } else {
+            add_position(raw_split_left_positions, signal.split_left_pos);
+            add_position(raw_split_right_positions, signal.split_right_pos);
+        }
         add_position(raw_clip_left_positions, signal.left_clip_pos);
         add_position(raw_clip_right_positions, signal.right_clip_pos);
         add_position(raw_indel_positions, signal.indel_pos);
@@ -1419,11 +1414,19 @@ std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
         }
     }
 
-    BreakpointHypothesis best;
+    std::vector<BreakpointHypothesis> hypotheses;
+    hypotheses.reserve(6);
     const auto consider = [&](const BreakpointHypothesis& hypothesis) {
-        if (better_breakpoint_hypothesis(hypothesis, best, component.anchor_pos)) {
-            best = hypothesis;
+        if (!hypothesis.valid) {
+            return;
         }
+        for (const auto& existing : hypotheses) {
+            if (existing.left == hypothesis.left &&
+                existing.right == hypothesis.right) {
+                return;
+            }
+        }
+        hypotheses.push_back(hypothesis);
     };
 
     consider(make_paired_breakpoint_hypothesis(
@@ -1436,24 +1439,64 @@ std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
         component.anchor_pos,
         1));
     consider(make_paired_breakpoint_hypothesis(
+        raw_split_left_positions,
+        raw_split_right_positions,
+        component.anchor_pos,
+        2));
+    consider(make_paired_breakpoint_hypothesis(
         fragment_clip_left_positions,
         fragment_clip_right_positions,
         component.anchor_pos,
-        2));
+        3));
     consider(make_single_breakpoint_hypothesis(
         raw_indel_positions,
         component.anchor_pos,
-        3));
+        4));
     consider(make_paired_breakpoint_hypothesis(
         raw_clip_left_positions,
         raw_clip_right_positions,
         component.anchor_pos,
-        4));
+        5));
 
-    if (best.valid) {
-        return {best.left, best.right};
+    if (hypotheses.empty()) {
+        BreakpointHypothesis fallback;
+        fallback.valid = true;
+        fallback.left = std::max(0, component.anchor_pos);
+        fallback.right = fallback.left;
+        fallback.center = fallback.left;
+        fallback.support = 1;
+        fallback.priority = std::numeric_limits<int32_t>::max();
+        hypotheses.push_back(fallback);
     }
 
+    std::sort(
+        hypotheses.begin(),
+        hypotheses.end(),
+        [&](const BreakpointHypothesis& lhs, const BreakpointHypothesis& rhs) {
+            return better_breakpoint_hypothesis(lhs, rhs, component.anchor_pos);
+        });
+    if (top_k > 0 && hypotheses.size() > top_k) {
+        hypotheses.resize(top_k);
+    }
+    return hypotheses;
+}
+
+std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<InsertionFragment>& fragments,
+    int32_t seed_left,
+    int32_t seed_right) {
+    const auto hypotheses = enumerate_breakpoint_hypotheses(
+        component,
+        local_records,
+        fragments,
+        seed_left,
+        seed_right,
+        1);
+    if (!hypotheses.empty()) {
+        return {hypotheses.front().left, hypotheses.front().right};
+    }
     return {std::max(0, component.anchor_pos), std::max(0, component.anchor_pos)};
 }
 template <typename T>
@@ -1951,7 +1994,6 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
     const std::vector<const bam1_t*>& local_records,
     const std::vector<ReadReferenceSpan>& read_spans,
     const std::vector<InsertionFragment>& fragments) const {
-    EventReadEvidence evidence;
     const auto seed_bounds = infer_component_breakpoint_bounds(component);
     const auto bp_bounds = resolve_event_breakpoint_bounds(
         component,
@@ -1959,22 +2001,101 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
         fragments,
         seed_bounds.first,
         seed_bounds.second);
-    evidence.bp_left = std::min(bp_bounds.first, bp_bounds.second);
-    evidence.bp_right = std::max(bp_bounds.first, bp_bounds.second);
+    return collect_event_read_evidence_for_bounds(
+        component,
+        local_records,
+        read_spans,
+        fragments,
+        seed_bounds.first,
+        seed_bounds.second,
+        bp_bounds.first,
+        bp_bounds.second);
+}
+
+EventReadEvidence Pipeline::collect_event_read_evidence_for_bounds(
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<ReadReferenceSpan>& read_spans,
+    const std::vector<InsertionFragment>& fragments,
+    int32_t seed_left,
+    int32_t seed_right,
+    int32_t bp_left,
+    int32_t bp_right) const {
+    EventReadEvidence evidence;
+    (void)seed_left;
+    (void)seed_right;
+    constexpr int32_t kAltSignalSlackBp = 25;
+    constexpr int32_t kRefSignalSlackBp = 75;
+    constexpr int32_t kCandidateClipSlackBp = 25;
+    constexpr int32_t kCandidateClipSupplementMaxOffsetBp = 75;
+    const int32_t left = std::min(bp_left, bp_right);
+    const int32_t right = std::max(bp_left, bp_right);
+    evidence.bp_left = left;
+    evidence.bp_right = right;
 
     std::unordered_set<std::string> split_qnames;
     std::unordered_set<std::string> indel_qnames;
     std::unordered_set<std::string> left_clip_qnames;
     std::unordered_set<std::string> right_clip_qnames;
+    std::unordered_set<std::string> nearby_candidate_left_clip_qnames;
+    std::unordered_set<std::string> nearby_candidate_right_clip_qnames;
 
-    const int32_t alt_signal_start = std::max(
-        0,
-        std::min(seed_bounds.first, evidence.bp_left) - 25);
-    const int32_t alt_signal_end = std::max(
-        alt_signal_start,
-        std::max(seed_bounds.second, evidence.bp_right) + 25);
-    const int32_t ref_span_start = std::max(0, evidence.bp_left - 25);
-    const int32_t ref_span_end = std::max(ref_span_start, evidence.bp_right + 25);
+    // Alt support should stay hypothesis-specific, while clean ref-spanning
+    // reads need a slightly wider exclusion band so nearby clipped noise does
+    // not masquerade as reference support.
+    const int32_t alt_signal_start = std::max(0, evidence.bp_left - kAltSignalSlackBp);
+    const int32_t alt_signal_end = std::max(alt_signal_start, evidence.bp_right + kAltSignalSlackBp);
+    const int32_t ref_signal_start = std::max(0, evidence.bp_left - kRefSignalSlackBp);
+    const int32_t ref_signal_end = std::max(ref_signal_start, evidence.bp_right + kRefSignalSlackBp);
+    const int32_t ref_span_start = alt_signal_start;
+    const int32_t ref_span_end = alt_signal_end;
+
+    std::vector<int32_t> nearby_component_clip_candidates;
+    nearby_component_clip_candidates.reserve(component.breakpoint_candidates.size());
+    for (const auto& candidate : component.breakpoint_candidates) {
+        if (candidate.pos < 0) {
+            continue;
+        }
+        const int32_t dist_to_hypothesis = (candidate.pos < left)
+            ? (left - candidate.pos)
+            : ((candidate.pos > right) ? (candidate.pos - right) : 0);
+        if (dist_to_hypothesis <= kCandidateClipSupplementMaxOffsetBp) {
+            nearby_component_clip_candidates.push_back(candidate.pos);
+        }
+    }
+    std::sort(
+        nearby_component_clip_candidates.begin(),
+        nearby_component_clip_candidates.end());
+    nearby_component_clip_candidates.erase(
+        std::unique(
+            nearby_component_clip_candidates.begin(),
+            nearby_component_clip_candidates.end()),
+        nearby_component_clip_candidates.end());
+
+    const bool have_nearby_component_clip_candidates =
+        !nearby_component_clip_candidates.empty();
+    int32_t candidate_clip_start = 0;
+    int32_t candidate_clip_end = 0;
+    if (have_nearby_component_clip_candidates) {
+        candidate_clip_start = std::max(
+            0,
+            nearby_component_clip_candidates.front() - kCandidateClipSlackBp);
+        candidate_clip_end = std::max(
+            candidate_clip_start,
+            nearby_component_clip_candidates.back() + kCandidateClipSlackBp);
+    }
+    const auto matches_nearby_component_clip_candidate = [&](int32_t pos) {
+        if (pos < 0) {
+            return false;
+        }
+        for (const int32_t candidate_pos : nearby_component_clip_candidates) {
+            if (std::abs(pos - candidate_pos) <= kCandidateClipSlackBp) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     for (size_t read_idx = 0; read_idx < local_records.size(); ++read_idx) {
         const bam1_t* record = local_records[read_idx];
         if (!record) {
@@ -2006,6 +2127,21 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
         if (signal.right_clip) {
             right_clip_qnames.insert(qname);
         }
+
+        if (have_nearby_component_clip_candidates) {
+            const LocalEventSignal nearby_signal = classify_local_event_signal(
+                record,
+                candidate_clip_start,
+                candidate_clip_end);
+            if (nearby_signal.left_clip &&
+                matches_nearby_component_clip_candidate(nearby_signal.left_clip_pos)) {
+                nearby_candidate_left_clip_qnames.insert(qname);
+            }
+            if (nearby_signal.right_clip &&
+                matches_nearby_component_clip_candidate(nearby_signal.right_clip_pos)) {
+                nearby_candidate_right_clip_qnames.insert(qname);
+            }
+        }
     }
 
     for (const auto& fragment : fragments) {
@@ -2030,6 +2166,33 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
             default:
                 break;
         }
+
+        if (have_nearby_component_clip_candidates &&
+            matches_nearby_component_clip_candidate(fragment.ref_junc_pos)) {
+            switch (fragment.source) {
+                case InsertionFragmentSource::kClipRefLeft:
+                    nearby_candidate_left_clip_qnames.insert(fragment.read_id);
+                    break;
+                case InsertionFragmentSource::kClipRefRight:
+                    nearby_candidate_right_clip_qnames.insert(fragment.read_id);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    const bool has_precise_nonclip_support =
+        !split_qnames.empty() || !indel_qnames.empty();
+    if (has_precise_nonclip_support &&
+        !nearby_candidate_left_clip_qnames.empty() &&
+        !nearby_candidate_right_clip_qnames.empty()) {
+        left_clip_qnames.insert(
+            nearby_candidate_left_clip_qnames.begin(),
+            nearby_candidate_left_clip_qnames.end());
+        right_clip_qnames.insert(
+            nearby_candidate_right_clip_qnames.begin(),
+            nearby_candidate_right_clip_qnames.end());
     }
 
     evidence.alt_split_reads = static_cast<int32_t>(split_qnames.size());
@@ -2071,7 +2234,7 @@ EventReadEvidence Pipeline::collect_event_read_evidence(
         if (qname.empty() || alt_qnames.find(qname) != alt_qnames.end()) {
             continue;
         }
-        if (read_has_local_event_signal(record, alt_signal_start, alt_signal_end)) {
+        if (read_has_local_event_signal(record, ref_signal_start, ref_signal_end)) {
             continue;
         }
         if (record->core.qual >= 20) {
@@ -2268,6 +2431,7 @@ EventSegmentation Pipeline::segment_event_consensus(
         return segmentation;
     }
 
+    EditDistanceWorkspace edit_workspace;
     const auto collect_candidates = [&](
         bool is_left,
         int32_t breakpoint,
@@ -2291,6 +2455,10 @@ EventSegmentation Pipeline::segment_event_consensus(
             if (max_query_start < 0) {
                 continue;
             }
+            const int32_t max_edits = max_edits_for_identity_threshold(
+                align_len,
+                align_len,
+                kEventSegmentationMinFlankIdentity);
 
             const int32_t endpoint_slack = std::max(0, std::min(
                 query_endpoint_slack,
@@ -2308,8 +2476,8 @@ EventSegmentation Pipeline::segment_event_consensus(
                 static_cast<size_t>(std::max(1, query_hi - query_lo + 1)));
 
             for (int32_t query_start = query_lo; query_start <= query_hi; ++query_start) {
-                const std::string query = consensus.substr(
-                    static_cast<size_t>(query_start),
+                const std::string_view query(
+                    consensus.data() + query_start,
                     static_cast<size_t>(align_len));
                 const int32_t endpoint_offset = is_left
                     ? query_start
@@ -2323,15 +2491,16 @@ EventSegmentation Pipeline::segment_event_consensus(
                     }
 
                     const size_t offset = static_cast<size_t>(ref_start - ref_window_start);
-                    const std::string ref_seq = ref_window.substr(
-                        offset,
+                    const std::string_view ref_seq(
+                        ref_window.data() + offset,
                         static_cast<size_t>(align_len));
-                    if (static_cast<int32_t>(ref_seq.size()) != align_len) {
-                        continue;
-                    }
-
-                    const double identity = edit_identity(query, ref_seq);
-                    if (identity + 1e-9 < kEventSegmentationMinFlankIdentity) {
+                    double identity = 0.0;
+                    if (!edit_identity_if_at_least(
+                            query,
+                            ref_seq,
+                            max_edits,
+                            edit_workspace,
+                            identity)) {
                         continue;
                     }
 
@@ -2418,12 +2587,6 @@ EventSegmentation Pipeline::segment_event_consensus(
                            const EventFlankPlacement& lhs_right,
                            const EventFlankPlacement& rhs_left,
                            const EventFlankPlacement& rhs_right) {
-        const int32_t lhs_total = lhs_left.align_len + lhs_right.align_len;
-        const int32_t rhs_total = rhs_left.align_len + rhs_right.align_len;
-        if (lhs_total != rhs_total) {
-            return lhs_total > rhs_total;
-        }
-
         const double lhs_min_identity = std::min(lhs_left.identity, lhs_right.identity);
         const double rhs_min_identity = std::min(rhs_left.identity, rhs_right.identity);
         if (lhs_min_identity != rhs_min_identity) {
@@ -2440,6 +2603,12 @@ EventSegmentation Pipeline::segment_event_consensus(
         const int32_t rhs_delta = rhs_left.breakpoint_delta + rhs_right.breakpoint_delta;
         if (lhs_delta != rhs_delta) {
             return lhs_delta < rhs_delta;
+        }
+
+        const int32_t lhs_total = lhs_left.align_len + lhs_right.align_len;
+        const int32_t rhs_total = rhs_left.align_len + rhs_right.align_len;
+        if (lhs_total != rhs_total) {
+            return lhs_total > rhs_total;
         }
 
         if (lhs_left.ref_start != rhs_left.ref_start) {
@@ -2496,6 +2665,14 @@ EventSegmentation Pipeline::segment_event_consensus(
     segmentation.pass = true;
     segmentation.qc_reason = "PASS_EVENT_SEGMENTATION";
     return segmentation;
+}
+
+EventSegmentationEvidence Pipeline::analyze_event_segmentation(
+    const EventConsensus& event_consensus,
+    const EventSegmentation& event_segmentation) const {
+    return analyze_event_segmentation_for_test(
+        event_consensus.qc_pass,
+        event_segmentation);
 }
 
 TEAlignmentEvidence Pipeline::align_insert_seq_to_te(
@@ -3129,6 +3306,19 @@ GenotypeCall Pipeline::genotype_call(
     return call;
 }
 
+BoundaryEvidence Pipeline::analyze_boundary(
+    const EventSegmentation& event_segmentation,
+    int32_t breakpoint_envelope_width) const {
+    FinalBoundaryInput boundary_input;
+    boundary_input.left_ref_start = event_segmentation.left_ref_start;
+    boundary_input.left_ref_end = event_segmentation.left_ref_end;
+    boundary_input.right_ref_start = event_segmentation.right_ref_start;
+    boundary_input.right_ref_end = event_segmentation.right_ref_end;
+    boundary_input.tsd_min_len = std::max(1, config_.tsd_min_len);
+    boundary_input.tsd_max_len = std::max(boundary_input.tsd_min_len, config_.tsd_max_len);
+    return evaluate_boundary_evidence(boundary_input, breakpoint_envelope_width);
+}
+
 FinalCall Pipeline::emit_final_te_call(
     const ComponentCall& component,
     const EventReadEvidence& event_evidence,
@@ -3267,13 +3457,13 @@ void Pipeline::process_bin_records(
     for (const auto& component : components) {
         const std::vector<InsertionFragment> empty_fragments;
 
-        const auto bp_bounds = infer_component_breakpoint_bounds(component);
+        const auto seed_bounds = infer_component_breakpoint_bounds(component);
         const int32_t fetch_start = std::max(
             0,
-            std::min(bp_bounds.first, bp_bounds.second) - kLocalEventFetchSlackBp);
+            std::min(seed_bounds.first, seed_bounds.second) - kLocalEventFetchSlackBp);
         const int32_t fetch_end = std::max(
             fetch_start + 1,
-            std::max(bp_bounds.first, bp_bounds.second) + kLocalEventFetchSlackBp);
+            std::max(seed_bounds.first, seed_bounds.second) + kLocalEventFetchSlackBp);
         LocalFetchedReads local_reads;
         const bool fetch_ok = bam_reader_->fetch(
             component.chrom,
@@ -3313,125 +3503,173 @@ void Pipeline::process_bin_records(
             local_component,
             local_reads.records);
 
-        const EventReadEvidence event_evidence = collect_event_read_evidence(
-            component,
-            local_reads.records,
-            local_reads.read_spans,
-            fragments);
-        const EventConsensus event_consensus = build_event_consensus(
+        const auto breakpoint_hypotheses = enumerate_breakpoint_hypotheses(
             component,
             local_reads.records,
             fragments,
-            event_evidence);
-        result.event_consensus_calls += 1;
-        bin_stats.event_consensus_calls += 1;
-        GenotypeCall genotype = genotype_call(component, event_evidence);
-        result.genotype_calls += 1;
-        bin_stats.genotype_calls += 1;
-        const bool event_existence_pass =
-            genotype.genotype != "0/0" &&
-            genotype.genotype != "./." &&
-            genotype.gq >= 20;
-        if (!event_existence_pass) {
-            log_component(
-                "REJECT_EVENT_EXISTENCE",
-                component,
-                fragments,
-                &genotype,
-                nullptr);
-            continue;
-        }
-        if (!event_consensus.qc_pass) {
-            bin_stats.event_consensus_rejected += 1;
-            log_component(
-                event_consensus.qc_reason.c_str(),
-                component,
-                fragments,
-                &genotype,
-                nullptr);
-            continue;
-        }
+            seed_bounds.first,
+            seed_bounds.second,
+            3);
 
-        const EventSegmentation event_segmentation = segment_event_consensus(
-            component,
-            event_evidence,
-            event_consensus);
-        if (!event_segmentation.pass) {
-            if (config_.log_stage_components) {
-                std::ostringstream oss;
-                oss << "[Pipeline][component][event_debug]"
-                    << " chrom=" << component.chrom
-                    << " anchor=" << component.anchor_pos
-                    << " bp_left=" << event_evidence.bp_left
-                    << " bp_right=" << event_evidence.bp_right
-                    << " support_qnames=" << event_evidence.support_qnames.size()
-                    << " consensus_len=" << event_consensus.consensus_len
-                    << " consensus_ends=" << summarize_seq_ends(event_consensus.consensus_seq);
-                emit_pipeline_log_line(oss.str());
+        bool have_best = false;
+        double best_total = -1e9;
+        JointDecisionResult best_joint;
+        EventReadEvidence best_event_evidence;
+        EventConsensus best_event_consensus;
+        EventSegmentation best_event_segmentation;
+        TEAlignmentEvidence best_te_alignment;
+        BoundaryEvidence best_boundary_evidence;
+        GenotypeCall best_genotype;
+
+        for (const auto& hypothesis : breakpoint_hypotheses) {
+            const EventReadEvidence event_evidence = collect_event_read_evidence_for_bounds(
+                component,
+                local_reads.records,
+                local_reads.read_spans,
+                fragments,
+                hypothesis.left,
+                hypothesis.right,
+                hypothesis.left,
+                hypothesis.right);
+            const EventConsensus event_consensus = build_event_consensus(
+                component,
+                local_reads.records,
+                fragments,
+                event_evidence);
+            result.event_consensus_calls += 1;
+            bin_stats.event_consensus_calls += 1;
+            if (!event_consensus.qc_pass) {
+                bin_stats.event_consensus_rejected += 1;
             }
+
+            const GenotypeCall genotype = genotype_call(component, event_evidence);
+            result.genotype_calls += 1;
+            bin_stats.genotype_calls += 1;
+
+            EventGenotypeInput existence_input;
+            existence_input.alt_struct_reads = event_evidence.alt_struct_reads;
+            existence_input.ref_span_reads = event_evidence.ref_span_reads;
+            existence_input.min_depth = config_.genotype_min_depth;
+            existence_input.min_gq = 20;
+            existence_input.error_rate = config_.genotype_error_rate;
+            const EventExistenceEvidence existence = build_event_existence_evidence(
+                existence_input);
+
+            const EventSegmentation event_segmentation = segment_event_consensus(
+                component,
+                event_evidence,
+                event_consensus);
+            const EventSegmentationEvidence seg_evidence = analyze_event_segmentation(
+                event_consensus,
+                event_segmentation);
+
+            TEAlignmentEvidence te_alignment;
+            if (seg_evidence.has_insert_seq) {
+                te_alignment = align_insert_seq_to_te(event_segmentation);
+            }
+
+            const int32_t breakpoint_envelope_width = std::max(
+                1,
+                event_evidence.bp_right - event_evidence.bp_left);
+            BoundaryEvidence boundary_evidence;
+            if (event_segmentation.pass) {
+                boundary_evidence = analyze_boundary(
+                    event_segmentation,
+                    breakpoint_envelope_width);
+            }
+
+            const JointDecisionResult joint = evaluate_joint_hypotheses(
+                existence,
+                seg_evidence,
+                te_alignment,
+                boundary_evidence);
+            const double candidate_total = joint.best.hard_veto ? -1e9 : joint.best.total;
+            if (!have_best || candidate_total > best_total) {
+                have_best = true;
+                best_total = candidate_total;
+                best_joint = joint;
+                best_event_evidence = event_evidence;
+                best_event_consensus = event_consensus;
+                best_event_segmentation = event_segmentation;
+                best_te_alignment = te_alignment;
+                best_boundary_evidence = boundary_evidence;
+                best_genotype = genotype;
+            }
+        }
+
+        if (config_.log_stage_components && have_best) {
+            std::ostringstream oss;
+            oss << "[Pipeline][joint]"
+                << " chrom=" << component.chrom
+                << " anchor=" << component.anchor_pos
+                << " bp=" << best_event_evidence.bp_left << "-" << best_event_evidence.bp_right
+                << " gt=" << display_or_na(best_genotype.genotype)
+                << " af=" << best_genotype.af
+                << " gq=" << best_genotype.gq
+                << " alt_reads=" << best_event_evidence.alt_struct_reads
+                << " ref_reads=" << best_event_evidence.ref_span_reads
+                << " consensus_qc=" << display_or_na(best_event_consensus.qc_reason)
+                << " consensus_len=" << best_event_consensus.consensus_len
+                << " seg_qc=" << display_or_na(best_event_segmentation.qc_reason)
+                << " seg_insert_len=" << best_event_segmentation.insert_seq.size()
+                << " seg_left=" << best_event_segmentation.left_flank_align_len
+                << " seg_right=" << best_event_segmentation.right_flank_align_len
+                << " te_qc=" << display_or_na(best_te_alignment.qc_reason)
+                << " te_pass=" << bool_as_int(best_te_alignment.pass)
+                << " te_family=" << display_or_na(best_te_alignment.best_family)
+                << " te_subfamily=" << display_or_na(best_te_alignment.best_subfamily)
+                << " te_identity=" << best_te_alignment.best_identity
+                << " te_cov=" << best_te_alignment.best_query_coverage
+                << " te_margin=" << best_te_alignment.cross_family_margin
+                << " boundary_qc=" << display_or_na(best_boundary_evidence.qc)
+                << " boundary_defined=" << bool_as_int(best_boundary_evidence.geometry_defined)
+                << " boundary_canonical=" << bool_as_int(best_boundary_evidence.canonical_pass)
+                << " boundary_consistent=" << bool_as_int(best_boundary_evidence.evidence_consistent)
+                << " boundary_type=" << display_or_na(best_boundary_evidence.boundary_type)
+                << " boundary_len=" << best_boundary_evidence.boundary_len
+                << " best_kind=" << final_hypothesis_kind_name(best_joint.best.kind)
+                << " best_total=" << best_joint.best.total
+                << " best_exist=" << best_joint.best.existence
+                << " best_seg=" << best_joint.best.segmentation
+                << " best_te=" << best_joint.best.te
+                << " best_boundary=" << best_joint.best.boundary
+                << " runner_kind=" << final_hypothesis_kind_name(best_joint.runner_up.kind)
+                << " runner_total=" << best_joint.runner_up.total
+                << " final_qc=" << display_or_na(best_joint.final_qc)
+                << " emit_te=" << bool_as_int(best_joint.emit_te_call)
+                << " emit_unknown=" << bool_as_int(best_joint.emit_unknown_te);
+            emit_pipeline_log_line(oss.str());
+        }
+
+        if (!have_best || !best_joint.emit_te_call) {
             log_component(
-                event_segmentation.qc_reason.c_str(),
+                have_best ? best_joint.final_qc.c_str() : "NO_BREAKPOINT_HYPOTHESIS",
                 component,
                 fragments,
-                &genotype,
+                have_best ? &best_genotype : nullptr,
                 nullptr);
             continue;
         }
 
-        const TEAlignmentEvidence te_alignment = align_insert_seq_to_te(
-            event_segmentation);
-        if (!te_alignment.pass) {
-            log_component(
-                te_alignment.qc_reason.c_str(),
-                component,
-                fragments,
-                &genotype,
-                nullptr);
-            continue;
-        }
+        FinalBoundaryDecision boundary;
+        boundary.pass =
+            best_boundary_evidence.canonical_pass ||
+            best_boundary_evidence.evidence_consistent;
+        boundary.boundary_type = best_boundary_evidence.boundary_type;
+        boundary.boundary_len = best_boundary_evidence.boundary_len;
+        boundary.qc = best_boundary_evidence.qc;
 
-        FinalBoundaryInput boundary_input;
-        boundary_input.left_ref_start = event_segmentation.left_ref_start;
-        boundary_input.left_ref_end = event_segmentation.left_ref_end;
-        boundary_input.right_ref_start = event_segmentation.right_ref_start;
-        boundary_input.right_ref_end = event_segmentation.right_ref_end;
-        boundary_input.tsd_min_len = std::max(1, config_.tsd_min_len);
-        boundary_input.tsd_max_len = std::max(boundary_input.tsd_min_len, config_.tsd_max_len);
-        const FinalBoundaryDecision boundary = check_boundary_consistency(boundary_input);
-        if (!boundary.pass) {
-            log_component(
-                boundary.qc.c_str(),
-                component,
-                fragments,
-                &genotype,
-                nullptr);
-            continue;
-        }
-
-        FinalTeAcceptanceInput acceptance_input;
-        acceptance_input.event_existence_pass = event_existence_pass;
-        acceptance_input.event_closure_pass = event_segmentation.pass;
-        acceptance_input.te_sequence_pass = te_alignment.pass;
-        acceptance_input.boundary_pass = boundary.pass;
-        const FinalTeAcceptanceDecision acceptance = evaluate_final_te_acceptance(
-            acceptance_input);
-        if (!acceptance.pass) {
-            log_component(
-                acceptance.qc.c_str(),
-                component,
-                fragments,
-                &genotype,
-                nullptr);
-            continue;
-        }
+        FinalTeAcceptanceDecision acceptance;
+        acceptance.pass = true;
+        acceptance.qc = best_joint.final_qc;
 
         FinalCall final_call = emit_final_te_call(
             component,
-            event_evidence,
-            event_consensus,
-            event_segmentation,
-            te_alignment,
-            genotype,
+            best_event_evidence,
+            best_event_consensus,
+            best_event_segmentation,
+            best_te_alignment,
+            best_genotype,
             boundary,
             acceptance);
         result.final_calls.push_back(final_call);
@@ -3441,7 +3679,7 @@ void Pipeline::process_bin_records(
             acceptance.qc.c_str(),
             component,
             fragments,
-            &genotype,
+            &best_genotype,
             &result.final_calls.back());
     }
 

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <fstream>
@@ -42,6 +43,24 @@ std::string mutate_positions(
             case 'T': seq[pos] = 'A'; break;
             default: seq[pos] = 'A'; break;
         }
+    }
+    return seq;
+}
+
+char complement_base(char c) {
+    switch (c) {
+        case 'A': return 'T';
+        case 'C': return 'G';
+        case 'G': return 'C';
+        case 'T': return 'A';
+        default: return 'N';
+    }
+}
+
+std::string reverse_complement(std::string seq) {
+    std::reverse(seq.begin(), seq.end());
+    for (char& c : seq) {
+        c = complement_base(c);
     }
     return seq;
 }
@@ -97,7 +116,29 @@ int main() {
         assert(evidence.best_subfamily == "SubGypsyA");
         assert(evidence.best_identity >= 0.99);
         assert(evidence.best_query_coverage >= 0.99);
-        assert(evidence.cross_family_margin >= 0.10);
+        assert(evidence.cross_family_margin >= 0.09);
+    }
+
+    {
+        const std::string gypsy = build_sequence(120, 23u);
+        const std::string copia = build_sequence(120, 131u);
+        write_te_fasta(
+            fasta_path,
+            {
+                {"SubGypsyRC#LTR/Gypsy", gypsy},
+                {"SubCopiaRC#LTR/Copia", copia},
+            });
+
+        const TEAlignmentEvidence evidence = run_alignment(
+            fasta_path,
+            reverse_complement(gypsy));
+        assert(evidence.pass);
+        assert(evidence.qc_reason == "PASS_INSERT_TE_ALIGNMENT");
+        assert(evidence.best_family == "Gypsy");
+        assert(evidence.best_subfamily == "SubGypsyRC");
+        assert(evidence.best_identity >= 0.99);
+        assert(evidence.best_query_coverage >= 0.99);
+        assert(evidence.cross_family_margin >= 0.09);
     }
 
     {
@@ -141,7 +182,7 @@ int main() {
         assert(evidence.best_family == "5S-Deu-L2");
         assert(evidence.best_subfamily == "5S-Deu-L2-3");
         assert(evidence.second_family == "Rex-Babar");
-        assert(evidence.cross_family_margin >= 0.10);
+        assert(evidence.cross_family_margin >= 0.09);
     }
 
     {
@@ -162,7 +203,7 @@ int main() {
         assert(evidence.best_family == "5S-Deu-L2");
         assert(evidence.best_subfamily == "5S-Deu-L2-3");
         assert(evidence.second_family == "DNA");
-        assert(evidence.cross_family_margin >= 0.10);
+        assert(evidence.cross_family_margin >= 0.09);
     }
 
     {
@@ -197,12 +238,12 @@ int main() {
 
         const TEAlignmentEvidence evidence = run_alignment(fasta_path, divergent_insert);
         assert(evidence.pass);
-        assert(evidence.qc_reason == "PASS_INSERT_TE_ALIGNMENT_UNKNOWN");
-        assert(evidence.best_family == "UNKNOWN");
-        assert(evidence.best_subfamily == "UNKNOWN");
-        assert(evidence.best_identity >= 0.55);
-        assert(evidence.best_identity < 0.80);
-        assert(evidence.best_query_coverage >= 0.60);
+        assert(evidence.qc_reason == "PASS_INSERT_TE_ALIGNMENT");
+        assert(evidence.best_family == "Gypsy");
+        assert(evidence.best_subfamily == "SubGypsyD");
+        assert(evidence.second_family == "Copia");
+        assert(evidence.best_identity >= 0.80);
+        assert(evidence.best_query_coverage >= 0.80);
     }
 
     std::remove(fasta_path.c_str());

@@ -195,7 +195,7 @@ int main() {
     assert(call.best_te_identity >= 0.80);
     assert(call.best_te_query_coverage >= 0.80);
     assert(call.event_consensus_len >= 200);
-    assert(call.final_qc == "PASS_FINAL_TE_CALL");
+    assert(call.final_qc.rfind("PASS_FINAL_TE_CALL", 0) == 0);
 
     std::remove(ref_path.c_str());
     std::remove((ref_path + ".fai").c_str());

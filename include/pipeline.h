@@ -2,6 +2,7 @@
 #define PLACER_PIPELINE_H
 
 #include "bam_io.h"
+#include "decision_policy.h"
 #include "gate1_module.h"
 
 #include <cstddef>
@@ -346,6 +347,7 @@ private:
     std::shared_ptr<const AlignmentShortlistDb> alignment_shortlist_db_;
     std::vector<std::string> te_names_;
     std::vector<std::string> te_sequences_;
+    std::vector<std::string> te_reverse_complement_sequences_;
 };
 
 struct TsdDetection {
@@ -432,6 +434,16 @@ private:
         const std::vector<ReadReferenceSpan>& read_spans,
         const std::vector<InsertionFragment>& fragments) const;
 
+    EventReadEvidence collect_event_read_evidence_for_bounds(
+        const ComponentCall& component,
+        const std::vector<const bam1_t*>& local_records,
+        const std::vector<ReadReferenceSpan>& read_spans,
+        const std::vector<InsertionFragment>& fragments,
+        int32_t seed_left,
+        int32_t seed_right,
+        int32_t bp_left,
+        int32_t bp_right) const;
+
     EventConsensus build_event_consensus(
         const ComponentCall& component,
         const std::vector<const bam1_t*>& local_records,
@@ -443,12 +455,20 @@ private:
         const EventReadEvidence& event_evidence,
         const EventConsensus& event_consensus) const;
 
+    EventSegmentationEvidence analyze_event_segmentation(
+        const EventConsensus& event_consensus,
+        const EventSegmentation& event_segmentation) const;
+
     TEAlignmentEvidence align_insert_seq_to_te(
         const EventSegmentation& event_segmentation) const;
 
     GenotypeCall genotype_call(
         const ComponentCall& component,
         const EventReadEvidence& event_evidence) const;
+
+    BoundaryEvidence analyze_boundary(
+        const EventSegmentation& event_segmentation,
+        int32_t breakpoint_envelope_width) const;
 
     FinalCall emit_final_te_call(
         const ComponentCall& component,

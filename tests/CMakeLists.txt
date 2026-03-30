@@ -92,3 +92,8 @@ add_test(
     NAME test_run_sharded_placer
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_run_sharded_placer.py
 )
+
+add_test(
+    NAME test_random_truth_interval_eval
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_random_truth_interval_eval.py
+)

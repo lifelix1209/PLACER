@@ -15,16 +15,18 @@ Evaluation semantics:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import json
 import os
 import random
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, List, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -133,6 +135,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         type=int,
         default=1,
         help="samtools threads used for view/index.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of sampled loci evaluated concurrently.",
     )
     return parser.parse_args(argv)
 
@@ -468,6 +476,36 @@ def parse_scientific_txt(path: Path) -> List[Dict[str, str]]:
     return rows
 
 
+def parse_joint_component_metrics(log_path: Path) -> Dict[str, str]:
+    metrics = {
+        "joint_best_kind": "NA",
+        "joint_runner_up_kind": "NA",
+        "joint_final_qc": "NA",
+        "joint_emit_te": "NA",
+        "joint_emit_unknown": "NA",
+    }
+    if not log_path.is_file():
+        return metrics
+
+    for raw_line in log_path.read_text(encoding="utf-8").splitlines():
+        if "[Pipeline][joint]" not in raw_line:
+            continue
+        parsed: Dict[str, str] = {}
+        for token in raw_line.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            parsed[key] = value
+        metrics = {
+            "joint_best_kind": parsed.get("best_kind", "NA"),
+            "joint_runner_up_kind": parsed.get("runner_kind", "NA"),
+            "joint_final_qc": parsed.get("final_qc", "NA"),
+            "joint_emit_te": parsed.get("emit_te", "NA"),
+            "joint_emit_unknown": parsed.get("emit_unknown", "NA"),
+        }
+    return metrics
+
+
 def interval_distance(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
     if a_end < a_start:
         a_start, a_end = a_end, a_start
@@ -522,6 +560,10 @@ def build_result_row(
     calls: Sequence[Dict[str, str]],
     best_call: Optional[Dict[str, str]],
     detected: bool,
+    extract_elapsed_s: float,
+    placer_elapsed_s: float,
+    sample_elapsed_s: float,
+    joint_metrics: Dict[str, str],
 ) -> Dict[str, str]:
     return {
         "sample_id": row.sample_id,
@@ -555,6 +597,14 @@ def build_result_row(
         "nearest_call_af": best_call["af"] if best_call else "NA",
         "nearest_call_gq": best_call["gq"] if best_call else "NA",
         "nearest_call_qc": best_call["qc"] if best_call else "NA",
+        "extract_elapsed_s": f"{extract_elapsed_s:.6f}",
+        "placer_elapsed_s": f"{placer_elapsed_s:.6f}",
+        "sample_elapsed_s": f"{sample_elapsed_s:.6f}",
+        "joint_best_kind": joint_metrics["joint_best_kind"],
+        "joint_runner_up_kind": joint_metrics["joint_runner_up_kind"],
+        "joint_final_qc": joint_metrics["joint_final_qc"],
+        "joint_emit_te": joint_metrics["joint_emit_te"],
+        "joint_emit_unknown": joint_metrics["joint_emit_unknown"],
     }
 
 
@@ -571,6 +621,8 @@ def run_placer_sample(
     read_names_path = sample_dir / "window_qnames.txt"
     subset_bam = sample_dir / "subset.bam"
 
+    sample_started = time.time()
+    extract_started = time.time()
     qname_count = extract_subset_bam(
         samtools=args.samtools,
         threads=args.threads,
@@ -580,7 +632,9 @@ def run_placer_sample(
         subset_bam=subset_bam,
         log_path=log_path,
     )
+    extract_elapsed_s = time.time() - extract_started
 
+    placer_started = time.time()
     completed = subprocess.run(
         [str(args.placer), str(subset_bam), str(args.ref), str(args.te)],
         cwd=str(sample_dir),
@@ -588,6 +642,8 @@ def run_placer_sample(
         text=True,
         capture_output=True,
     )
+    placer_elapsed_s = time.time() - placer_started
+    sample_elapsed_s = time.time() - sample_started
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(
             "$ " + " ".join([str(args.placer), str(subset_bam), str(args.ref), str(args.te)]) + "\n"
@@ -608,6 +664,7 @@ def run_placer_sample(
         best_call is not None
         and int(best_call["interval_distance_bp"]) <= args.match_distance_bp
     )
+    joint_metrics = parse_joint_component_metrics(log_path)
     return build_result_row(
         row=row,
         window=window,
@@ -620,6 +677,10 @@ def run_placer_sample(
         calls=calls,
         best_call=best_call,
         detected=detected,
+        extract_elapsed_s=extract_elapsed_s,
+        placer_elapsed_s=placer_elapsed_s,
+        sample_elapsed_s=sample_elapsed_s,
+        joint_metrics=joint_metrics,
     )
 
 
@@ -636,6 +697,7 @@ def evaluate_existing_sample(
     read_names_path = sample_dir / "window_qnames.txt"
     subset_bam = sample_dir / "subset.bam"
     scientific_path = sample_dir / "scientific.txt"
+    log_path = sample_dir / "run.log"
     if not subset_bam.is_file():
         fail(f"existing subset BAM not found: {subset_bam}")
     if not scientific_path.is_file():
@@ -648,6 +710,7 @@ def evaluate_existing_sample(
         best_call is not None
         and int(best_call["interval_distance_bp"]) <= args.match_distance_bp
     )
+    joint_metrics = parse_joint_component_metrics(log_path)
     return build_result_row(
         row=row,
         window=window,
@@ -660,6 +723,10 @@ def evaluate_existing_sample(
         calls=calls,
         best_call=best_call,
         detected=detected,
+        extract_elapsed_s=0.0,
+        placer_elapsed_s=0.0,
+        sample_elapsed_s=0.0,
+        joint_metrics=joint_metrics,
     )
 
 
@@ -678,7 +745,106 @@ def write_tsv(path: Path, rows: Sequence[Dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def evaluate_sample_rows(
+    *,
+    sampled_rows: Sequence[TruthRow],
+    contig_lengths: Dict[str, int],
+    args: argparse.Namespace,
+    outdir: Path,
+    evaluator: Optional[Callable[..., Dict[str, str]]] = None,
+) -> tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    sampled_manifest: List[Dict[str, str]] = []
+    tasks: List[tuple[int, TruthRow, WindowSpec]] = []
+    for index, row in enumerate(sampled_rows):
+        window = build_window(row, args.window_flank_bp, contig_lengths)
+        sampled_manifest.append(
+            {
+                "sample_id": row.sample_id,
+                "uuid": row.uuid,
+                "chrom": row.chrom,
+                "truth_start": str(row.start),
+                "truth_end": str(row.end),
+                "truth_strand": row.strand,
+                "truth_family": row.family,
+                "truth_subfamily": row.subfamily,
+                "truth_filter": row.filter_value,
+                "window_start": str(window.window_start),
+                "window_end": str(window.window_end),
+                "window_region": window.region,
+            }
+        )
+        tasks.append((index, row, window))
+
+    eval_fn = evaluator
+    if eval_fn is None:
+        eval_fn = evaluate_existing_sample if args.reuse_existing_samples else run_placer_sample
+
+    ordered_results: List[Optional[Dict[str, str]]] = [None] * len(tasks)
+    worker_count = max(1, args.workers)
+
+    if worker_count == 1 or len(tasks) <= 1:
+        for index, row, window in tasks:
+            ordered_results[index] = eval_fn(
+                row=row,
+                window=window,
+                args=args,
+                outdir=outdir,
+            )
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_index = {
+                executor.submit(
+                    eval_fn,
+                    row=row,
+                    window=window,
+                    args=args,
+                    outdir=outdir,
+                ): index
+                for index, row, window in tasks
+            }
+            for future in concurrent.futures.as_completed(future_to_index):
+                ordered_results[future_to_index[future]] = future.result()
+
+    return sampled_manifest, [result for result in ordered_results if result is not None]
+
+
+def build_summary(
+    *,
+    seed: Optional[int],
+    sampled_rows: Sequence[TruthRow],
+    truth_pool_size: int,
+    detected_count: int,
+    args: argparse.Namespace,
+    outdir: Path,
+    total_elapsed_s: float,
+) -> Dict[str, object]:
+    summary: Dict[str, object] = {
+        "seed": seed,
+        "sample_size": len(sampled_rows),
+        "truth_filter": args.truth_filter,
+        "truth_pool_size": truth_pool_size,
+        "window_flank_bp": args.window_flank_bp,
+        "match_distance_bp": args.match_distance_bp,
+        "detected_count": detected_count,
+        "undetected_count": len(sampled_rows) - detected_count,
+        "detection_rate": detected_count / len(sampled_rows),
+        "workers": args.workers,
+        "samtools_threads": args.threads,
+        "total_elapsed_s": total_elapsed_s,
+        "ground_truth": str(args.ground_truth),
+        "bam": str(args.bam),
+        "ref": str(args.ref),
+        "te": str(args.te),
+        "placer": str(args.placer),
+        "outdir": str(outdir),
+    }
+    if args.sampled_truth_tsv is not None:
+        summary["sampled_truth_tsv"] = str(args.sampled_truth_tsv)
+    return summary
+
+
 def main(argv: Sequence[str]) -> int:
+    started = time.time()
     args = parse_args(argv)
     if args.sampled_truth_tsv is not None:
         args.sampled_truth_tsv = require_file(args.sampled_truth_tsv, "sampled truth TSV")
@@ -691,6 +857,8 @@ def main(argv: Sequence[str]) -> int:
         fail("--match-distance-bp must be >= 0")
     if args.threads <= 0:
         fail("--threads must be > 0")
+    if args.workers <= 0:
+        fail("--workers must be > 0")
     if args.reuse_existing_samples and args.sampled_truth_tsv is None:
         fail("--reuse-existing-samples requires --sampled-truth-tsv")
 
@@ -718,54 +886,27 @@ def main(argv: Sequence[str]) -> int:
     else:
         sampled_rows = sample_truth_rows(truth_pool, args.sample_size, seed)
 
-    sampled_manifest: List[Dict[str, str]] = []
-    results: List[Dict[str, str]] = []
-    for row in sampled_rows:
-        window = build_window(row, args.window_flank_bp, contig_lengths)
-        sampled_manifest.append(
-            {
-                "sample_id": row.sample_id,
-                "uuid": row.uuid,
-                "chrom": row.chrom,
-                "truth_start": str(row.start),
-                "truth_end": str(row.end),
-                "truth_strand": row.strand,
-                "truth_family": row.family,
-                "truth_subfamily": row.subfamily,
-                "truth_filter": row.filter_value,
-                "window_start": str(window.window_start),
-                "window_end": str(window.window_end),
-                "window_region": window.region,
-            }
-        )
-        if args.reuse_existing_samples:
-            results.append(evaluate_existing_sample(row=row, window=window, args=args, outdir=outdir))
-        else:
-            results.append(run_placer_sample(row=row, window=window, args=args, outdir=outdir))
+    sampled_manifest, results = evaluate_sample_rows(
+        sampled_rows=sampled_rows,
+        contig_lengths=contig_lengths,
+        args=args,
+        outdir=outdir,
+    )
 
     write_tsv(outdir / "sampled_truth.tsv", sampled_manifest)
     write_tsv(outdir / "evaluation.tsv", results)
 
     detected_count = sum(1 for row in results if row["detected"] == "1")
-    summary = {
-        "seed": seed,
-        "sample_size": len(sampled_rows),
-        "truth_filter": args.truth_filter,
-        "truth_pool_size": len(truth_pool),
-        "window_flank_bp": args.window_flank_bp,
-        "match_distance_bp": args.match_distance_bp,
-        "detected_count": detected_count,
-        "undetected_count": len(results) - detected_count,
-        "detection_rate": detected_count / len(results),
-        "ground_truth": str(args.ground_truth),
-        "bam": str(args.bam),
-        "ref": str(args.ref),
-        "te": str(args.te),
-        "placer": str(args.placer),
-        "outdir": str(outdir),
-    }
-    if args.sampled_truth_tsv is not None:
-        summary["sampled_truth_tsv"] = str(args.sampled_truth_tsv)
+    total_elapsed_s = time.time() - started
+    summary = build_summary(
+        seed=seed,
+        sampled_rows=sampled_rows,
+        truth_pool_size=len(truth_pool),
+        detected_count=detected_count,
+        args=args,
+        outdir=outdir,
+        total_elapsed_s=total_elapsed_s,
+    )
     (outdir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

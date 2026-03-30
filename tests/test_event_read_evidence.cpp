@@ -150,7 +150,6 @@ int main() {
             local_records,
             read_spans,
             {});
-
         assert(evidence.bp_left == 100);
         assert(evidence.bp_right == 110);
         assert(evidence.alt_split_reads == 2);
@@ -217,7 +216,6 @@ int main() {
             local_records,
             read_spans,
             {});
-
         assert(evidence.bp_left == 100);
         assert(evidence.bp_right == 100);
         assert(evidence.alt_indel_reads == 1);
@@ -410,7 +408,6 @@ int main() {
             local_records,
             read_spans,
             {local_fragment});
-
         assert(evidence.bp_left == 100);
         assert(evidence.bp_right == 100);
     }
@@ -477,7 +474,6 @@ int main() {
             local_records,
             read_spans,
             fragments);
-
         assert(evidence.bp_left == 1000);
         assert(evidence.bp_right == 1000);
         assert(evidence.alt_indel_reads == 4);
@@ -813,9 +809,9 @@ int main() {
             95,
             60,
             {
-                bam_cigar_gen(80, BAM_CMATCH),
+                static_cast<uint32_t>(bam_cigar_gen(static_cast<int>(left_flank.size()), BAM_CMATCH)),
                 static_cast<uint32_t>(bam_cigar_gen(static_cast<int>(insert_seq.size()), BAM_CINS)),
-                bam_cigar_gen(80, BAM_CMATCH),
+                static_cast<uint32_t>(bam_cigar_gen(static_cast<int>(right_flank.size()), BAM_CMATCH)),
             },
             reverse_read_seq,
             nullptr,
@@ -825,7 +821,7 @@ int main() {
         reverse_fragment.read_id = "reverse_full_context";
         reverse_fragment.read_index = 0;
         reverse_fragment.source = InsertionFragmentSource::kCigarInsertion;
-        reverse_fragment.start = 80;
+        reverse_fragment.start = static_cast<int32_t>(left_flank.size());
         reverse_fragment.length = static_cast<int32_t>(insert_seq.size());
         reverse_fragment.ref_junc_pos = 100;
         reverse_fragment.sequence = insert_seq;
@@ -841,7 +837,6 @@ int main() {
             {reverse_record.get()},
             {reverse_fragment},
             evidence);
-
         assert(consensus.input_event_reads == 1);
         assert(consensus.qc_pass);
         assert(consensus.qc_reason == "PASS_EVENT_CONSENSUS");

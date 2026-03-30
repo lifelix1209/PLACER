@@ -1,31 +1,42 @@
 #!/usr/bin/env bash
-#SBATCH -J placer_urika_d23
-#SBATCH --partition=2204
+#SBATCH -J placer_batch
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=192G
 #SBATCH --time=3-00:00:00
-#SBATCH --output=placer_urika_d23_%j.out
-#SBATCH --error=placer_urika_d23_%j.err
+#SBATCH --output=placer_batch_%j.out
+#SBATCH --error=placer_batch_%j.err
 
 set -euo pipefail
 
-# Default sizing targets partition 2204. Override at submit time if needed, e.g.
-# sbatch --partition=2004 --cpus-per-task=48 --mem=256G scripts/submit_placer_urika_d23.slurm
+# Override cluster-specific settings such as partition/QOS at submit time, e.g.
+# sbatch --partition=<cluster-partition> --cpus-per-task=48 --mem=256G \
+#   --export=ALL,PLACER_BAM=/path/to/input.bam,PLACER_REF=/path/to/ref.fa,PLACER_TE=/path/to/te.fa \
+#   scripts/submit_placer_urika_d23.slurm
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-BAM="/mnt/home1/miska/hl725/scratch/projects/ciclid/urika/data/final_merged_Yohann_D23.bam"
-BAM_BAI="/mnt/home1/miska/hl725/scratch/projects/ciclid/urika/data/final_merged_Yohann_D23.bam.bai"
-REF="/mnt/home1/miska/hl725/scratch/projects/ciclid/urika/references/Astatotilapia_calliptera.fAstCal1.3.dna.toplevel.fa"
-REF_FAI="/mnt/home1/miska/hl725/scratch/projects/ciclid/urika/references/Astatotilapia_calliptera.fAstCal1.3.dna.toplevel.fa.fai"
-TE="/mnt/home1/miska/hl725/scratch/projects/ciclid/urika/references/MWCichlidTE-3.2.splitted.namefixed_renamed_all_all.fa"
-TE_FAI="/mnt/home1/miska/hl725/scratch/projects/ciclid/urika/references/MWCichlidTE-3.2.splitted.namefixed_renamed_all_all.fa.fai"
+require_env() {
+    local name="$1"
+    local value="${!name:-}"
+    if [[ -z "$value" ]]; then
+        echo "[slurm] missing required environment variable: $name" >&2
+        exit 2
+    fi
+    printf '%s\n' "$value"
+}
 
-OUT_ROOT="${PLACER_OUT_ROOT:-/mnt/home1/miska/hl725/scratch/projects/ciclid/urika/placer_runs}"
-RUN_NAME="final_merged_Yohann_D23_job${SLURM_JOB_ID:-manual}"
+BAM="$(require_env PLACER_BAM)"
+REF="$(require_env PLACER_REF)"
+TE="$(require_env PLACER_TE)"
+BAM_BAI="${PLACER_BAM_BAI:-${BAM}.bai}"
+REF_FAI="${PLACER_REF_FAI:-${REF}.fai}"
+TE_FAI="${PLACER_TE_FAI:-${TE}.fai}"
+
+OUT_ROOT="${PLACER_OUT_ROOT:-$REPO_ROOT/placer_out/slurm_runs}"
+RUN_NAME="${PLACER_RUN_NAME:-placer_job${SLURM_JOB_ID:-manual}}"
 RUN_DIR="$OUT_ROOT/$RUN_NAME"
 
 mkdir -p "$RUN_DIR"
