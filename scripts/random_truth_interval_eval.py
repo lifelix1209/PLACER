@@ -41,6 +41,7 @@ class TruthRow:
     subfamily: str
     filter_value: str
     raw: Dict[str, str]
+    length_ins: int = 0
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--truth-filter",
         default="PASS",
         help="Only sample rows whose Filter column equals this value.",
+    )
+    parser.add_argument(
+        "--min-length-ins",
+        type=int,
+        default=None,
+        help="Only sample truth rows whose LengthIns is >= this threshold.",
     )
     parser.add_argument(
         "--window-flank-bp",
@@ -198,13 +205,19 @@ def load_contig_lengths(reference_fasta: Path) -> Dict[str, int]:
     return contig_lengths
 
 
-def load_truth_rows(path: Path, truth_filter: str) -> List[TruthRow]:
+def load_truth_rows(
+    path: Path,
+    truth_filter: str,
+    min_length_ins: Optional[int] = None,
+) -> List[TruthRow]:
     rows: List[TruthRow] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         if reader.fieldnames is None:
             fail(f"missing header in truth table: {path}")
         required = {"UUID", "Chrom", "Start", "End", "Strand", "Family", "Subfamily", "Filter"}
+        if min_length_ins is not None:
+            required.add("LengthIns")
         missing = required.difference(reader.fieldnames)
         if missing:
             fail(f"truth table missing columns {sorted(missing)}: {path}")
@@ -218,6 +231,16 @@ def load_truth_rows(path: Path, truth_filter: str) -> List[TruthRow]:
                 fail(f"invalid Start/End at truth row {row_index + 1}")
             if end < start:
                 start, end = end, start
+
+            length_ins = 0
+            if min_length_ins is not None:
+                try:
+                    length_ins = int(row["LengthIns"])
+                except ValueError:
+                    fail(f"invalid LengthIns at truth row {row_index + 1}")
+                if length_ins < min_length_ins:
+                    continue
+
             rows.append(
                 TruthRow(
                     sample_id="",
@@ -230,6 +253,7 @@ def load_truth_rows(path: Path, truth_filter: str) -> List[TruthRow]:
                     subfamily=row["Subfamily"],
                     filter_value=row["Filter"],
                     raw=dict(row),
+                    length_ins=length_ins,
                 )
             )
     if not rows:
@@ -253,6 +277,7 @@ def load_sampled_truth_rows(path: Path) -> List[TruthRow]:
             "truth_family",
             "truth_subfamily",
             "truth_filter",
+            "truth_length_ins",
         }
         missing = required.difference(reader.fieldnames)
         if missing:
@@ -264,8 +289,9 @@ def load_sampled_truth_rows(path: Path) -> List[TruthRow]:
             try:
                 start = int(row["truth_start"])
                 end = int(row["truth_end"])
+                length_ins = int(row["truth_length_ins"])
             except ValueError:
-                fail(f"invalid truth_start/truth_end at sampled truth row {row_index + 1}")
+                fail(f"invalid sampled truth numeric field at row {row_index + 1}")
             if end < start:
                 start, end = end, start
             rows.append(
@@ -280,6 +306,7 @@ def load_sampled_truth_rows(path: Path) -> List[TruthRow]:
                     subfamily=row["truth_subfamily"],
                     filter_value=row["truth_filter"],
                     raw=dict(row),
+                    length_ins=length_ins,
                 )
             )
     if not rows:
@@ -311,6 +338,7 @@ def sample_truth_rows(rows: Sequence[TruthRow], sample_size: int, seed: int) -> 
                 subfamily=row.subfamily,
                 filter_value=row.filter_value,
                 raw=row.raw,
+                length_ins=row.length_ins,
             )
         )
     return labelled
@@ -483,6 +511,12 @@ def parse_joint_component_metrics(log_path: Path) -> Dict[str, str]:
         "joint_final_qc": "NA",
         "joint_emit_te": "NA",
         "joint_emit_unknown": "NA",
+        "consensus_qc": "NA",
+        "consensus_len": "NA",
+        "seg_qc": "NA",
+        "seg_insert_len": "NA",
+        "te_qc": "NA",
+        "te_pass": "NA",
     }
     if not log_path.is_file():
         return metrics
@@ -502,6 +536,12 @@ def parse_joint_component_metrics(log_path: Path) -> Dict[str, str]:
             "joint_final_qc": parsed.get("final_qc", "NA"),
             "joint_emit_te": parsed.get("emit_te", "NA"),
             "joint_emit_unknown": parsed.get("emit_unknown", "NA"),
+            "consensus_qc": parsed.get("consensus_qc", "NA"),
+            "consensus_len": parsed.get("consensus_len", "NA"),
+            "seg_qc": parsed.get("seg_qc", "NA"),
+            "seg_insert_len": parsed.get("seg_insert_len", "NA"),
+            "te_qc": parsed.get("te_qc", "NA"),
+            "te_pass": parsed.get("te_pass", "NA"),
         }
     return metrics
 
@@ -547,6 +587,45 @@ def count_nonempty_lines(path: Path) -> int:
         return sum(1 for line in handle if line.strip())
 
 
+def classify_failure_stage(*, detected: bool, joint_metrics: Dict[str, str]) -> str:
+    if detected:
+        return "DETECTED"
+
+    if joint_metrics["joint_final_qc"] == "NA":
+        return "NO_EVENT_SIGNAL"
+
+    if joint_metrics["consensus_qc"] not in {"NA", "PASS_EVENT_CONSENSUS"}:
+        return "EVENT_BUT_NO_CONSENSUS"
+
+    if joint_metrics["seg_qc"] not in {"NA", "PASS_EVENT_SEGMENTATION"}:
+        return "CONSENSUS_BUT_NO_SEGMENTATION"
+
+    seg_insert_len = joint_metrics["seg_insert_len"]
+    if (
+        seg_insert_len != "NA"
+        and int(seg_insert_len) > 0
+        and joint_metrics["te_qc"] not in {
+            "PASS_INSERT_TE_ALIGNMENT",
+            "PASS_INSERT_TE_ALIGNMENT_UNKNOWN",
+        }
+    ):
+        return "SEGMENTED_BUT_NO_TE_ALIGNMENT"
+
+    if (
+        joint_metrics["joint_best_kind"] == "NON_TE_INSERTION"
+        and (
+            joint_metrics["te_qc"] in {
+                "PASS_INSERT_TE_ALIGNMENT",
+                "PASS_INSERT_TE_ALIGNMENT_UNKNOWN",
+            }
+            or joint_metrics["joint_runner_up_kind"] in {"TE_UNKNOWN", "TE_RESOLVED"}
+        )
+    ):
+        return "TE_EVIDENCE_BUT_NON_TE_WINS"
+
+    return "UNCLASSIFIED"
+
+
 def build_result_row(
     *,
     row: TruthRow,
@@ -565,6 +644,23 @@ def build_result_row(
     sample_elapsed_s: float,
     joint_metrics: Dict[str, str],
 ) -> Dict[str, str]:
+    normalized_joint_metrics = {
+        "joint_best_kind": joint_metrics.get("joint_best_kind", "NA"),
+        "joint_runner_up_kind": joint_metrics.get("joint_runner_up_kind", "NA"),
+        "joint_final_qc": joint_metrics.get("joint_final_qc", "NA"),
+        "joint_emit_te": joint_metrics.get("joint_emit_te", "NA"),
+        "joint_emit_unknown": joint_metrics.get("joint_emit_unknown", "NA"),
+        "consensus_qc": joint_metrics.get("consensus_qc", "NA"),
+        "consensus_len": joint_metrics.get("consensus_len", "NA"),
+        "seg_qc": joint_metrics.get("seg_qc", "NA"),
+        "seg_insert_len": joint_metrics.get("seg_insert_len", "NA"),
+        "te_qc": joint_metrics.get("te_qc", "NA"),
+        "te_pass": joint_metrics.get("te_pass", "NA"),
+    }
+    failure_stage = classify_failure_stage(
+        detected=detected,
+        joint_metrics=normalized_joint_metrics,
+    )
     return {
         "sample_id": row.sample_id,
         "uuid": row.uuid,
@@ -575,6 +671,7 @@ def build_result_row(
         "truth_family": row.family,
         "truth_subfamily": row.subfamily,
         "truth_filter": row.filter_value,
+        "truth_length_ins": str(row.length_ins),
         "window_start": str(window.window_start),
         "window_end": str(window.window_end),
         "window_region": window.region,
@@ -600,11 +697,18 @@ def build_result_row(
         "extract_elapsed_s": f"{extract_elapsed_s:.6f}",
         "placer_elapsed_s": f"{placer_elapsed_s:.6f}",
         "sample_elapsed_s": f"{sample_elapsed_s:.6f}",
-        "joint_best_kind": joint_metrics["joint_best_kind"],
-        "joint_runner_up_kind": joint_metrics["joint_runner_up_kind"],
-        "joint_final_qc": joint_metrics["joint_final_qc"],
-        "joint_emit_te": joint_metrics["joint_emit_te"],
-        "joint_emit_unknown": joint_metrics["joint_emit_unknown"],
+        "joint_best_kind": normalized_joint_metrics["joint_best_kind"],
+        "joint_runner_up_kind": normalized_joint_metrics["joint_runner_up_kind"],
+        "joint_final_qc": normalized_joint_metrics["joint_final_qc"],
+        "joint_emit_te": normalized_joint_metrics["joint_emit_te"],
+        "joint_emit_unknown": normalized_joint_metrics["joint_emit_unknown"],
+        "consensus_qc": normalized_joint_metrics["consensus_qc"],
+        "consensus_len": normalized_joint_metrics["consensus_len"],
+        "seg_qc": normalized_joint_metrics["seg_qc"],
+        "seg_insert_len": normalized_joint_metrics["seg_insert_len"],
+        "te_qc": normalized_joint_metrics["te_qc"],
+        "te_pass": normalized_joint_metrics["te_pass"],
+        "failure_stage": failure_stage,
     }
 
 
@@ -768,6 +872,7 @@ def evaluate_sample_rows(
                 "truth_family": row.family,
                 "truth_subfamily": row.subfamily,
                 "truth_filter": row.filter_value,
+                "truth_length_ins": str(row.length_ins),
                 "window_start": str(window.window_start),
                 "window_end": str(window.window_end),
                 "window_region": window.region,
@@ -814,6 +919,7 @@ def build_summary(
     sampled_rows: Sequence[TruthRow],
     truth_pool_size: int,
     detected_count: int,
+    failure_stage_counts: Dict[str, int],
     args: argparse.Namespace,
     outdir: Path,
     total_elapsed_s: float,
@@ -822,12 +928,14 @@ def build_summary(
         "seed": seed,
         "sample_size": len(sampled_rows),
         "truth_filter": args.truth_filter,
+        "min_length_ins": args.min_length_ins,
         "truth_pool_size": truth_pool_size,
         "window_flank_bp": args.window_flank_bp,
         "match_distance_bp": args.match_distance_bp,
         "detected_count": detected_count,
         "undetected_count": len(sampled_rows) - detected_count,
         "detection_rate": detected_count / len(sampled_rows),
+        "failure_stage_counts": failure_stage_counts,
         "workers": args.workers,
         "samtools_threads": args.threads,
         "total_elapsed_s": total_elapsed_s,
@@ -855,6 +963,8 @@ def main(argv: Sequence[str]) -> int:
     args.placer = require_executable(args.placer, "PLACER executable")
     if args.match_distance_bp < 0:
         fail("--match-distance-bp must be >= 0")
+    if args.min_length_ins is not None and args.min_length_ins < 0:
+        fail("--min-length-ins must be >= 0")
     if args.threads <= 0:
         fail("--threads must be > 0")
     if args.workers <= 0:
@@ -880,7 +990,11 @@ def main(argv: Sequence[str]) -> int:
         outdir.mkdir(parents=True, exist_ok=False)
 
     contig_lengths = load_contig_lengths(args.ref)
-    truth_pool = load_truth_rows(args.ground_truth, args.truth_filter)
+    truth_pool = load_truth_rows(
+        args.ground_truth,
+        args.truth_filter,
+        min_length_ins=args.min_length_ins,
+    )
     if args.sampled_truth_tsv is not None:
         sampled_rows = load_sampled_truth_rows(args.sampled_truth_tsv)
     else:
@@ -897,12 +1011,17 @@ def main(argv: Sequence[str]) -> int:
     write_tsv(outdir / "evaluation.tsv", results)
 
     detected_count = sum(1 for row in results if row["detected"] == "1")
+    failure_stage_counts: Dict[str, int] = {}
+    for row in results:
+        stage = row["failure_stage"]
+        failure_stage_counts[stage] = failure_stage_counts.get(stage, 0) + 1
     total_elapsed_s = time.time() - started
     summary = build_summary(
         seed=seed,
         sampled_rows=sampled_rows,
         truth_pool_size=len(truth_pool),
         detected_count=detected_count,
+        failure_stage_counts=failure_stage_counts,
         args=args,
         outdir=outdir,
         total_elapsed_s=total_elapsed_s,

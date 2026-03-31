@@ -8,7 +8,7 @@ BUILD_HELPER="$REPO_ROOT/scripts/build_latest_placer.sh"
 usage() {
     cat <<'EOF'
 Usage:
-  scripts/run_placer_latest.sh <input.bam> <ref.fa> [te.fa]
+  scripts/run_placer_latest.sh <input.bam> <ref.fa> <te.fa>
 
 Description:
   1) Check whether build/placer is missing or older than source files.
@@ -24,7 +24,7 @@ Override any of them in the environment before launching if needed.
 EOF
 }
 
-if [[ $# -lt 2 ]]; then
+if [[ $# -lt 3 ]]; then
     usage >&2
     exit 1
 fi

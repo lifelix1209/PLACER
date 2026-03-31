@@ -97,3 +97,8 @@ add_test(
     NAME test_random_truth_interval_eval
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_random_truth_interval_eval.py
 )
+
+add_test(
+    NAME test_submit_placer_slurm
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_submit_placer_slurm.py
+)

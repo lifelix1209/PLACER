@@ -68,6 +68,51 @@ PLACER_INS_FRAGMENT_HITS_TSV_PATH=ins_fragment_hits.tsv \
 ./build/placer <input.bam> <ref.fa> <te.fa>
 ```
 
+## SLURM Run
+
+Use the repository submission script as the only supported cluster entrypoint.
+
+```bash
+PLACER_BAM=/data/input.bam
+PLACER_REF=/data/ref.fa
+PLACER_TE=/data/te.fa
+PLACER_OUT_ROOT=/data/placer_out
+PLACER_RUN_NAME=yohann_d23
+
+sbatch \
+  --cpus-per-task 64 \
+  --mem 192G \
+  --export=ALL,PLACER_BAM,PLACER_REF,PLACER_TE,PLACER_OUT_ROOT,PLACER_RUN_NAME \
+  scripts/submit_placer_urika_d23.slurm
+```
+
+Required environment variables:
+
+- `PLACER_BAM`
+- `PLACER_REF`
+- `PLACER_TE`
+
+Optional overrides:
+
+- `PLACER_OUT_ROOT`
+- `PLACER_RUN_NAME`
+- `PLACER_BAM_BAI`
+- `PLACER_REF_FAI`
+- `PLACER_TE_FAI`
+
+The submission script writes run logs into:
+
+- `<PLACER_OUT_ROOT>/<PLACER_RUN_NAME>/job.stdout.log`
+- `<PLACER_OUT_ROOT>/<PLACER_RUN_NAME>/job.stderr.log`
+
+Expected log chain:
+
+- `[slurm] ...`
+- `[run-latest] ...`
+- `[PLACER] run started`
+
+If `[PLACER] run started` never appears in the run logs, the job did not reach the current repository binary entrypoint.
+
 `scientific.txt` now contains only final PASS TE insertion calls. The row schema is:
 
 - `chrom`, `pos`, `bp_left`, `bp_right`

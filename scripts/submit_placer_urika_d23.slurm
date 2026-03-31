@@ -11,8 +11,9 @@
 set -euo pipefail
 
 # Override cluster-specific settings such as partition/QOS at submit time, e.g.
-# sbatch --partition=<cluster-partition> --cpus-per-task=48 --mem=256G \
-#   --export=ALL,PLACER_BAM=/path/to/input.bam,PLACER_REF=/path/to/ref.fa,PLACER_TE=/path/to/te.fa \
+# PLACER_BAM=/data/input.bam PLACER_REF=/data/ref.fa PLACER_TE=/data/te.fa \
+#   PLACER_OUT_ROOT=/data/placer_out PLACER_RUN_NAME=yohann_d23 \
+#   sbatch --cpus-per-task=64 --mem=192G --export=ALL,PLACER_BAM,PLACER_REF,PLACER_TE,PLACER_OUT_ROOT,PLACER_RUN_NAME \
 #   scripts/submit_placer_urika_d23.slurm
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,8 +42,8 @@ RUN_DIR="$OUT_ROOT/$RUN_NAME"
 
 mkdir -p "$RUN_DIR"
 
-exec > >(tee -a "$RUN_DIR/job.stdout.log")
-exec 2> >(tee -a "$RUN_DIR/job.stderr.log" >&2)
+exec >>"$RUN_DIR/job.stdout.log"
+exec 2>>"$RUN_DIR/job.stderr.log"
 
 echo "[slurm] start_time=$(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "[slurm] host=$(hostname)"
