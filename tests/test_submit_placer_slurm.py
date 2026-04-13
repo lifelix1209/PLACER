@@ -12,6 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SUBMIT_SCRIPT = REPO_ROOT / "scripts" / "submit_placer_urika_d23.slurm"
 RUN_SCRIPT = REPO_ROOT / "scripts" / "run_placer_latest.sh"
+SHARDED_SCRIPT = REPO_ROOT / "scripts" / "run_sharded_placer.py"
 
 
 def make_executable(path: Path) -> None:
@@ -30,8 +31,10 @@ class SubmitPlacerSlurmTest(unittest.TestCase):
         (repo / "scripts").mkdir(parents=True, exist_ok=True)
         shutil.copy2(SUBMIT_SCRIPT, repo / "scripts" / "submit_placer_urika_d23.slurm")
         shutil.copy2(RUN_SCRIPT, repo / "scripts" / "run_placer_latest.sh")
+        shutil.copy2(SHARDED_SCRIPT, repo / "scripts" / "run_sharded_placer.py")
         make_executable(repo / "scripts" / "submit_placer_urika_d23.slurm")
         make_executable(repo / "scripts" / "run_placer_latest.sh")
+        make_executable(repo / "scripts" / "run_sharded_placer.py")
         return repo
 
     def install_fake_build_chain(self, repo: Path) -> Path:
@@ -61,6 +64,23 @@ echo "[PLACER] wrote scientific.txt path=$(pwd)/scientific.txt" >&2
         )
 
         return stamp_path
+
+    def install_fake_sharded_runner(self, repo: Path) -> None:
+        write_script(
+            repo / "scripts" / "run_sharded_placer.py",
+            """#!/usr/bin/env python3
+import pathlib
+import sys
+
+outdir = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
+outdir.mkdir(parents=True, exist_ok=True)
+(outdir / "scientific.sharded.txt").write_text("ok\\n", encoding="utf-8")
+(outdir / "shard_manifest.tsv").write_text("label\\tchrom\\n", encoding="utf-8")
+print("[sharded] mode=contig contigs=2 shards=2 workers=8 heartbeat=30.0s")
+print("[sharded] merged scientific: " + str(outdir / "scientific.sharded.txt"))
+print("[sharded] manifest: " + str(outdir / "shard_manifest.tsv"))
+""",
+        )
 
     def write_fake_inputs(self, repo: Path) -> dict[str, str]:
         data_dir = repo / "fake_data"
@@ -104,6 +124,7 @@ echo "[PLACER] wrote scientific.txt path=$(pwd)/scientific.txt" >&2
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = self.make_fake_repo(Path(tmpdir))
             self.install_fake_build_chain(repo)
+            self.install_fake_sharded_runner(repo)
             env = os.environ.copy()
             env.update(self.write_fake_inputs(repo))
             env["PLACER_OUT_ROOT"] = str(repo / "placer_out")
@@ -127,12 +148,19 @@ echo "[PLACER] wrote scientific.txt path=$(pwd)/scientific.txt" >&2
             self.assertEqual(completed.returncode, 0, msg=completed.stdout + completed.stderr)
             self.assertTrue(stdout_log.is_file())
             self.assertTrue(stderr_log.is_file())
-            self.assertIn("[slurm] slurm_cpus_per_task=64", stdout_log.read_text(encoding="utf-8"))
-            stderr_text = stderr_log.read_text(encoding="utf-8")
-            self.assertIn("[run-latest] binary=", stderr_text)
-            self.assertIn("[PLACER] run started", stderr_text)
-            self.assertIn("[PLACER] pipeline finished", stderr_text)
-            self.assertTrue((run_dir / "scientific.txt").is_file())
+            stdout_text = stdout_log.read_text(encoding="utf-8")
+            self.assertIn("[slurm] slurm_cpus_per_task=64", stdout_text)
+            self.assertIn("[sharded] mode=contig", stdout_text)
+            self.assertTrue((run_dir / "scientific.sharded.txt").is_file())
+            self.assertTrue((run_dir / "shard_manifest.tsv").is_file())
+            self.assertIn(
+                f"[slurm] scientific_sharded_txt={run_dir / 'scientific.sharded.txt'}",
+                stdout_text,
+            )
+            self.assertIn(
+                f"[slurm] shard_manifest_tsv={run_dir / 'shard_manifest.tsv'}",
+                stdout_text,
+            )
 
 
 if __name__ == "__main__":

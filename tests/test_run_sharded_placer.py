@@ -78,6 +78,21 @@ def write_scientific(path: Path, summary, rows, header=None):
 
 
 class RunShardedPlacerTest(unittest.TestCase):
+    def test_order_contigs_for_execution_prefers_heavier_mapped_contigs(self):
+        contigs = [
+            MODULE.ContigInfo(name="chr_small", length=1000, mapped=25, unmapped=0),
+            MODULE.ContigInfo(name="chr_big", length=900, mapped=250, unmapped=0),
+            MODULE.ContigInfo(name="chr_tie_b", length=800, mapped=100, unmapped=0),
+            MODULE.ContigInfo(name="chr_tie_a", length=1200, mapped=100, unmapped=0),
+        ]
+
+        ordered = MODULE.order_contigs_for_execution(contigs)
+
+        self.assertEqual(
+            [c.name for c in ordered],
+            ["chr_big", "chr_tie_a", "chr_tie_b", "chr_small"],
+        )
+
     def test_parse_scientific_rejects_unexpected_schema(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "unexpected.scientific.txt"
@@ -174,6 +189,83 @@ class RunShardedPlacerTest(unittest.TestCase):
             self.assertEqual(rows[0]["te"], "L1HS")
             self.assertEqual(rows[0]["family"], "L1")
             self.assertEqual(rows[0]["cross_family_margin"], "0.37")
+
+    def test_try_resume_shard_requires_success_marker_and_scientific(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workdir = root / "shards" / "0001_chr1"
+            workdir.mkdir(parents=True, exist_ok=True)
+            spec = MODULE.ShardSpec(
+                shard_id=1,
+                label="0001_chr1",
+                chrom="chr1",
+                core_start=1,
+                core_end=1000,
+                fetch_start=1,
+                fetch_end=1000,
+            )
+
+            self.assertIsNone(MODULE.try_resume_shard(spec, workdir))
+
+            write_scientific(workdir / "scientific.txt", make_summary(), [make_row()])
+            self.assertIsNone(MODULE.try_resume_shard(spec, workdir))
+
+            (workdir / "placer.stderr.log").write_text(
+                "[PLACER] pipeline finished\n",
+                encoding="utf-8",
+            )
+            (workdir / "placer.stdout.log").write_text("", encoding="utf-8")
+            MODULE.write_shard_success_marker(
+                workdir=workdir,
+                spec=spec,
+                elapsed_s=12.5,
+                n_rows_raw=1,
+                scientific_path=workdir / "scientific.txt",
+            )
+
+            resumed = MODULE.try_resume_shard(spec, workdir)
+            self.assertIsNotNone(resumed)
+            assert resumed is not None
+            self.assertTrue(resumed.reused)
+            self.assertEqual(resumed.n_rows_raw, 1)
+            self.assertEqual(resumed.summary["final_pass_calls"], "1")
+
+    def test_write_manifest_snapshot_records_reused_and_failed_states(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest = root / "shard_manifest.tsv"
+            shards = [
+                MODULE.ShardSpec(1, "0001_chr1", "chr1", 1, 100, 1, 100),
+                MODULE.ShardSpec(2, "0002_chr2", "chr2", 1, 200, 1, 200),
+            ]
+            tracker = MODULE.ProgressTracker(shards)
+            tracker.update_stage(shards[0], "placer", "chr1:1-100")
+            tracker.mark_done(shards[0], rows=3, elapsed_s=10.0, reused=True)
+            tracker.mark_failed(shards[1], "samtools view failed")
+
+            MODULE.write_manifest_snapshot(
+                manifest,
+                shards=shards,
+                tracker=tracker,
+                estimated_weights={"0001_chr1": 500, "0002_chr2": 100},
+                results_by_label={
+                    "0001_chr1": MODULE.ShardResult(
+                        spec=shards[0],
+                        workdir=root / "shards" / "0001_chr1",
+                        scientific_path=root / "shards" / "0001_chr1" / "scientific.txt",
+                        summary=make_summary(final_pass_calls="3"),
+                        n_rows_raw=3,
+                        elapsed_s=10.0,
+                        reused=True,
+                    )
+                },
+                failures_by_label={"0002_chr2": "samtools view failed"},
+            )
+
+            text = manifest.read_text(encoding="utf-8")
+            self.assertIn("label\tchrom\tstate\tstage\testimated_weight", text)
+            self.assertIn("0001_chr1\tchr1\treused\tdone\t500", text)
+            self.assertIn("0002_chr2\tchr2\tfailed\tfailed\t100", text)
 
 
 if __name__ == "__main__":

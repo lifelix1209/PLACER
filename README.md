@@ -126,7 +126,7 @@ If `[PLACER] run started` never appears in the run logs, the job did not reach t
 
 ## Sharded Run (Large BAM)
 
-For very large BAMs, run by shard and merge final calls without disabling modules:
+For very large BAMs on a single node, use exact contig sharding as the primary path:
 
 ```bash
 python3 scripts/run_sharded_placer.py \
@@ -135,18 +135,26 @@ python3 scripts/run_sharded_placer.py \
   --te <te.fa> \
   --placer ./build/placer \
   --mode contig \
-  --workers 8 \
+  --workers 32 \
+  --resume \
   --outdir sharded_placer_out
 ```
 
 Outputs:
 
-- `sharded_placer_out/scientific.sharded.txt` (merged callset)
-- `sharded_placer_out/shard_manifest.tsv` (per-shard runtime/row stats)
+- `sharded_placer_out/scientific.sharded.txt` (canonical merged exact callset)
+- `sharded_placer_out/shard_manifest.tsv` (live shard state + final per-shard timing)
+- `sharded_placer_out/shards/<label>/scientific.txt` (per-contig shard result)
+
+Operational notes:
+
+- `--mode contig` is the exact production path for large BAMs.
+- Restarting the same `--outdir` with `--resume` reuses completed shard results.
+- Large-BAM SLURM runs should launch the sharded orchestrator directly rather than `run_placer_latest.sh`.
 
 Accuracy notes:
 
-- `--mode contig` is recommended and exact (no overlap artifacts).
+- `--mode contig` is exact (no overlap artifacts).
 - `--mode region` uses overlap + core-range merge filtering for boundary safety.
 
 Memory/backpressure tuning for internal parallel mode:

@@ -59,7 +59,7 @@ for path in \
     "$REF_FAI" \
     "$TE" \
     "$TE_FAI" \
-    "$REPO_ROOT/scripts/run_placer_latest.sh" \
+    "$REPO_ROOT/scripts/run_sharded_placer.py" \
     "$REPO_ROOT/scripts/build_latest_placer.sh"; do
     if [[ ! -e "$path" ]]; then
         echo "[slurm] missing required path: $path" >&2
@@ -68,22 +68,11 @@ for path in \
 done
 
 TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-1}"
-if (( TOTAL_CPUS >= 8 )); then
-    export PLACER_BAM_THREADS=4
-    export PLACER_PARALLEL_WORKERS=$((TOTAL_CPUS - 4))
-elif (( TOTAL_CPUS >= 4 )); then
-    export PLACER_BAM_THREADS=2
-    export PLACER_PARALLEL_WORKERS=$((TOTAL_CPUS - 2))
-else
-    export PLACER_BAM_THREADS=1
-    export PLACER_PARALLEL_WORKERS=1
-fi
-if (( PLACER_PARALLEL_WORKERS < 1 )); then
-    export PLACER_PARALLEL_WORKERS=1
-fi
+PLACER_SHARD_WORKERS="${PLACER_SHARD_WORKERS:-$TOTAL_CPUS}"
+PLACER_SAMTOOLS_THREADS="${PLACER_SAMTOOLS_THREADS:-1}"
+PLACER_SHARD_HEARTBEAT_S="${PLACER_SHARD_HEARTBEAT_S:-60}"
 
 export PLACER_BUILD_JOBS="${PLACER_BUILD_JOBS:-$TOTAL_CPUS}"
-export PLACER_PARALLEL="${PLACER_PARALLEL:-1}"
 export PLACER_PROGRESS_INTERVAL="${PLACER_PROGRESS_INTERVAL:-5000}"
 export PLACER_LOG_STAGE_BINS="${PLACER_LOG_STAGE_BINS:-1}"
 export PLACER_LOG_STAGE_COMPONENTS="${PLACER_LOG_STAGE_COMPONENTS:-1}"
@@ -96,9 +85,9 @@ echo "[slurm] bam=$BAM"
 echo "[slurm] ref=$REF"
 echo "[slurm] te=$TE"
 echo "[slurm] PLACER_BUILD_JOBS=$PLACER_BUILD_JOBS"
-echo "[slurm] PLACER_PARALLEL=$PLACER_PARALLEL"
-echo "[slurm] PLACER_BAM_THREADS=$PLACER_BAM_THREADS"
-echo "[slurm] PLACER_PARALLEL_WORKERS=$PLACER_PARALLEL_WORKERS"
+echo "[slurm] PLACER_SHARD_WORKERS=$PLACER_SHARD_WORKERS"
+echo "[slurm] PLACER_SAMTOOLS_THREADS=$PLACER_SAMTOOLS_THREADS"
+echo "[slurm] PLACER_SHARD_HEARTBEAT_S=$PLACER_SHARD_HEARTBEAT_S"
 echo "[slurm] PLACER_PROGRESS_INTERVAL=$PLACER_PROGRESS_INTERVAL"
 echo "[slurm] PLACER_LOG_STAGE_BINS=$PLACER_LOG_STAGE_BINS"
 echo "[slurm] PLACER_LOG_STAGE_COMPONENTS=$PLACER_LOG_STAGE_COMPONENTS"
@@ -108,7 +97,23 @@ if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --is-inside-w
 fi
 
 cd "$RUN_DIR"
-"$REPO_ROOT/scripts/run_placer_latest.sh" "$BAM" "$REF" "$TE"
+python3 "$REPO_ROOT/scripts/run_sharded_placer.py" \
+    --bam "$BAM" \
+    --ref "$REF" \
+    --te "$TE" \
+    --placer "$REPO_ROOT/build/placer" \
+    --mode contig \
+    --workers "$PLACER_SHARD_WORKERS" \
+    --samtools-threads "$PLACER_SAMTOOLS_THREADS" \
+    --outdir "$RUN_DIR" \
+    --progress-heartbeat-s "$PLACER_SHARD_HEARTBEAT_S" \
+    --resume \
+    --env "PLACER_PARALLEL=0" \
+    --env "PLACER_BAM_THREADS=1" \
+    --env "PLACER_PROGRESS_INTERVAL=$PLACER_PROGRESS_INTERVAL" \
+    --env "PLACER_LOG_STAGE_BINS=$PLACER_LOG_STAGE_BINS" \
+    --env "PLACER_LOG_STAGE_COMPONENTS=$PLACER_LOG_STAGE_COMPONENTS"
 
 echo "[slurm] finished_time=$(date '+%Y-%m-%d %H:%M:%S %Z')"
-echo "[slurm] scientific_txt=$RUN_DIR/scientific.txt"
+echo "[slurm] scientific_sharded_txt=$RUN_DIR/scientific.sharded.txt"
+echo "[slurm] shard_manifest_tsv=$RUN_DIR/shard_manifest.tsv"

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import dataclasses
+import json
 import os
 import re
 import shutil
@@ -63,6 +64,8 @@ EXPECTED_SCIENTIFIC_HEADER = [
     "qc",
 ]
 
+SHARD_SUCCESS_MARKER = "shard.success.json"
+
 
 @dataclasses.dataclass(frozen=True)
 class ContigInfo:
@@ -101,6 +104,7 @@ class ShardResult:
     summary: Dict[str, str]
     n_rows_raw: int
     elapsed_s: float
+    reused: bool = False
 
 
 @dataclasses.dataclass
@@ -164,13 +168,19 @@ class ProgressTracker:
             if note:
                 rec.note = note
 
-    def mark_done(self, spec: ShardSpec, rows: int, elapsed_s: float) -> None:
+    def mark_done(
+        self,
+        spec: ShardSpec,
+        rows: int,
+        elapsed_s: float,
+        reused: bool = False,
+    ) -> None:
         now = time.time()
         with self._lock:
             rec = self._state[spec.label]
             if rec.started_s <= 0.0:
                 rec.started_s = now
-            rec.state = "done"
+            rec.state = "reused" if reused else "done"
             rec.stage = "done"
             rec.stage_started_s = now
             rec.updated_s = now
@@ -198,7 +208,7 @@ class ProgressTracker:
             running = 0
             queued = 0
             for rec in self._state.values():
-                if rec.state == "done":
+                if rec.state in {"done", "reused"}:
                     done += 1
                 elif rec.state == "failed":
                     failed += 1
@@ -213,6 +223,13 @@ class ProgressTracker:
             "queued": queued,
         }
 
+    def snapshot(self) -> Dict[str, ShardProgressState]:
+        with self._lock:
+            return {
+                label: dataclasses.replace(rec)
+                for label, rec in self._state.items()
+            }
+
     def render(self, total: int, max_active: int = 4) -> str:
         now = time.time()
         with self._lock:
@@ -221,7 +238,7 @@ class ProgressTracker:
             running = 0
             queued = 0
             for rec in self._state.values():
-                if rec.state == "done":
+                if rec.state in {"done", "reused"}:
                     done += 1
                 elif rec.state == "failed":
                     failed += 1
@@ -334,6 +351,17 @@ def load_contigs(samtools: str, bam: Path, min_mapped: int) -> List[ContigInfo]:
     return out
 
 
+def order_contigs_for_execution(contigs: Sequence[ContigInfo]) -> List[ContigInfo]:
+    return sorted(
+        contigs,
+        key=lambda c: (-c.mapped, -c.length, c.name),
+    )
+
+
+def shard_success_marker_path(workdir: Path) -> Path:
+    return workdir / SHARD_SUCCESS_MARKER
+
+
 def sanitize_label(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s)
 
@@ -432,6 +460,56 @@ def parse_scientific(path: Path) -> Tuple[Dict[str, str], List[str], List[Dict[s
         detail = " ".join(problems) if problems else "column_order_mismatch"
         raise RuntimeError(f"unexpected scientific.txt schema in {path}: {detail}")
     return summary, header, rows
+
+
+def write_shard_success_marker(
+    *,
+    workdir: Path,
+    spec: ShardSpec,
+    elapsed_s: float,
+    n_rows_raw: int,
+    scientific_path: Path,
+) -> None:
+    payload = {
+        "label": spec.label,
+        "chrom": spec.chrom,
+        "elapsed_s": elapsed_s,
+        "n_rows_raw": n_rows_raw,
+        "scientific_path": str(scientific_path),
+        "state": "done",
+    }
+    marker = shard_success_marker_path(workdir)
+    tmp = marker.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(marker)
+
+
+def try_resume_shard(spec: ShardSpec, workdir: Path) -> Optional[ShardResult]:
+    scientific = workdir / "scientific.txt"
+    marker = shard_success_marker_path(workdir)
+    if not scientific.exists() or not marker.exists():
+        return None
+    if not (workdir / "placer.stderr.log").exists():
+        return None
+    if not (workdir / "placer.stdout.log").exists():
+        return None
+
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    if payload.get("state") != "done":
+        return None
+    if payload.get("label") != spec.label or payload.get("chrom") != spec.chrom:
+        return None
+
+    summary, _, rows = parse_scientific(scientific)
+    return ShardResult(
+        spec=spec,
+        workdir=workdir,
+        scientific_path=scientific,
+        summary=summary,
+        n_rows_raw=len(rows),
+        elapsed_s=float(payload.get("elapsed_s", 0.0)),
+        reused=True,
+    )
 
 
 def parse_int(value: str, default: int = 0) -> int:
@@ -599,6 +677,48 @@ def merge_shard_results(
             out.write("\t".join(row.get(col, "") for col in base_header) + "\n")
 
 
+def write_manifest_snapshot(
+    path: Path,
+    *,
+    shards: Sequence[ShardSpec],
+    tracker: ProgressTracker,
+    estimated_weights: Dict[str, int],
+    results_by_label: Dict[str, ShardResult],
+    failures_by_label: Dict[str, str],
+) -> None:
+    snapshot = tracker.snapshot()
+    tmp = path.with_suffix(".tmp")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    with tmp.open("w", encoding="utf-8") as out:
+        out.write(
+            "label\tchrom\tstate\tstage\testimated_weight\telapsed_s\trows\tworkdir\tscientific\tmessage\n"
+        )
+        for spec in shards:
+            rec = snapshot[spec.label]
+            result = results_by_label.get(spec.label)
+            workdir = "" if result is None else str(result.workdir)
+            scientific = "" if result is None else str(result.scientific_path)
+            message = failures_by_label.get(spec.label, rec.note)
+            out.write(
+                "\t".join(
+                    [
+                        spec.label,
+                        spec.chrom,
+                        rec.state,
+                        rec.stage,
+                        str(estimated_weights.get(spec.label, 0)),
+                        f"{rec.elapsed_s:.3f}",
+                        str(rec.rows),
+                        workdir,
+                        scientific,
+                        message.replace("\t", " "),
+                    ]
+                )
+                + "\n"
+            )
+    tmp.replace(path)
+
+
 def run_single_shard(
     spec: ShardSpec,
     *,
@@ -621,10 +741,13 @@ def run_single_shard(
     extract_stderr = workdir / "extract.stderr.log"
     run_stdout = workdir / "placer.stdout.log"
     run_stderr = workdir / "placer.stderr.log"
+    success_marker = shard_success_marker_path(workdir)
 
     for log_path in (extract_stdout, extract_stderr, run_stdout, run_stderr):
         if log_path.exists():
             log_path.unlink()
+    if success_marker.exists():
+        success_marker.unlink()
 
     def update(stage: str, note: str = "") -> None:
         if progress_cb is not None:
@@ -682,6 +805,13 @@ def run_single_shard(
         summary, _, rows = parse_scientific(scientific)
         elapsed_s = time.time() - t0
         update("postprocess", f"rows={len(rows)}")
+        write_shard_success_marker(
+            workdir=workdir,
+            spec=spec,
+            elapsed_s=elapsed_s,
+            n_rows_raw=len(rows),
+            scientific_path=scientific,
+        )
         return ShardResult(
             spec=spec,
             workdir=workdir,
@@ -689,6 +819,7 @@ def run_single_shard(
             summary=summary,
             n_rows_raw=len(rows),
             elapsed_s=elapsed_s,
+            reused=False,
         )
     except Exception as exc:
         if progress_cb is not None:
@@ -816,6 +947,8 @@ def main() -> int:
         action="store_true",
         help="Keep per-shard BAM/BAM.bai files after merge.",
     )
+    parser.add_argument("--resume", dest="resume", action="store_true", default=True)
+    parser.add_argument("--no-resume", dest="resume", action="store_false")
     args = parser.parse_args()
 
     bam = Path(args.bam).resolve()
@@ -855,7 +988,9 @@ def main() -> int:
         print(f"[sharded] BAM index missing/invalid, building: {bam}", file=sys.stderr)
         subprocess.run([args.samtools, "index", str(bam)], check=True)
 
-    contigs = load_contigs(args.samtools, bam, max(0, args.min_mapped_reads))
+    contigs = order_contigs_for_execution(
+        load_contigs(args.samtools, bam, max(0, args.min_mapped_reads))
+    )
     if not contigs:
         print("[sharded] no contigs pass min-mapped filter", file=sys.stderr)
         return 2
@@ -874,6 +1009,13 @@ def main() -> int:
     outdir.mkdir(parents=True, exist_ok=True)
     shard_root.mkdir(parents=True, exist_ok=True)
     tracker = ProgressTracker(shards)
+    contig_weights = {c.name: c.mapped for c in contigs}
+    estimated_weights = {
+        spec.label: contig_weights.get(spec.chrom, 0)
+        for spec in shards
+    }
+    results_by_label: Dict[str, ShardResult] = {}
+    failures_by_label: Dict[str, str] = {}
 
     print(
         f"[sharded] mode={args.mode} contigs={len(contigs)} shards={len(shards)} "
@@ -882,9 +1024,41 @@ def main() -> int:
         flush=True,
     )
     print(tracker.render(len(shards)), flush=True)
+    write_manifest_snapshot(
+        manifest_path,
+        shards=shards,
+        tracker=tracker,
+        estimated_weights=estimated_weights,
+        results_by_label=results_by_label,
+        failures_by_label=failures_by_label,
+    )
 
     shard_results: List[ShardResult] = []
     failures: List[Tuple[ShardSpec, str]] = []
+
+    pending_specs: List[ShardSpec] = []
+    for spec in shards:
+        if args.resume:
+            resumed = try_resume_shard(spec, shard_root / spec.label)
+            if resumed is not None:
+                shard_results.append(resumed)
+                results_by_label[spec.label] = resumed
+                tracker.mark_done(
+                    spec,
+                    resumed.n_rows_raw,
+                    resumed.elapsed_s,
+                    reused=True,
+                )
+                write_manifest_snapshot(
+                    manifest_path,
+                    shards=shards,
+                    tracker=tracker,
+                    estimated_weights=estimated_weights,
+                    results_by_label=results_by_label,
+                    failures_by_label=failures_by_label,
+                )
+                continue
+        pending_specs.append(spec)
 
     def _submit_one(spec: ShardSpec) -> ShardResult:
         return run_single_shard(
@@ -901,7 +1075,7 @@ def main() -> int:
         )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
-        future_to_spec = {ex.submit(_submit_one, spec): spec for spec in shards}
+        future_to_spec = {ex.submit(_submit_one, spec): spec for spec in pending_specs}
         total = len(shards)
         pending = set(future_to_spec)
         heartbeat_s = max(0.0, args.progress_heartbeat_s)
@@ -914,12 +1088,22 @@ def main() -> int:
             )
             if not done_futs:
                 print(tracker.render(total), flush=True)
+                write_manifest_snapshot(
+                    manifest_path,
+                    shards=shards,
+                    tracker=tracker,
+                    estimated_weights=estimated_weights,
+                    results_by_label=results_by_label,
+                    failures_by_label=failures_by_label,
+                )
                 continue
             for fut in done_futs:
                 spec = future_to_spec[fut]
                 try:
                     result = fut.result()
                     shard_results.append(result)
+                    results_by_label[spec.label] = result
+                    failures_by_label.pop(spec.label, None)
                     tracker.mark_done(spec, result.n_rows_raw, result.elapsed_s)
                     counts = tracker.counts()
                     finished = counts["done"] + counts["failed"]
@@ -931,6 +1115,7 @@ def main() -> int:
                     )
                 except Exception as exc:  # noqa: BLE001
                     failures.append((spec, str(exc)))
+                    failures_by_label[spec.label] = str(exc)
                     tracker.mark_failed(spec, str(exc))
                     counts = tracker.counts()
                     finished = counts["done"] + counts["failed"]
@@ -940,6 +1125,14 @@ def main() -> int:
                         file=sys.stderr,
                         flush=True,
                     )
+                write_manifest_snapshot(
+                    manifest_path,
+                    shards=shards,
+                    tracker=tracker,
+                    estimated_weights=estimated_weights,
+                    results_by_label=results_by_label,
+                    failures_by_label=failures_by_label,
+                )
 
     if failures:
         print(f"[sharded] {len(failures)} shard(s) failed; abort merge", file=sys.stderr)
@@ -958,7 +1151,14 @@ def main() -> int:
         overlap_bp=max(0, args.overlap_bp),
         out_path=merged_scientific,
     )
-    write_manifest(manifest_path, shard_results)
+    write_manifest_snapshot(
+        manifest_path,
+        shards=shards,
+        tracker=tracker,
+        estimated_weights=estimated_weights,
+        results_by_label=results_by_label,
+        failures_by_label=failures_by_label,
+    )
 
     if not args.keep_shard_bam:
         for result in shard_results:
