@@ -31,6 +31,9 @@ benchmark_steller_out/
 benchmark_steller_sweep/
 benchmark_stress_out/
 sharded_placer_out/
+shards/
+shard_manifest.tsv
+scientific.sharded.txt
 *.cluster.msa.fa.progress.log
 pass1_bootstrap_consensus.fasta
 pass1_bootstrap_calls.tsv

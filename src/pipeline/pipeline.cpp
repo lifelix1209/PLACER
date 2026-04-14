@@ -1,9 +1,13 @@
 #include "pipeline.h"
 #include "decision_policy.h"
+#include "local_interval_cache.h"
+#include "parallel_executor_internal.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
@@ -595,7 +599,6 @@ void emit_pipeline_log_line(const std::string& line) {
 }
 
 using SharedRecordBatch = std::shared_ptr<const std::vector<BufferedRecord>>;
-
 bool final_call_sort_less(const FinalCall& a, const FinalCall& b) {
     if (a.tid != b.tid) {
         return a.tid < b.tid;
@@ -3008,60 +3011,126 @@ PipelineResult Pipeline::run_streaming() const {
 
 PipelineResult Pipeline::run_parallel() const {
     PipelineResult result;
-    const int32_t worker_count = std::max(
+    const size_t worker_count = static_cast<size_t>(std::max(
         1,
-        (config_.parallel_workers > 0) ? config_.parallel_workers : config_.bam_threads);
-    const int32_t queue_cap_cfg = config_.parallel_queue_max_tasks;
-    const size_t queue_cap = (queue_cap_cfg > 0) ? static_cast<size_t>(queue_cap_cfg) : size_t{0};
-    SafeQueue<BinTask> bin_queue(queue_cap);
-    std::vector<PipelineResult> worker_results(static_cast<size_t>(worker_count));
+        (config_.parallel_workers > 0) ? config_.parallel_workers : config_.bam_threads));
+    const size_t ready_cap = (config_.parallel_queue_max_tasks > 0)
+        ? static_cast<size_t>(config_.parallel_queue_max_tasks)
+        : std::max<size_t>(2, worker_count * 2);
+    const size_t result_cap = (config_.parallel_result_buffer_max > 0)
+        ? static_cast<size_t>(config_.parallel_result_buffer_max)
+        : std::max<size_t>(2, worker_count * 2);
+    CostAwareTaskQueue ready_queue(ready_cap);
+    BoundedTaskQueue<ExactBinTaskResult> result_queue(result_cap);
+    DeterministicBinReducer reducer;
     std::vector<std::thread> workers;
-    workers.reserve(static_cast<size_t>(worker_count));
+    workers.reserve(worker_count);
+    std::atomic<size_t> workers_alive{worker_count};
+    std::atomic<int64_t> reads_scanned{0};
+    std::atomic<int64_t> raw_bins_discovered{0};
+    std::atomic<int64_t> tasks_materialized{0};
+    std::atomic<int64_t> tasks_running{0};
+    std::atomic<int64_t> tasks_completed{0};
+    std::atomic<int64_t> reducer_committed{0};
+    std::atomic<size_t> snapshot_window_size{0};
     {
         std::ostringstream oss;
         oss << "[Pipeline] parallel workers=" << worker_count
-            << " queue_cap=" << queue_cap;
+            << " ready_queue_cap=" << ready_cap
+            << " result_queue_cap=" << result_cap;
         emit_pipeline_log_line(oss.str());
     }
 
-    for (int32_t wi = 0; wi < worker_count; ++wi) {
-        workers.emplace_back([this, wi, &bin_queue, &worker_results]() {
-            BinTask task;
-            while (bin_queue.pop(task)) {
+    const auto emit_parallel_progress = [&]() {
+        if (!config_.log_parallel_progress) {
+            return;
+        }
+        ParallelProgressSnapshot snapshot;
+        snapshot.reads_scanned = reads_scanned.load();
+        snapshot.raw_bins_discovered = raw_bins_discovered.load();
+        snapshot.tasks_materialized = tasks_materialized.load();
+        snapshot.tasks_running = tasks_running.load();
+        snapshot.tasks_completed = tasks_completed.load();
+        snapshot.reducer_committed = reducer_committed.load();
+        snapshot.snapshot_window_size = snapshot_window_size.load();
+        snapshot.ready_queue_depth = ready_queue.size();
+        snapshot.result_queue_depth = result_queue.size();
+        emit_pipeline_log_line(render_parallel_progress(snapshot));
+    };
+
+    for (size_t wi = 0; wi < worker_count; ++wi) {
+        workers.emplace_back([this,
+                              &ready_queue,
+                              &result_queue,
+                              &workers_alive,
+                              &tasks_running,
+                              &tasks_completed,
+                              &emit_parallel_progress]() {
+            ExactBinTask task;
+            while (ready_queue.pop(task)) {
+                tasks_running.fetch_add(1);
+                const auto started_at = std::chrono::steady_clock::now();
+                PipelineResult partial;
+                std::vector<const bam1_t*> records;
+                records.reserve(task.records.size());
+                for (const auto& ref : task.records) {
+                    records.push_back(ref.record);
+                }
                 process_bin_records(
-                    std::move(task.records),
+                    std::move(records),
                     task.tid,
                     task.bin_index,
-                    worker_results[static_cast<size_t>(wi)]);
-                for (size_t oi = 0; oi < task.owner_count; ++oi) {
-                    task.owners[oi].reset();
-                }
-                task.owner_count = 0;
+                    partial);
+                result_queue.push(ExactBinTaskResult{
+                    task.tid,
+                    task.bin_index,
+                    std::move(partial),
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - started_at).count(),
+                });
+                tasks_running.fetch_sub(1);
+                tasks_completed.fetch_add(1);
+                emit_parallel_progress();
             }
+            workers_alive.fetch_sub(1);
         });
     }
+
+    const auto drain_completed_results = [&]() {
+        ExactBinTaskResult partial;
+        bool committed_any = false;
+        while (result_queue.try_pop(partial)) {
+            reducer.push_ready(partial.tid, partial.bin_index, std::move(partial));
+        }
+        reducer.drain([&](int32_t, int32_t, ExactBinTaskResult& payload) {
+            result.processed_bins += payload.partial.processed_bins;
+            result.built_components += payload.partial.built_components;
+            result.event_consensus_calls += payload.partial.event_consensus_calls;
+            result.genotype_calls += payload.partial.genotype_calls;
+            result.final_pass_calls += payload.partial.final_pass_calls;
+            for (auto& call : payload.partial.final_calls) {
+                result.final_calls.push_back(std::move(call));
+            }
+            reducer_committed.fetch_add(1);
+            committed_any = true;
+        });
+        if (committed_any) {
+            emit_parallel_progress();
+        }
+    };
 
     int64_t gate1_passed = 0;
     int32_t current_tid = -1;
     int32_t current_bin_index = -1;
     std::vector<BufferedRecord> current_bin_records;
     current_bin_records.reserve(config_.batch_size);
-    struct BinSnapshot {
-        int32_t tid = -1;
-        int32_t bin_index = -1;
-        SharedRecordBatch records;
-    };
-    std::deque<BinSnapshot> recent_bin_snapshots;
+    std::vector<ExactBinSnapshot> exact_snapshots;
 
-    const auto trim_recent_snapshots = [&](int32_t tid, int32_t bin_index) {
-        while (!recent_bin_snapshots.empty()) {
-            const auto& front = recent_bin_snapshots.front();
-            if (front.tid != tid) {
-                recent_bin_snapshots.pop_front();
-                continue;
-            }
-            if ((bin_index - front.bin_index) > kCrossBinContextBins) {
-                recent_bin_snapshots.pop_front();
+    const auto trim_exact_snapshots = [&](int32_t tid, int32_t bin_index) {
+        while (!exact_snapshots.empty()) {
+            const auto& front = exact_snapshots.front();
+            if (front.tid != tid || (bin_index - front.bin_index) > kCrossBinContextBins) {
+                exact_snapshots.erase(exact_snapshots.begin());
                 continue;
             }
             break;
@@ -3074,61 +3143,41 @@ PipelineResult Pipeline::run_parallel() const {
         }
         SharedRecordBatch current_batch = std::make_shared<const std::vector<BufferedRecord>>(
             std::move(current_bin_records));
-        BinTask task;
-        task.tid = current_tid;
-        task.bin_index = current_bin_index;
-        task.owner_count = 0;
-        const int32_t bin_start = current_bin_index * config_.bin_size;
-        const int32_t snapshot_min_ref_end = bin_start - kWindowBinSlackBp;
-        for (const auto& snapshot : recent_bin_snapshots) {
-            if (snapshot.tid != current_tid) {
-                continue;
-            }
-            if ((current_bin_index - snapshot.bin_index) > kCrossBinContextBins) {
-                continue;
-            }
-            if (snapshot.records && task.owner_count < task.owners.size()) {
-                task.owners[task.owner_count++] = snapshot.records;
-            }
-        }
-        if (current_batch && task.owner_count < task.owners.size()) {
-            task.owners[task.owner_count++] = current_batch;
-        }
-        size_t total_records = 0;
-        for (size_t oi = 0; oi < task.owner_count; ++oi) {
-            const auto& owner = task.owners[oi];
-            if (owner) {
-                total_records += owner->size();
-            }
-        }
-        task.records.reserve(total_records);
-        for (size_t oi = 0; oi < task.owner_count; ++oi) {
-            const auto& owner = task.owners[oi];
-            if (!owner) {
-                continue;
-            }
-            const int32_t min_ref_end = (oi + 1 == task.owner_count)
-                ? std::numeric_limits<int32_t>::min()
-                : snapshot_min_ref_end;
-            append_record_ptrs(*owner, task.records, min_ref_end);
-        }
-        if (!task.records.empty()) {
-            bin_queue.push(std::move(task));
-        }
+        trim_exact_snapshots(current_tid, current_bin_index);
+        exact_snapshots.push_back(ExactBinSnapshot{
+            current_tid,
+            current_bin_index,
+            current_batch,
+        });
+        raw_bins_discovered.fetch_add(1);
+        snapshot_window_size.store(exact_snapshots.size());
 
-        BinSnapshot snapshot;
-        snapshot.tid = current_tid;
-        snapshot.bin_index = current_bin_index;
-        snapshot.records = std::move(current_batch);
-        recent_bin_snapshots.push_back(std::move(snapshot));
-        trim_recent_snapshots(current_tid, current_bin_index);
+        ExactBinTask task = build_exact_bin_task(
+            current_tid,
+            current_bin_index,
+            exact_snapshots,
+            config_.bin_size,
+            kCrossBinContextBins,
+            kWindowBinSlackBp);
+        tasks_materialized.fetch_add(1);
+        reducer.expect(task.tid, task.bin_index);
+        ready_queue.push(std::move(task));
+        trim_exact_snapshots(current_tid, current_bin_index);
+        snapshot_window_size.store(exact_snapshots.size());
 
         current_bin_records.clear();
         current_bin_records.reserve(config_.batch_size);
+        emit_parallel_progress();
+        drain_completed_results();
     };
 
-    const auto progress_cb = [this](int64_t processed, int32_t tid) {
+    const auto progress_cb = [this, &reads_scanned, &emit_parallel_progress, &drain_completed_results](
+                                 int64_t processed,
+                                 int32_t tid) {
+        reads_scanned.store(processed);
         std::cerr << "[Pipeline] processed=" << processed << " current_tid=" << tid << '\n';
+        emit_parallel_progress();
+        drain_completed_results();
         return true;
     };
 
@@ -3165,24 +3214,21 @@ PipelineResult Pipeline::run_parallel() const {
         config_.progress_interval);
 
     flush_bin_task();
+    reads_scanned.store(total_reads);
+    emit_parallel_progress();
 
-    bin_queue.close();
+    ready_queue.close();
+    while (workers_alive.load() > 0) {
+        drain_completed_results();
+        std::this_thread::yield();
+    }
     for (auto& worker : workers) {
         worker.join();
     }
+    drain_completed_results();
 
     result.total_reads = total_reads;
     result.gate1_passed = gate1_passed;
-
-    for (auto& worker_result : worker_results) {
-        result.processed_bins += worker_result.processed_bins;
-        result.built_components += worker_result.built_components;
-        result.event_consensus_calls += worker_result.event_consensus_calls;
-        result.genotype_calls += worker_result.genotype_calls;
-        for (auto& call : worker_result.final_calls) {
-            result.final_calls.push_back(std::move(call));
-        }
-    }
 
     finalize_final_calls(result);
     return result;
@@ -3395,6 +3441,59 @@ void Pipeline::process_bin_records(
 
     auto components = component_module_.build(bin_records, chrom, tid, bin_start, bin_end);
     result.built_components += static_cast<int64_t>(components.size());
+    std::vector<std::pair<int32_t, int32_t>> component_seed_bounds;
+    component_seed_bounds.reserve(components.size());
+    std::vector<LocalIntervalRequest> requests;
+    requests.reserve(components.size());
+    for (size_t ci = 0; ci < components.size(); ++ci) {
+        const auto& component = components[ci];
+        const auto seed_bounds = infer_component_breakpoint_bounds(component);
+        component_seed_bounds.push_back(seed_bounds);
+        requests.push_back(LocalIntervalRequest{
+            component.chrom,
+            std::max(0, std::min(seed_bounds.first, seed_bounds.second) - kLocalEventFetchSlackBp),
+            std::max(
+                std::max(0, std::min(seed_bounds.first, seed_bounds.second) - kLocalEventFetchSlackBp) + 1,
+                std::max(seed_bounds.first, seed_bounds.second) + kLocalEventFetchSlackBp),
+            ci,
+        });
+    }
+    LocalIntervalReuseStats reuse_stats;
+    reuse_stats.request_count = requests.size();
+    const std::vector<CanonicalLocalInterval> intervals =
+        build_canonical_local_intervals(requests, 128);
+    reuse_stats.canonical_interval_count = intervals.size();
+    std::vector<LocalIntervalCacheEntry> interval_cache;
+    interval_cache.reserve(intervals.size());
+    for (const auto& interval : intervals) {
+        LocalIntervalCacheEntry entry;
+        entry.interval = interval;
+        const bool fetch_ok = bam_reader_->fetch(
+            interval.chrom,
+            interval.start,
+            interval.end,
+            [&](BamRecordPtr&& record) {
+                if (!record) {
+                    return true;
+                }
+                entry.owned_records.push_back(std::move(record));
+                const bam1_t* ptr = entry.owned_records.back().get();
+                entry.records.push_back(ptr);
+                ReadView view(ptr);
+                ReadReferenceSpan span;
+                span.valid = true;
+                span.tid = view.tid();
+                span.start = view.pos();
+                span.end = compute_ref_end(view);
+                entry.read_spans.push_back(span);
+                return true;
+            });
+        if (!fetch_ok) {
+            entry.records.clear();
+            entry.read_spans.clear();
+        }
+        interval_cache.push_back(std::move(entry));
+    }
 
     struct BinStageStats {
         int64_t event_consensus_calls = 0;
@@ -3454,38 +3553,13 @@ void Pipeline::process_bin_records(
         emit_pipeline_log_line(oss.str());
     };
 
-    for (const auto& component : components) {
+    for (size_t ci = 0; ci < components.size(); ++ci) {
+        const auto& component = components[ci];
         const std::vector<InsertionFragment> empty_fragments;
-
-        const auto seed_bounds = infer_component_breakpoint_bounds(component);
-        const int32_t fetch_start = std::max(
-            0,
-            std::min(seed_bounds.first, seed_bounds.second) - kLocalEventFetchSlackBp);
-        const int32_t fetch_end = std::max(
-            fetch_start + 1,
-            std::max(seed_bounds.first, seed_bounds.second) + kLocalEventFetchSlackBp);
-        LocalFetchedReads local_reads;
-        const bool fetch_ok = bam_reader_->fetch(
-            component.chrom,
-            fetch_start,
-            fetch_end,
-            [&](BamRecordPtr&& record) {
-                if (!record) {
-                    return true;
-                }
-                local_reads.owned_records.push_back(std::move(record));
-                const bam1_t* ptr = local_reads.owned_records.back().get();
-                local_reads.records.push_back(ptr);
-                ReadView view(ptr);
-                ReadReferenceSpan span;
-                span.valid = true;
-                span.tid = view.tid();
-                span.start = view.pos();
-                span.end = compute_ref_end(view);
-                local_reads.read_spans.push_back(span);
-                return true;
-            });
-        if (!fetch_ok || local_reads.records.empty()) {
+        const auto seed_bounds = component_seed_bounds[ci];
+        const LocalIntervalProjection projection =
+            project_cached_interval_reads(requests[ci], interval_cache);
+        if (projection.records.empty()) {
             log_component(
                 "LOCAL_EVENT_RECOLLECTION_FAILED",
                 component,
@@ -3498,14 +3572,14 @@ void Pipeline::process_bin_records(
         const ComponentCall local_component = build_local_fragment_component(
             config_,
             component,
-            local_reads.records);
+            projection.records);
         const std::vector<InsertionFragment> fragments = ins_fragment_module_.extract(
             local_component,
-            local_reads.records);
+            projection.records);
 
         const auto breakpoint_hypotheses = enumerate_breakpoint_hypotheses(
             component,
-            local_reads.records,
+            projection.records,
             fragments,
             seed_bounds.first,
             seed_bounds.second,
@@ -3524,8 +3598,8 @@ void Pipeline::process_bin_records(
         for (const auto& hypothesis : breakpoint_hypotheses) {
             const EventReadEvidence event_evidence = collect_event_read_evidence_for_bounds(
                 component,
-                local_reads.records,
-                local_reads.read_spans,
+                projection.records,
+                projection.read_spans,
                 fragments,
                 hypothesis.left,
                 hypothesis.right,
@@ -3533,7 +3607,7 @@ void Pipeline::process_bin_records(
                 hypothesis.right);
             const EventConsensus event_consensus = build_event_consensus(
                 component,
-                local_reads.records,
+                projection.records,
                 fragments,
                 event_evidence);
             result.event_consensus_calls += 1;
@@ -3695,7 +3769,8 @@ void Pipeline::process_bin_records(
             << " event_consensus_calls=" << bin_stats.event_consensus_calls
             << " event_consensus_rejected=" << bin_stats.event_consensus_rejected
             << " genotype_calls=" << bin_stats.genotype_calls
-            << " final_calls=" << bin_stats.final_calls;
+            << " final_calls=" << bin_stats.final_calls
+            << " local_reuse_ratio=" << local_interval_reuse_ratio(reuse_stats);
         emit_pipeline_log_line(oss.str());
     }
 }

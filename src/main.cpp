@@ -197,6 +197,12 @@ int main(int argc, char** argv) {
         if (placer::env_try_int32("PLACER_PARALLEL_QUEUE_MAX_TASKS", i)) {
             config.parallel_queue_max_tasks = i;
         }
+        if (placer::env_try_int32("PLACER_PARALLEL_RESULT_BUFFER_MAX", i)) {
+            config.parallel_result_buffer_max = i;
+        }
+        if (placer::env_try_bool("PLACER_LOG_PARALLEL_PROGRESS", b)) {
+            config.log_parallel_progress = b;
+        }
         if (placer::env_try_bool("PLACER_TSD_ENABLE", b)) {
             config.tsd_enable = b;
         }
@@ -240,6 +246,10 @@ int main(int argc, char** argv) {
                   << "  te_fasta=" << (config.te_fasta_path.empty() ? "NA" : config.te_fasta_path) << "\n"
                   << "  mode=" << (config.enable_parallel ? "parallel" : "streaming") << "\n"
                   << "  bam_threads=" << config.bam_threads << "\n"
+                  << "  parallel_workers=" << config.parallel_workers << "\n"
+                  << "  parallel_queue_max_tasks=" << config.parallel_queue_max_tasks << "\n"
+                  << "  parallel_result_buffer_max=" << config.parallel_result_buffer_max << "\n"
+                  << "  log_parallel_progress=" << (config.log_parallel_progress ? 1 : 0) << "\n"
                   << "  progress_interval=" << config.progress_interval << "\n"
                   << "  log_stage_bins=" << (config.log_stage_bins ? 1 : 0) << "\n"
                   << "  log_stage_components=" << (config.log_stage_components ? 1 : 0) << "\n"

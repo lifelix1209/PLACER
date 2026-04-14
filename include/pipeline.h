@@ -277,7 +277,9 @@ struct PipelineConfig {
     bool enable_parallel = false;
     size_t batch_size = 1000;
     int32_t parallel_workers = 0;
-    int32_t parallel_queue_max_tasks = 0;  // <=0 means unbounded queue
+    int32_t parallel_queue_max_tasks = 0;  // <=0 means auto-size bounded queue
+    int32_t parallel_result_buffer_max = 0;  // <=0 means auto-size bounded queue
+    bool log_parallel_progress = false;
 };
 
 struct PipelineResult {

@@ -162,9 +162,34 @@ Memory/backpressure tuning for internal parallel mode:
 ```bash
 PLACER_PARALLEL=1 \
 PLACER_PARALLEL_WORKERS=8 \
-PLACER_PARALLEL_QUEUE_MAX_TASKS=64 \
+PLACER_PARALLEL_QUEUE_MAX_TASKS=16 \
+PLACER_PARALLEL_RESULT_BUFFER_MAX=16 \
+PLACER_LOG_PARALLEL_PROGRESS=1 \
 ./build/placer <input.bam> <ref.fa> <te.fa>
 ```
+
+`processed=` still reports BAM scan progress. The new `[Pipeline][parallel] ...` lines report raw bins discovered, the bounded snapshot window, ready backlog, running tasks, completed tasks, and reducer-committed bins. If `reads_scanned` rises quickly while `tasks_completed` and `reducer_committed` stall, the bottleneck is task execution rather than BAM scanning.
+
+### Exact Micro-Shard Parallel Executor
+
+The internal parallel executor now materializes exact `(tid, bin_index)` tasks rather than letting the BAM reader run arbitrarily far ahead of bin execution. This keeps semantics aligned with the existing bin logic while bounding queue growth and exposing task-level progress.
+
+Useful environment variables:
+
+```bash
+PLACER_PARALLEL=1 \
+PLACER_PARALLEL_WORKERS=8 \
+PLACER_PARALLEL_QUEUE_MAX_TASKS=16 \
+PLACER_PARALLEL_RESULT_BUFFER_MAX=16 \
+PLACER_LOG_PARALLEL_PROGRESS=1 \
+./build/placer <input.bam> <ref.fa> <te.fa>
+```
+
+Interpretation:
+
+- `[Pipeline] processed=...` reports BAM scan progress.
+- `[Pipeline][parallel] ...` reports raw bins discovered, snapshot-window size, executor backlog, running tasks, completed tasks, and reducer-committed bins.
+- If scan progress rises while reducer-committed bins stall, the hot path is exact task execution rather than BAM reading.
 
 ## Random Truth Evaluation
 

@@ -72,6 +72,59 @@ target_link_libraries(test_ref_span_dominant_rejection PRIVATE placer_pipeline)
 
 add_test(NAME test_ref_span_dominant_rejection COMMAND test_ref_span_dominant_rejection)
 
+add_executable(test_parallel_exact_bin_task_equivalence
+    test_parallel_exact_bin_task_equivalence.cpp
+)
+target_include_directories(test_parallel_exact_bin_task_equivalence PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/pipeline
+)
+target_link_libraries(test_parallel_exact_bin_task_equivalence PRIVATE placer_pipeline)
+
+add_test(
+    NAME test_parallel_exact_bin_task_equivalence
+    COMMAND test_parallel_exact_bin_task_equivalence
+)
+
+add_executable(test_parallel_bounded_scheduler
+    test_parallel_bounded_scheduler.cpp
+)
+target_include_directories(test_parallel_bounded_scheduler PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/pipeline
+)
+target_link_libraries(test_parallel_bounded_scheduler PRIVATE placer_pipeline)
+
+add_test(
+    NAME test_parallel_bounded_scheduler
+    COMMAND test_parallel_bounded_scheduler
+)
+
+add_executable(test_parallel_local_interval_cache
+    test_parallel_local_interval_cache.cpp
+)
+target_include_directories(test_parallel_local_interval_cache PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/pipeline
+)
+target_link_libraries(test_parallel_local_interval_cache PRIVATE placer_pipeline)
+
+add_test(
+    NAME test_parallel_local_interval_cache
+    COMMAND test_parallel_local_interval_cache
+)
+
+add_executable(test_parallel_execution_equivalence
+    test_parallel_execution_equivalence.cpp
+)
+target_include_directories(test_parallel_execution_equivalence PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_parallel_execution_equivalence PRIVATE placer_pipeline)
+
+add_test(
+    NAME test_parallel_execution_equivalence
+    COMMAND test_parallel_execution_equivalence
+)
+
 add_executable(test_component_locality
     test_component_locality.cpp
 )

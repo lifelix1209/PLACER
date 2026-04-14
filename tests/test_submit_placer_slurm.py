@@ -69,6 +69,8 @@ echo "[PLACER] wrote scientific.txt path=$(pwd)/scientific.txt" >&2
         write_script(
             repo / "scripts" / "run_sharded_placer.py",
             """#!/usr/bin/env python3
+import json
+import os
 import pathlib
 import sys
 
@@ -76,6 +78,17 @@ outdir = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
 outdir.mkdir(parents=True, exist_ok=True)
 (outdir / "scientific.sharded.txt").write_text("ok\\n", encoding="utf-8")
 (outdir / "shard_manifest.tsv").write_text("label\\tchrom\\n", encoding="utf-8")
+(outdir / "runner.argv.json").write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+(outdir / "runner.env.json").write_text(
+    json.dumps(
+        {
+            "PLACER_PARALLEL": os.environ.get("PLACER_PARALLEL", ""),
+            "PLACER_PARALLEL_WORKERS": os.environ.get("PLACER_PARALLEL_WORKERS", ""),
+            "PLACER_BAM_THREADS": os.environ.get("PLACER_BAM_THREADS", ""),
+        }
+    ),
+    encoding="utf-8",
+)
 print("[sharded] mode=contig contigs=2 shards=2 workers=8 heartbeat=30.0s")
 print("[sharded] merged scientific: " + str(outdir / "scientific.sharded.txt"))
 print("[sharded] manifest: " + str(outdir / "shard_manifest.tsv"))
@@ -149,10 +162,16 @@ print("[sharded] manifest: " + str(outdir / "shard_manifest.tsv"))
             self.assertTrue(stdout_log.is_file())
             self.assertTrue(stderr_log.is_file())
             stdout_text = stdout_log.read_text(encoding="utf-8")
+            argv_text = (run_dir / "runner.argv.json").read_text(encoding="utf-8")
+            env_text = (run_dir / "runner.env.json").read_text(encoding="utf-8")
             self.assertIn("[slurm] slurm_cpus_per_task=64", stdout_text)
             self.assertIn("[sharded] mode=contig", stdout_text)
+            self.assertIn("[slurm] PLACER_PARALLEL=disabled", stdout_text)
             self.assertTrue((run_dir / "scientific.sharded.txt").is_file())
             self.assertTrue((run_dir / "shard_manifest.tsv").is_file())
+            self.assertNotIn("PLACER_PARALLEL=1", argv_text)
+            self.assertIn('"PLACER_PARALLEL": ""', env_text)
+            self.assertIn('"PLACER_PARALLEL_WORKERS": ""', env_text)
             self.assertIn(
                 f"[slurm] scientific_sharded_txt={run_dir / 'scientific.sharded.txt'}",
                 stdout_text,

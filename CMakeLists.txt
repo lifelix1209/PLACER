@@ -98,6 +98,8 @@ target_link_libraries(placer_bam_io PUBLIC hts::htslib)
 
 add_library(placer_pipeline
     src/pipeline/pipeline.cpp
+    src/pipeline/parallel_executor.cpp
+    src/pipeline/local_interval_cache.cpp
     src/pipeline/decision_policy.cpp
     src/gate1/gate1_module.cpp
     src/component/insert_fragment_module.cpp
