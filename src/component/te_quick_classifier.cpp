@@ -661,6 +661,17 @@ struct TEKmerQuickClassifierModule::AlignmentShortlistDb {
 
 TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
     : config_(std::move(config)) {
+    struct CacheState {
+        std::shared_ptr<const std::vector<std::string>> te_names;
+        std::shared_ptr<const std::vector<std::string>> te_sequences;
+        std::shared_ptr<const std::vector<std::string>> te_reverse_complement_sequences;
+        std::vector<std::shared_ptr<const Index>> indices;
+        std::shared_ptr<const Index> primary_index;
+        std::shared_ptr<const AlignmentShortlistDb> alignment_shortlist_db;
+    };
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, std::weak_ptr<const CacheState>> cache_by_key;
+
     if (!config_.ins_fragment_hits_tsv_path.empty()) {
         std::lock_guard<std::mutex> lock(g_fragment_hits_tsv_mutex);
         std::ofstream out(config_.ins_fragment_hits_tsv_path, std::ios::out | std::ios::trunc);
@@ -673,48 +684,92 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
         return;
     }
 
+    const std::string cache_key =
+        config_.te_fasta_path + "\n" +
+        std::to_string(std::max(7, std::min(31, config_.te_kmer_size))) + "\n" +
+        config_.te_kmer_sizes_csv;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        const auto it = cache_by_key.find(cache_key);
+        if (it != cache_by_key.end()) {
+            if (auto cached = it->second.lock()) {
+                te_names_ = cached->te_names;
+                te_sequences_ = cached->te_sequences;
+                te_reverse_complement_sequences_ = cached->te_reverse_complement_sequences;
+                indices_ = cached->indices;
+                primary_index_ = cached->primary_index;
+                alignment_shortlist_db_ = cached->alignment_shortlist_db;
+                return;
+            }
+            cache_by_key.erase(it);
+        }
+    }
+
     std::vector<TeEntry> entries;
     if (!load_te_entries_from_fasta(config_.te_fasta_path, entries)) {
         std::cerr << "[TEQuick] failed to parse TE FASTA: " << config_.te_fasta_path << "\n";
         return;
     }
 
-    te_names_.reserve(entries.size());
-    te_sequences_.reserve(entries.size());
-    te_reverse_complement_sequences_.reserve(entries.size());
+    auto te_names = std::make_shared<std::vector<std::string>>();
+    auto te_sequences = std::make_shared<std::vector<std::string>>();
+    auto te_reverse_complement_sequences = std::make_shared<std::vector<std::string>>();
+    te_names->reserve(entries.size());
+    te_sequences->reserve(entries.size());
+    te_reverse_complement_sequences->reserve(entries.size());
     for (const auto& e : entries) {
-        te_names_.push_back(e.name);
-        te_sequences_.push_back(e.sequence);
-        te_reverse_complement_sequences_.push_back(e.reverse_complement_sequence);
+        te_names->push_back(e.name);
+        te_sequences->push_back(e.sequence);
+        te_reverse_complement_sequences->push_back(e.reverse_complement_sequence);
     }
 
     const auto ks = parse_kmer_sizes_csv(config_.te_kmer_sizes_csv, config_.te_kmer_size);
+    std::vector<std::shared_ptr<const Index>> indices;
     for (int32_t k : ks) {
         auto idx = std::make_shared<Index>(k);
         if (!idx->build_from_entries(entries)) {
             continue;
         }
-        indices_.push_back(std::move(idx));
+        indices.push_back(std::move(idx));
     }
 
-    if (indices_.empty()) {
+    if (indices.empty()) {
         std::cerr << "[TEQuick] failed to build any k-mer index from: " << config_.te_fasta_path << "\n";
         return;
     }
 
     auto shortlist_db = std::make_shared<AlignmentShortlistDb>(
         std::max(7, std::min(31, config_.te_kmer_size)));
+    std::shared_ptr<const AlignmentShortlistDb> alignment_shortlist_db;
     if (shortlist_db->build_from_entries(entries)) {
-        alignment_shortlist_db_ = std::move(shortlist_db);
+        alignment_shortlist_db = std::move(shortlist_db);
     }
 
-    auto best_primary = indices_.front();
-    for (const auto& idx : indices_) {
+    auto best_primary = indices.front();
+    for (const auto& idx : indices) {
         if (std::abs(idx->k - config_.te_kmer_size) < std::abs(best_primary->k - config_.te_kmer_size)) {
             best_primary = idx;
         }
     }
-    primary_index_ = std::move(best_primary);
+
+    auto cached = std::make_shared<CacheState>();
+    cached->te_names = std::move(te_names);
+    cached->te_sequences = std::move(te_sequences);
+    cached->te_reverse_complement_sequences = std::move(te_reverse_complement_sequences);
+    cached->indices = indices;
+    cached->primary_index = std::move(best_primary);
+    cached->alignment_shortlist_db = std::move(alignment_shortlist_db);
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache_by_key[cache_key] = cached;
+    }
+
+    te_names_ = cached->te_names;
+    te_sequences_ = cached->te_sequences;
+    te_reverse_complement_sequences_ = cached->te_reverse_complement_sequences;
+    indices_ = cached->indices;
+    primary_index_ = cached->primary_index;
+    alignment_shortlist_db_ = cached->alignment_shortlist_db;
 }
 
 bool TEKmerQuickClassifierModule::is_enabled() const {
@@ -729,6 +784,8 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
     if (!is_enabled()) {
         return hits;
     }
+    const auto& te_names = *te_names_;
+    const auto& te_sequences = *te_sequences_;
 
     const bool write_tsv = !config_.ins_fragment_hits_tsv_path.empty();
     const double low_complexity_at_fraction_min =
@@ -847,9 +904,9 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
         hit.multik_support = best_score;
         hit.coverage = best_score;
         hit.kmer_support = best_score;
-        if (best_id >= 0 && best_id < static_cast<int32_t>(te_names_.size())) {
+        if (best_id >= 0 && best_id < static_cast<int32_t>(te_names.size())) {
             hit.te_name = parse_te_name_parts(
-                te_names_[static_cast<size_t>(best_id)]).exact_name;
+                te_names[static_cast<size_t>(best_id)]).exact_name;
         } else {
             hit.te_name.clear();
         }
@@ -906,12 +963,12 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
                     static_cast<int32_t>(ranked.size()));
                 for (int32_t i = 0; i < n; ++i) {
                     const int32_t te_id = ranked[static_cast<size_t>(i)].first;
-                    if (te_id < 0 || te_id >= static_cast<int32_t>(te_sequences_.size())) {
+                    if (te_id < 0 || te_id >= static_cast<int32_t>(te_sequences.size())) {
                         continue;
                     }
                     const double iden = semiglobal_edit_identity(
                         seq,
-                        te_sequences_[static_cast<size_t>(te_id)]);
+                        te_sequences[static_cast<size_t>(te_id)]);
                     if (iden > rescue_best_identity ||
                         (iden == rescue_best_identity && te_id < rescue_best_id)) {
                         rescue_best_identity = iden;
@@ -921,7 +978,7 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
                 if (rescue_best_id >= 0 && rescue_best_identity >= rescue_identity_min) {
                     hit.rescue_used = true;
                     hit.te_name = parse_te_name_parts(
-                        te_names_[static_cast<size_t>(rescue_best_id)]).exact_name;
+                        te_names[static_cast<size_t>(rescue_best_id)]).exact_name;
                     hit.kmer_support = std::max(hit.kmer_support, rescue_best_identity);
                     hit.coverage = hit.kmer_support;
                     if (hit.total_kmers > 0) {
@@ -965,6 +1022,9 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         evidence.qc_reason = "TE_LIBRARY_UNAVAILABLE";
         return evidence;
     }
+    const auto& te_names = *te_names_;
+    const auto& te_sequences = *te_sequences_;
+    const auto& te_reverse_complement_sequences = *te_reverse_complement_sequences_;
 
     const std::string insert_seq = upper_acgt(raw_insert_seq);
     if (insert_seq.empty()) {
@@ -1023,11 +1083,11 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         static_cast<int32_t>(ranked.size())));
     std::unordered_map<std::string, int32_t> per_family_counts;
     for (const auto& row : ranked) {
-        if (row.first < 0 || row.first >= static_cast<int32_t>(te_names_.size())) {
+        if (row.first < 0 || row.first >= static_cast<int32_t>(te_names.size())) {
             continue;
         }
         const TeNameParts parts = parse_te_name_parts(
-            te_names_[static_cast<size_t>(row.first)]);
+            te_names[static_cast<size_t>(row.first)]);
         int32_t& count = per_family_counts[parts.family_key];
         if (count >= 2) {
             continue;
@@ -1041,17 +1101,17 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
     std::unordered_set<std::string> represented_families;
     represented_families.reserve(shortlisted.size());
     for (const auto& row : shortlisted) {
-        if (row.first < 0 || row.first >= static_cast<int32_t>(te_names_.size())) {
+        if (row.first < 0 || row.first >= static_cast<int32_t>(te_names.size())) {
             continue;
         }
         const TeNameParts parts = parse_te_name_parts(
-            te_names_[static_cast<size_t>(row.first)]);
+            te_names[static_cast<size_t>(row.first)]);
         represented_families.insert(parts.family_key);
     }
     if (static_cast<int32_t>(shortlisted.size()) < kInsertSequenceShortlistTopN) {
-        for (int32_t te_id = 0; te_id < static_cast<int32_t>(te_names_.size()); ++te_id) {
+        for (int32_t te_id = 0; te_id < static_cast<int32_t>(te_names.size()); ++te_id) {
             const TeNameParts parts = parse_te_name_parts(
-                te_names_[static_cast<size_t>(te_id)]);
+                te_names[static_cast<size_t>(te_id)]);
             if (!represented_families.insert(parts.family_key).second) {
                 continue;
             }
@@ -1109,15 +1169,15 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
 
     for (const auto& row : ranked) {
         const int32_t te_id = row.first;
-        if (te_id < 0 || te_id >= static_cast<int32_t>(te_sequences_.size()) ||
-            te_id >= static_cast<int32_t>(te_reverse_complement_sequences_.size()) ||
-            te_id >= static_cast<int32_t>(te_names_.size())) {
+        if (te_id < 0 || te_id >= static_cast<int32_t>(te_sequences.size()) ||
+            te_id >= static_cast<int32_t>(te_reverse_complement_sequences.size()) ||
+            te_id >= static_cast<int32_t>(te_names.size())) {
             continue;
         }
 
-        const std::string& te_seq = te_sequences_[static_cast<size_t>(te_id)];
+        const std::string& te_seq = te_sequences[static_cast<size_t>(te_id)];
         const std::string& te_seq_rc =
-            te_reverse_complement_sequences_[static_cast<size_t>(te_id)];
+            te_reverse_complement_sequences[static_cast<size_t>(te_id)];
         if (te_seq.empty()) {
             continue;
         }
@@ -1134,7 +1194,7 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         }
 
         const TeNameParts name_parts = parse_te_name_parts(
-            te_names_[static_cast<size_t>(te_id)]);
+            te_names[static_cast<size_t>(te_id)]);
 
         BestAlignmentHit hit;
         hit.name_parts = name_parts;

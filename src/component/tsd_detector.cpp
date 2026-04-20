@@ -111,6 +111,9 @@ TSDDetector::TSDDetector(PipelineConfig config)
     if (config_.reference_fasta_path.empty()) {
         return;
     }
+    // Each Pipeline instance owns its own faidx-backed detector. Parallel
+    // workers therefore construct worker-local Pipeline objects instead of
+    // sharing a detector across threads.
     auto impl = std::make_shared<Impl>(config_.reference_fasta_path);
     if (impl->valid()) {
         impl_ = std::move(impl);

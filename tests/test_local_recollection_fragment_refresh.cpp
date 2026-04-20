@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unistd.h>
@@ -86,6 +87,17 @@ public:
         : fetch_records_(std::move(fetch_records)) {}
 
     bool is_valid() const override { return true; }
+
+    std::unique_ptr<placer::BamStreamReader> clone(
+        int32_t decompression_threads) const override {
+        (void)decompression_threads;
+        std::vector<BamPtr> copies;
+        copies.reserve(fetch_records_.size());
+        for (const auto& record : fetch_records_) {
+            copies.push_back(clone_record(record.get()));
+        }
+        return std::make_unique<FakeBamReader>(std::move(copies));
+    }
 
     const std::string& bam_path() const override { return bam_path_; }
 
@@ -176,7 +188,13 @@ int main() {
         std::make_unique<FakeBamReader>(std::move(fetch_records)));
 
     PipelineResult result;
-    pipeline.process_bin_records(std::move(bin_records), 0, 0, result);
+    pipeline.process_bin_records(
+        std::move(bin_records),
+        0,
+        0,
+        std::numeric_limits<int32_t>::min(),
+        std::numeric_limits<int32_t>::max(),
+        result);
     finalize_final_calls(result);
 
     assert(result.event_consensus_calls == 1);

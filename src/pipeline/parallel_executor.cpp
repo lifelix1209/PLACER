@@ -1,5 +1,6 @@
 #include "parallel_executor_internal.h"
 
+#include <cstdlib>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -27,6 +28,31 @@ void append_exact_task_records(
         } else {
             ++context_count;
         }
+    }
+}
+
+void prune_consumed_exact_bin_snapshots(
+    std::deque<ExactBinSnapshot>& retained_snapshots,
+    size_t& next_owner_offset,
+    int32_t cross_bin_context_bins) {
+    while (!retained_snapshots.empty() && next_owner_offset > 0) {
+        bool can_drop_front = false;
+        if (next_owner_offset < retained_snapshots.size()) {
+            const int32_t next_owner_bin = retained_snapshots[next_owner_offset].bin_index;
+            can_drop_front =
+                retained_snapshots.front().bin_index <
+                (next_owner_bin - cross_bin_context_bins);
+        } else {
+            can_drop_front =
+                retained_snapshots.size() > static_cast<size_t>(cross_bin_context_bins);
+        }
+
+        if (!can_drop_front) {
+            break;
+        }
+
+        retained_snapshots.pop_front();
+        --next_owner_offset;
     }
 }
 
@@ -60,7 +86,7 @@ ExactBinTask build_exact_bin_task(
         if (snapshot.tid != tid || !snapshot.records) {
             continue;
         }
-        if ((bin_index - snapshot.bin_index) > cross_bin_context_bins) {
+        if (std::abs(snapshot.bin_index - bin_index) > cross_bin_context_bins) {
             continue;
         }
 
@@ -80,6 +106,52 @@ ExactBinTask build_exact_bin_task(
         throw std::runtime_error("ExactBinTask materialized without current-bin records");
     }
     return task;
+}
+
+std::vector<ExactBinTask> materialize_ready_exact_bin_tasks(
+    std::deque<ExactBinSnapshot>& retained_snapshots,
+    size_t& next_owner_offset,
+    int32_t latest_completed_bin_index,
+    bool flush_all,
+    int32_t bin_size,
+    int32_t cross_bin_context_bins,
+    int32_t window_bin_slack_bp) {
+    std::vector<ExactBinTask> tasks;
+
+    while (next_owner_offset < retained_snapshots.size()) {
+        const ExactBinSnapshot& owner = retained_snapshots[next_owner_offset];
+        if (!flush_all &&
+            latest_completed_bin_index < (owner.bin_index + cross_bin_context_bins)) {
+            break;
+        }
+
+        std::vector<ExactBinSnapshot> context_snapshots;
+        context_snapshots.reserve(retained_snapshots.size());
+        for (const auto& snapshot : retained_snapshots) {
+            if (snapshot.tid != owner.tid || !snapshot.records) {
+                continue;
+            }
+            if (std::abs(snapshot.bin_index - owner.bin_index) > cross_bin_context_bins) {
+                continue;
+            }
+            context_snapshots.push_back(snapshot);
+        }
+
+        tasks.push_back(build_exact_bin_task(
+            owner.tid,
+            owner.bin_index,
+            context_snapshots,
+            bin_size,
+            cross_bin_context_bins,
+            window_bin_slack_bp));
+        ++next_owner_offset;
+        prune_consumed_exact_bin_snapshots(
+            retained_snapshots,
+            next_owner_offset,
+            cross_bin_context_bins);
+    }
+
+    return tasks;
 }
 
 CostAwareTaskQueue::CostAwareTaskQueue(size_t capacity)

@@ -8,8 +8,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace placer {
@@ -142,6 +144,11 @@ struct EventConsensus {
     std::string consensus_seq;
     int32_t input_event_reads = 0;
     int32_t consensus_len = 0;
+    int32_t full_context_input_reads = 0;
+    int32_t partial_context_input_reads = 0;
+    int32_t left_anchor_input_reads = 0;
+    int32_t right_anchor_input_reads = 0;
+    bool used_full_context = false;
     bool qc_pass = false;
     std::string qc_reason = "NO_EVENT_CONSENSUS";
 };
@@ -296,6 +303,14 @@ struct PipelineResult {
 
 void finalize_final_calls(PipelineResult& result);
 
+class DbscanComponentModule final {
+public:
+    std::vector<ComponentCall> build(
+        const std::vector<const bam1_t*>& records,
+        const std::string& chrom,
+        int32_t tid) const;
+};
+
 class LinearBinComponentModule final {
 public:
     std::vector<ComponentCall> build(
@@ -347,9 +362,9 @@ private:
     std::shared_ptr<const Index> primary_index_;
     std::vector<std::shared_ptr<const Index>> indices_;
     std::shared_ptr<const AlignmentShortlistDb> alignment_shortlist_db_;
-    std::vector<std::string> te_names_;
-    std::vector<std::string> te_sequences_;
-    std::vector<std::string> te_reverse_complement_sequences_;
+    std::shared_ptr<const std::vector<std::string>> te_names_;
+    std::shared_ptr<const std::vector<std::string>> te_sequences_;
+    std::shared_ptr<const std::vector<std::string>> te_reverse_complement_sequences_;
 };
 
 struct TsdDetection {
@@ -412,8 +427,115 @@ private:
         int32_t current_bin_index = -1;
     };
 
+    struct HypothesisSummary {
+        size_t original_index = 0;
+        int32_t bp_left = -1;
+        int32_t bp_right = -1;
+        int32_t alt_split_reads = 0;
+        int32_t alt_indel_reads = 0;
+        int32_t alt_left_clip_reads = 0;
+        int32_t alt_right_clip_reads = 0;
+        int32_t alt_struct_reads = 0;
+        int32_t ref_span_reads = 0;
+        int32_t inferred_event_length = 0;
+        std::vector<std::string> support_qnames;
+    };
+
+    struct BreakpointHypothesis {
+        bool valid = false;
+        int32_t left = -1;
+        int32_t right = -1;
+        int32_t center = -1;
+        int32_t support = 0;
+        int32_t priority = std::numeric_limits<int32_t>::max();
+    };
+
+    struct ExpensiveStageTiming {
+        double event_consensus_seconds = 0.0;
+        double event_segmentation_seconds = 0.0;
+        double te_alignment_seconds = 0.0;
+    };
+
+    struct ConsensusInputSummary {
+        std::unordered_map<std::string, std::string> full_event_by_qname;
+        std::unordered_map<std::string, std::string> partial_event_by_qname;
+        int32_t full_context_input_reads = 0;
+        int32_t partial_context_input_reads = 0;
+        int32_t left_anchor_input_reads = 0;
+        int32_t right_anchor_input_reads = 0;
+    };
+
+    struct ConsensusInputCounts {
+        int32_t full_context_input_reads = 0;
+        int32_t partial_context_input_reads = 0;
+        int32_t left_anchor_input_reads = 0;
+        int32_t right_anchor_input_reads = 0;
+        int32_t input_event_reads = 0;
+    };
+
+    struct CachedLocalSignal {
+        std::string qname;
+        int32_t tid = -1;
+        int32_t mapq = 0;
+        bool is_primary = false;
+        bool has_sa_or_supp = false;
+        bool span_valid = false;
+        int32_t span_start = -1;
+        int32_t span_end = -1;
+        int32_t left_clip_pos = -1;
+        int32_t right_clip_pos = -1;
+        std::vector<int32_t> indel_positions;
+    };
+
+    struct ComponentSignalCache {
+        std::vector<CachedLocalSignal> reads;
+    };
+
+    struct HypothesisValidatorEvidence {
+        HypothesisSummary summary;
+        int32_t precise_support = 0;
+        int32_t breakpoint_width = 0;
+        int32_t anchor_distance = 0;
+        int32_t full_context_input_reads = 0;
+        int32_t partial_context_input_reads = 0;
+        int32_t left_anchor_input_reads = 0;
+        int32_t right_anchor_input_reads = 0;
+        int32_t input_event_reads = 0;
+        bool feasible_for_expensive_stage = false;
+        std::string qc_reason = "VALIDATOR_UNSET";
+    };
+
+    struct ShortlistedHypothesis {
+        HypothesisValidatorEvidence validator;
+        bool is_primary = false;
+    };
+
+    struct AnchorSeedBin {
+        int32_t ref_bin_start = -1;
+        int32_t support = 0;
+        int32_t best_breakpoint_delta = std::numeric_limits<int32_t>::max();
+    };
+
     PipelineResult run_streaming() const;
     PipelineResult run_parallel() const;
+
+    HypothesisSummary build_hypothesis_summary(
+        const ComponentCall& component,
+        const ComponentSignalCache& signal_cache,
+        const std::vector<InsertionFragment>& fragments,
+        size_t original_index,
+        int32_t bp_left,
+        int32_t bp_right) const;
+
+    std::vector<HypothesisSummary> select_hypothesis_summaries_for_expensive_stage(
+        const std::vector<HypothesisSummary>& summaries) const;
+
+    std::vector<HypothesisSummary> collapse_hypothesis_summaries(
+        const std::vector<HypothesisSummary>& summaries) const;
+
+    bool should_keep_hypothesis_for_expensive_stage(
+        const HypothesisSummary& summary,
+        bool is_top_ranked_survivor) const;
 
     void consume_record(
         BamRecordPtr&& record,
@@ -428,6 +550,8 @@ private:
         std::vector<const bam1_t*>&& bin_records,
         int32_t tid,
         int32_t bin_index,
+        int32_t owner_bin_start,
+        int32_t owner_bin_end,
         PipelineResult& result) const;
 
     EventReadEvidence collect_event_read_evidence(
@@ -435,6 +559,25 @@ private:
         const std::vector<const bam1_t*>& local_records,
         const std::vector<ReadReferenceSpan>& read_spans,
         const std::vector<InsertionFragment>& fragments) const;
+
+    std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
+        const ComponentCall& component,
+        const std::vector<const bam1_t*>& local_records,
+        const std::vector<InsertionFragment>& fragments,
+        int32_t seed_left,
+        int32_t seed_right) const;
+
+    std::vector<BreakpointHypothesis> enumerate_breakpoint_hypotheses(
+        const ComponentCall& component,
+        const std::vector<const bam1_t*>& local_records,
+        const std::vector<InsertionFragment>& fragments,
+        int32_t seed_left,
+        int32_t seed_right,
+        size_t top_k) const;
+
+    std::vector<BreakpointHypothesis> select_diverse_breakpoint_hypotheses(
+        const std::vector<BreakpointHypothesis>& hypotheses,
+        size_t top_k) const;
 
     EventReadEvidence collect_event_read_evidence_for_bounds(
         const ComponentCall& component,
@@ -446,11 +589,63 @@ private:
         int32_t bp_left,
         int32_t bp_right) const;
 
+    ComponentSignalCache build_component_signal_cache(
+        const std::vector<const bam1_t*>& local_records,
+        const std::vector<ReadReferenceSpan>& read_spans) const;
+
+    EventReadEvidence collect_event_read_evidence_for_bounds_cached(
+        const ComponentCall& component,
+        const ComponentSignalCache& cache,
+        const std::vector<InsertionFragment>& fragments,
+        int32_t seed_left,
+        int32_t seed_right,
+        int32_t bp_left,
+        int32_t bp_right) const;
+
+    ConsensusInputSummary collect_event_consensus_inputs(
+        const std::vector<const bam1_t*>& local_records,
+        const std::vector<InsertionFragment>& fragments,
+        const EventReadEvidence& event_evidence) const;
+
+    ConsensusInputCounts collect_event_consensus_input_counts(
+        const std::vector<const bam1_t*>& local_records,
+        const std::vector<InsertionFragment>& fragments,
+        const EventReadEvidence& event_evidence) const;
+
+    HypothesisValidatorEvidence collect_hypothesis_validator_evidence(
+        const HypothesisSummary& summary,
+        const ConsensusInputCounts& inputs,
+        int32_t anchor_pos) const;
+
+    bool has_strong_bilateral_partial_context_support(
+        int32_t left_anchor_input_reads,
+        int32_t right_anchor_input_reads,
+        int32_t partial_context_input_reads,
+        int32_t input_event_reads) const;
+
+    bool compare_hypothesis_validator_priority(
+        const HypothesisValidatorEvidence& lhs,
+        const HypothesisValidatorEvidence& rhs) const;
+
+    std::vector<ShortlistedHypothesis> build_expensive_stage_shortlist(
+        const std::vector<HypothesisValidatorEvidence>& candidates) const;
+
     EventConsensus build_event_consensus(
         const ComponentCall& component,
         const std::vector<const bam1_t*>& local_records,
         const std::vector<InsertionFragment>& fragments,
         const EventReadEvidence& event_evidence) const;
+
+    std::string pre_segmentation_gate_reason(
+        const EventReadEvidence& event_evidence,
+        const EventConsensus& event_consensus) const;
+
+    std::vector<AnchorSeedBin> collect_anchor_seed_bins(
+        const std::string& query,
+        int32_t breakpoint,
+        int32_t ref_window_start,
+        const std::string& ref_window,
+        bool is_left) const;
 
     EventSegmentation segment_event_consensus(
         const ComponentCall& component,

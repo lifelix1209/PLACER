@@ -9,10 +9,89 @@ namespace placer {
 
 namespace {
 
-double log_binomial_likelihood(int32_t alt_count, int32_t ref_count, double alt_rate) {
-    const double p = std::clamp(alt_rate, 1e-6, 1.0 - 1e-6);
-    return (static_cast<double>(alt_count) * std::log(p)) +
-           (static_cast<double>(ref_count) * std::log(1.0 - p));
+double safe_log(double p) {
+    return std::log(std::max(1e-12, p));
+}
+
+double phred_from_error_probability(double p_error) {
+    const double bounded = std::clamp(p_error, 1e-12, 1.0);
+    return -10.0 * std::log10(bounded);
+}
+
+double logsumexp3(double a, double b, double c) {
+    const double m = std::max(a, std::max(b, c));
+    return m + std::log(std::exp(a - m) + std::exp(b - m) + std::exp(c - m));
+}
+
+int32_t median_i32(std::vector<int32_t> values) {
+    if (values.empty()) {
+        return 0;
+    }
+    std::sort(values.begin(), values.end());
+    return values[values.size() / 2];
+}
+
+int32_t infer_event_length(const EventGenotypeInput& input) {
+    if (input.event_length > 0) {
+        return input.event_length;
+    }
+    return median_i32(input.alt_observed_lengths);
+}
+
+double alt_length_support_probability(
+    int32_t observed_length,
+    int32_t event_length,
+    double error_rate) {
+    if (event_length <= 0 || observed_length <= 0) {
+        return std::clamp(1.0 - (error_rate * 2.0), 0.55, 0.95);
+    }
+    const double norm_factor = (error_rate <= 0.03) ? 20.0 : 30.0;
+    const double sigma = std::max(1.0, static_cast<double>(event_length) / norm_factor);
+    const double z =
+        (static_cast<double>(observed_length) - static_cast<double>(event_length)) / sigma;
+    return std::max(1e-6, std::exp(-0.5 * z * z));
+}
+
+double genotype_log_likelihood(
+    const EventGenotypeInput& input,
+    double alt_copy_fraction) {
+    constexpr double kAltCallGivenRef = 1e-4;
+    constexpr double kRefCallGivenAlt = 1e-3;
+    constexpr double kRefCallGivenRef = 0.999;
+
+    const int32_t event_length = infer_event_length(input);
+    double ll = 0.0;
+
+    for (int32_t observed_length : input.alt_observed_lengths) {
+        const double p_alt = alt_length_support_probability(
+            observed_length,
+            event_length,
+            input.error_rate);
+        const double p =
+            (alt_copy_fraction * p_alt) +
+            ((1.0 - alt_copy_fraction) * kAltCallGivenRef);
+        ll += safe_log(p);
+    }
+
+    const int32_t precise_alt_reads = static_cast<int32_t>(input.alt_observed_lengths.size());
+    const int32_t coarse_alt_reads = std::max(0, input.alt_struct_reads - precise_alt_reads);
+    const double coarse_alt_given_alt = std::clamp(1.0 - (input.error_rate * 3.0), 0.55, 0.95);
+    for (int32_t i = 0; i < coarse_alt_reads; ++i) {
+        const double p =
+            (alt_copy_fraction * coarse_alt_given_alt) +
+            ((1.0 - alt_copy_fraction) * kAltCallGivenRef);
+        ll += safe_log(p);
+    }
+
+    const int32_t ref_reads = std::max(0, input.ref_span_reads);
+    for (int32_t i = 0; i < ref_reads; ++i) {
+        const double p =
+            (alt_copy_fraction * kRefCallGivenAlt) +
+            ((1.0 - alt_copy_fraction) * kRefCallGivenRef);
+        ll += safe_log(p);
+    }
+
+    return ll;
 }
 
 double clamp_score(double value, double lo = -3.0, double hi = 3.0) {
@@ -78,10 +157,9 @@ EventGenotypeDecision genotype_event_from_alt_vs_ref(
         0.0,
         1.0);
 
-    const double error_rate = std::clamp(input.error_rate, 1e-4, 0.25);
-    const double ll_00 = log_binomial_likelihood(alt, ref, error_rate);
-    const double ll_01 = log_binomial_likelihood(alt, ref, 0.5);
-    const double ll_11 = log_binomial_likelihood(alt, ref, 1.0 - error_rate);
+    const double ll_00 = genotype_log_likelihood(input, 0.0) + safe_log(0.25);
+    const double ll_01 = genotype_log_likelihood(input, 0.5) + safe_log(0.50);
+    const double ll_11 = genotype_log_likelihood(input, 1.0) + safe_log(0.25);
 
     const bool het_is_best_nonref = ll_01 >= ll_11;
     const double best_nonref_ll = het_is_best_nonref ? ll_01 : ll_11;
@@ -94,12 +172,11 @@ EventGenotypeDecision genotype_event_from_alt_vs_ref(
         return decision;
     }
 
-    // Event existence is a non-reference vs reference decision. The caller
-    // still emits the better non-reference genotype, but confidence should not
-    // collapse just because 0/1 and 1/1 are both plausible.
     const double delta_ll = best_nonref_ll - ll_00;
     decision.best_nonref_minus_ref_ll = delta_ll;
-    const double gq = 4.3429448190325175 * delta_ll;
+    const double best_total_ll = std::max(ll_00, std::max(ll_01, ll_11));
+    const double posterior_best = std::exp(best_total_ll - logsumexp3(ll_00, ll_01, ll_11));
+    const double gq = phred_from_error_probability(1.0 - posterior_best);
     decision.gq = std::max(0, std::min(99, static_cast<int32_t>(std::lround(gq))));
     decision.pass = decision.gq >= std::max(0, input.min_gq);
     return decision;

@@ -102,6 +102,7 @@ add_library(placer_pipeline
     src/pipeline/local_interval_cache.cpp
     src/pipeline/decision_policy.cpp
     src/gate1/gate1_module.cpp
+    src/component/dbscan_component_module.cpp
     src/component/insert_fragment_module.cpp
     src/component/te_quick_classifier.cpp
     src/component/tsd_detector.cpp

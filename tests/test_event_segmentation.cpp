@@ -171,6 +171,26 @@ int main() {
         assert(segmentation.right_ref_end >= 370);
     }
 
+    {
+        std::string reference = build_reference(900);
+        const std::string repeated_left = reference.substr(180, 80);
+        reference.replace(420, 80, repeated_left);
+        write_fasta(fasta_path, reference);
+
+        const int32_t bp = 500;
+        const std::string insert = "AACCGGTTAACCGGTTAACCGGTTAACCGGTT";
+        const std::string right = reference.substr(500, 80);
+        const EventSegmentation segmentation = run_segmentation(
+            fasta_path,
+            repeated_left + insert + right,
+            bp,
+            bp);
+        assert(segmentation.pass);
+        assert(segmentation.left_ref_start == 420);
+        assert(segmentation.left_ref_end == 500);
+        assert(segmentation.right_ref_start == 500);
+    }
+
     std::remove(fasta_path.c_str());
     std::remove((fasta_path + ".fai").c_str());
     return 0;

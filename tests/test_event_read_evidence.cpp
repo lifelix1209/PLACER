@@ -617,6 +617,11 @@ int main() {
             evidence);
 
         assert(consensus.input_event_reads == 1);
+        assert(consensus.full_context_input_reads == 1);
+        assert(consensus.partial_context_input_reads == 0);
+        assert(consensus.left_anchor_input_reads == 1);
+        assert(consensus.right_anchor_input_reads == 1);
+        assert(consensus.used_full_context);
         assert(consensus.qc_pass);
         assert(consensus.qc_reason == "PASS_EVENT_CONSENSUS");
         assert(consensus.consensus_len >= 140);
@@ -728,6 +733,11 @@ int main() {
             evidence);
 
         assert(consensus.input_event_reads == 2);
+        assert(consensus.full_context_input_reads == 0);
+        assert(consensus.partial_context_input_reads == 2);
+        assert(consensus.left_anchor_input_reads == 1);
+        assert(consensus.right_anchor_input_reads == 1);
+        assert(!consensus.used_full_context);
         assert(consensus.qc_pass);
         assert(consensus.qc_reason == "PASS_EVENT_CONSENSUS");
         assert(consensus.consensus_seq == (left_flank + insert_seq + right_flank));
@@ -790,6 +800,11 @@ int main() {
             evidence);
 
         assert(consensus.input_event_reads == 1);
+        assert(consensus.full_context_input_reads == 1);
+        assert(consensus.partial_context_input_reads == 1);
+        assert(consensus.left_anchor_input_reads == 1);
+        assert(consensus.right_anchor_input_reads == 2);
+        assert(consensus.used_full_context);
         assert(consensus.qc_pass);
         assert(consensus.qc_reason == "PASS_EVENT_CONSENSUS");
         assert(consensus.consensus_seq == full_event);
@@ -841,6 +856,107 @@ int main() {
         assert(consensus.qc_pass);
         assert(consensus.qc_reason == "PASS_EVENT_CONSENSUS");
         assert(consensus.consensus_seq == (left_flank + insert_seq + right_flank));
+    }
+
+    {
+        const std::string full_left =
+            "AAAACCCCGGGGAAAACCCCGGGGAAAACCCCGGGGAAAACCCCGGGGAAAACCCCGGGGAAAACCCCGGGGAAAA";
+        const std::string full_insert =
+            "TTGCAATTGCAATTGCAATTGCAATTGCAATTGCAATTGCAA";
+        const std::string full_right =
+            "TTTTGGGGCCCCTTTTGGGGCCCCTTTTGGGGCCCCTTTTGGGGCCCCTTTTGGGGCCCCTTTTGGGGCCCCTTTT";
+        const auto split_record = make_record(
+            "split_support",
+            980,
+            60,
+            {
+                static_cast<uint32_t>(bam_cigar_gen(static_cast<int>(full_left.size()), BAM_CMATCH)),
+                static_cast<uint32_t>(bam_cigar_gen(static_cast<int>(full_insert.size()), BAM_CINS)),
+                static_cast<uint32_t>(bam_cigar_gen(static_cast<int>(full_right.size()), BAM_CMATCH)),
+            },
+            full_left + full_insert + full_right);
+
+        const std::string clip_left_insert =
+            "CCCCAAAACCCCAAAACCCCAAAACCCCAAAACCCCAAAA";
+        const std::string clip_left_right =
+            "GGGGTTTTGGGGTTTTGGGGTTTTGGGGTTTTGGGGTTTTGGGGTTTTGGGGTTTTGGGGTTTTGGGGTTTTGGGG";
+        const auto clip_left_record = make_record(
+            "clip_left_support",
+            990,
+            60,
+            {static_cast<uint32_t>(bam_cigar_gen(
+                static_cast<int>(clip_left_insert.size() + clip_left_right.size()),
+                BAM_CMATCH))},
+            clip_left_insert + clip_left_right);
+
+        const std::string clip_right_left =
+            "AAAATTTTAAAATTTTAAAATTTTAAAATTTTAAAATTTTAAAAAAAATTTTAAAATTTTAAAATTTTAAAATTTT";
+        const std::string clip_right_insert =
+            "GGGGCCCCGGGGCCCCGGGGCCCCGGGGCCCCGGGGCCCC";
+        const auto clip_right_record = make_record(
+            "clip_right_support",
+            970,
+            60,
+            {static_cast<uint32_t>(bam_cigar_gen(
+                static_cast<int>(clip_right_left.size() + clip_right_insert.size()),
+                BAM_CMATCH))},
+            clip_right_left + clip_right_insert);
+
+        InsertionFragment split_fragment;
+        split_fragment.read_id = "split_support";
+        split_fragment.read_index = 0;
+        split_fragment.source = InsertionFragmentSource::kSplitSa;
+        split_fragment.start = static_cast<int32_t>(full_left.size());
+        split_fragment.length = static_cast<int32_t>(full_insert.size());
+        split_fragment.ref_junc_pos = 1000;
+        split_fragment.sequence = full_insert;
+
+        InsertionFragment clip_left_fragment;
+        clip_left_fragment.read_id = "clip_left_support";
+        clip_left_fragment.read_index = 1;
+        clip_left_fragment.source = InsertionFragmentSource::kClipRefLeft;
+        clip_left_fragment.start = 0;
+        clip_left_fragment.length = static_cast<int32_t>(clip_left_insert.size());
+        clip_left_fragment.ref_junc_pos = 1000;
+        clip_left_fragment.sequence = clip_left_insert;
+
+        InsertionFragment clip_right_fragment;
+        clip_right_fragment.read_id = "clip_right_support";
+        clip_right_fragment.read_index = 2;
+        clip_right_fragment.source = InsertionFragmentSource::kClipRefRight;
+        clip_right_fragment.start = static_cast<int32_t>(clip_right_left.size());
+        clip_right_fragment.length = static_cast<int32_t>(clip_right_insert.size());
+        clip_right_fragment.ref_junc_pos = 1000;
+        clip_right_fragment.sequence = clip_right_insert;
+
+        EventReadEvidence evidence;
+        evidence.bp_left = 1000;
+        evidence.bp_right = 1000;
+        evidence.support_qnames = {
+            "clip_left_support",
+            "clip_right_support",
+            "split_support",
+        };
+
+        const auto inputs = pipeline.collect_event_consensus_inputs(
+            {
+                split_record.get(),
+                clip_left_record.get(),
+                clip_right_record.get(),
+            },
+            {
+                split_fragment,
+                clip_left_fragment,
+                clip_right_fragment,
+            },
+            evidence);
+
+        assert(inputs.full_context_input_reads == 1);
+        assert(inputs.partial_context_input_reads == 2);
+        assert(inputs.left_anchor_input_reads == 2);
+        assert(inputs.right_anchor_input_reads == 2);
+        assert(inputs.full_event_by_qname.size() == 1);
+        assert(inputs.partial_event_by_qname.size() == 2);
     }
 
     return 0;

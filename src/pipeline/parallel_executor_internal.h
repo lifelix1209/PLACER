@@ -49,6 +49,15 @@ ExactBinTask build_exact_bin_task(
     int32_t cross_bin_context_bins,
     int32_t window_bin_slack_bp);
 
+std::vector<ExactBinTask> materialize_ready_exact_bin_tasks(
+    std::deque<ExactBinSnapshot>& retained_snapshots,
+    size_t& next_owner_offset,
+    int32_t latest_completed_bin_index,
+    bool flush_all,
+    int32_t bin_size,
+    int32_t cross_bin_context_bins,
+    int32_t window_bin_slack_bp);
+
 template <typename T>
 class BoundedTaskQueue {
 public:

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace placer {
 
@@ -15,6 +16,8 @@ struct EventGenotypeInput {
     int32_t min_depth = 3;
     int32_t min_gq = 20;
     double error_rate = 0.02;
+    int32_t event_length = 0;
+    std::vector<int32_t> alt_observed_lengths;
 };
 
 struct EventGenotypeDecision {

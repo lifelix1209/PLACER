@@ -17,15 +17,16 @@ constexpr char kBamSeqChars[] = "=ACMGRSVTWYHKDBN";
 class HtslibBamStreamReader final : public BamStreamReader {
 public:
     explicit HtslibBamStreamReader(std::string bam_path, int32_t decompression_threads)
-        : bam_path_(std::move(bam_path)) {
+        : bam_path_(std::move(bam_path)),
+          decompression_threads_(decompression_threads > 0 ? decompression_threads : 1) {
         file_ = hts_open(bam_path_.c_str(), "r");
         if (!file_) {
             std::cerr << "[BAM_IO] failed to open BAM: " << bam_path_ << '\n';
             return;
         }
 
-        if (decompression_threads > 1) {
-            hts_set_threads(file_, decompression_threads);
+        if (decompression_threads_ > 1) {
+            hts_set_threads(file_, decompression_threads_);
         }
 
         header_ = sam_hdr_read(file_);
@@ -39,8 +40,8 @@ public:
             std::cerr << "[BAM_IO] failed to open BAM for indexed fetch: " << bam_path_ << '\n';
             return;
         }
-        if (decompression_threads > 1) {
-            hts_set_threads(fetch_file_, decompression_threads);
+        if (decompression_threads_ > 1) {
+            hts_set_threads(fetch_file_, decompression_threads_);
         }
         fetch_header_ = sam_hdr_read(fetch_file_);
         if (!fetch_header_) {
@@ -75,6 +76,14 @@ public:
     }
 
     bool is_valid() const override { return valid_; }
+
+    std::unique_ptr<BamStreamReader> clone(
+        int32_t decompression_threads) const override {
+        const int32_t threads = decompression_threads > 0
+            ? decompression_threads
+            : decompression_threads_;
+        return std::make_unique<HtslibBamStreamReader>(bam_path_, threads);
+    }
 
     const std::string& bam_path() const override { return bam_path_; }
 
@@ -197,8 +206,11 @@ public:
 
 private:
     std::string bam_path_;
+    int32_t decompression_threads_ = 1;
     htsFile* file_ = nullptr;
     bam_hdr_t* header_ = nullptr;
+    // Indexed fetch is intentionally serialized per reader instance. Parallel
+    // workers must therefore use clone(...) to obtain independent readers.
     mutable std::mutex fetch_mutex_;
     htsFile* fetch_file_ = nullptr;
     bam_hdr_t* fetch_header_ = nullptr;

@@ -63,6 +63,8 @@ public:
     virtual ~BamStreamReader() = default;
 
     virtual bool is_valid() const = 0;
+    virtual std::unique_ptr<BamStreamReader> clone(
+        int32_t decompression_threads = -1) const = 0;
     virtual const std::string& bam_path() const = 0;
     virtual int32_t chromosome_count() const = 0;
     virtual std::string chromosome_name(int32_t tid) const = 0;

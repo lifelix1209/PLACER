@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <mutex>
@@ -63,6 +64,9 @@ constexpr int32_t kEventSegmentationEndpointSlackBp = 32;
 constexpr int32_t kEventSegmentationMinInsertBp = 1;
 constexpr int32_t kEventSegmentationMaxFlankQueryBp = 120;
 constexpr double kEventSegmentationUniquenessMargin = 0.02;
+constexpr int32_t kEventSegmentationSeedK = 11;
+constexpr int32_t kEventSegmentationSeedBinBp = 8;
+constexpr int32_t kEventSegmentationSeedTopBins = 8;
 
 enum class EvidenceKind : uint8_t {
     kSoftClip = 0,
@@ -488,10 +492,75 @@ std::string collect_aligned_query_bases_after(
     return upper_acgt(read.decode_subsequence(query_start, max_bases));
 }
 
-std::string build_event_string_from_fragment(
+std::unordered_map<std::string, const bam1_t*> best_records_by_qname(
+    const std::vector<const bam1_t*>& local_records) {
+    std::unordered_map<std::string, const bam1_t*> records_by_qname;
+    records_by_qname.reserve(local_records.size());
+    for (const bam1_t* record : local_records) {
+        if (!record) {
+            continue;
+        }
+        const std::string qname = record_qname(record);
+        if (qname.empty()) {
+            continue;
+        }
+
+        auto it = records_by_qname.find(qname);
+        if (it == records_by_qname.end()) {
+            records_by_qname.emplace(qname, record);
+            continue;
+        }
+
+        ReadView candidate(record);
+        ReadView incumbent(it->second);
+        const int32_t candidate_seq_len = candidate.seq_len();
+        const int32_t incumbent_seq_len = incumbent.seq_len();
+        if (candidate_seq_len > incumbent_seq_len ||
+            (candidate_seq_len == incumbent_seq_len &&
+             is_primary_alignment(record) &&
+             !is_primary_alignment(it->second))) {
+            it->second = record;
+        }
+    }
+    return records_by_qname;
+}
+
+bool can_build_event_string_from_fragment(
     const bam1_t* record,
     const InsertionFragment& fragment) {
     if (!record || fragment.sequence.empty() || fragment.start < 0 || fragment.length <= 0) {
+        return false;
+    }
+
+    ReadView read(record);
+    const int32_t insert_start = fragment.start;
+    const int32_t insert_end = fragment.start + fragment.length;
+    if (insert_end > read.seq_len()) {
+        return false;
+    }
+
+    const int32_t left_flank_len = insert_start - std::max(0, insert_start - kEventConsensusFlankBp);
+    const int32_t right_flank_len = std::max(0, std::min(read.seq_len(), insert_end + kEventConsensusFlankBp) - insert_end);
+
+    switch (fragment.source) {
+        case InsertionFragmentSource::kClipRefLeft:
+            return right_flank_len >= kEventConsensusMinAnchorBp;
+        case InsertionFragmentSource::kClipRefRight:
+            return left_flank_len >= kEventConsensusMinAnchorBp;
+        case InsertionFragmentSource::kCigarInsertion:
+        case InsertionFragmentSource::kSplitSa:
+            return left_flank_len >= kEventConsensusMinAnchorBp &&
+                right_flank_len >= kEventConsensusMinAnchorBp;
+        case InsertionFragmentSource::kUnknown:
+        default:
+            return false;
+    }
+}
+
+std::string build_event_string_from_fragment(
+    const bam1_t* record,
+    const InsertionFragment& fragment) {
+    if (!can_build_event_string_from_fragment(record, fragment)) {
         return {};
     }
 
@@ -599,6 +668,31 @@ void emit_pipeline_log_line(const std::string& line) {
 }
 
 using SharedRecordBatch = std::shared_ptr<const std::vector<BufferedRecord>>;
+
+int32_t exact_bin_index_for_record(const bam1_t* record, int32_t bin_size) {
+    if (!record || bin_size <= 0) {
+        return 0;
+    }
+    ReadView view(record);
+    if (view.pos() < 0) {
+        return 0;
+    }
+    return view.pos() / bin_size;
+}
+
+void append_partial_pipeline_result(PipelineResult& dst, PipelineResult&& src) {
+    dst.processed_bins += src.processed_bins;
+    dst.built_components += src.built_components;
+    dst.event_consensus_calls += src.event_consensus_calls;
+    dst.genotype_calls += src.genotype_calls;
+    if (!src.final_calls.empty()) {
+        dst.final_calls.insert(
+            dst.final_calls.end(),
+            std::make_move_iterator(src.final_calls.begin()),
+            std::make_move_iterator(src.final_calls.end()));
+    }
+}
+
 bool final_call_sort_less(const FinalCall& a, const FinalCall& b) {
     if (a.tid != b.tid) {
         return a.tid < b.tid;
@@ -682,22 +776,26 @@ int32_t median_i32(std::vector<int32_t> values) {
     return static_cast<int32_t>((static_cast<int64_t>(values[mid - 1]) + values[mid]) / 2);
 }
 
-std::vector<int32_t> anchor_local_breakpoint_cluster(
-    std::vector<int32_t> positions,
-    int32_t anchor_pos) {
-    constexpr int32_t kBreakpointClusterGapBp = 75;
+constexpr int32_t kBreakpointClusterGapBp = 75;
+constexpr size_t kBreakpointHypothesisMaxClustersPerSide = 6;
+constexpr size_t kBreakpointHypothesisMaxSingleClusters = 2;
+constexpr int32_t kBreakpointPairCompatibilityBp = 250;
 
+struct BreakpointPositionCluster {
+    int32_t center = -1;
+    int32_t start = -1;
+    int32_t end = -1;
+    int32_t support = 0;
+};
+
+std::vector<BreakpointPositionCluster> collect_breakpoint_position_clusters(
+    std::vector<int32_t> positions) {
+    std::vector<BreakpointPositionCluster> clusters;
     if (positions.empty()) {
-        return {};
+        return clusters;
     }
     std::sort(positions.begin(), positions.end());
 
-    struct ClusterBounds {
-        size_t begin = 0;
-        size_t end = 0;
-        int32_t center = -1;
-    };
-    std::vector<ClusterBounds> clusters;
     size_t cluster_begin = 0;
     for (size_t i = 1; i <= positions.size(); ++i) {
         const bool split_cluster =
@@ -707,65 +805,18 @@ std::vector<int32_t> anchor_local_breakpoint_cluster(
             continue;
         }
 
-        ClusterBounds cluster;
-        cluster.begin = cluster_begin;
-        cluster.end = i;
+        BreakpointPositionCluster cluster;
+        cluster.start = positions[cluster_begin];
+        cluster.end = positions[i - 1];
+        cluster.support = static_cast<int32_t>(i - cluster_begin);
         cluster.center = median_i32(std::vector<int32_t>(
             positions.begin() + static_cast<std::ptrdiff_t>(cluster_begin),
             positions.begin() + static_cast<std::ptrdiff_t>(i)));
         clusters.push_back(cluster);
         cluster_begin = i;
     }
-
-    const ClusterBounds* best = nullptr;
-    for (const auto& cluster : clusters) {
-        if (!best) {
-            best = &cluster;
-            continue;
-        }
-        const int32_t cur_dist = std::abs(cluster.center - anchor_pos);
-        const int32_t best_dist = std::abs(best->center - anchor_pos);
-        if (cur_dist != best_dist) {
-            if (cur_dist < best_dist) {
-                best = &cluster;
-            }
-            continue;
-        }
-        const size_t cur_size = cluster.end - cluster.begin;
-        const size_t best_size = best->end - best->begin;
-        if (cur_size != best_size) {
-            if (cur_size > best_size) {
-                best = &cluster;
-            }
-            continue;
-        }
-        if (cluster.center < best->center) {
-            best = &cluster;
-        }
-    }
-
-    if (!best) {
-        return positions;
-    }
-    return std::vector<int32_t>(
-        positions.begin() + static_cast<std::ptrdiff_t>(best->begin),
-        positions.begin() + static_cast<std::ptrdiff_t>(best->end));
+    return clusters;
 }
-
-int32_t anchor_local_median_i32(
-    std::vector<int32_t> positions,
-    int32_t anchor_pos) {
-    return median_i32(anchor_local_breakpoint_cluster(std::move(positions), anchor_pos));
-}
-
-struct BreakpointHypothesis {
-    bool valid = false;
-    int32_t left = -1;
-    int32_t right = -1;
-    int32_t center = -1;
-    int32_t support = 0;
-    int32_t priority = std::numeric_limits<int32_t>::max();
-};
 
 int32_t breakpoint_hypothesis_support_weight(int32_t priority) {
     switch (priority) {
@@ -779,99 +830,14 @@ int32_t breakpoint_hypothesis_support_weight(int32_t priority) {
     }
 }
 
-int32_t breakpoint_hypothesis_score(const BreakpointHypothesis& hypothesis) {
-    return hypothesis.support * breakpoint_hypothesis_support_weight(hypothesis.priority);
-}
-
-BreakpointHypothesis make_single_breakpoint_hypothesis(
-    std::vector<int32_t> positions,
-    int32_t anchor_pos,
-    int32_t priority) {
-    BreakpointHypothesis hypothesis;
-    std::vector<int32_t> cluster = anchor_local_breakpoint_cluster(std::move(positions), anchor_pos);
-    if (cluster.empty()) {
-        return hypothesis;
-    }
-    const int32_t pos = median_i32(cluster);
-    hypothesis.valid = pos >= 0;
-    hypothesis.left = pos;
-    hypothesis.right = pos;
-    hypothesis.center = pos;
-    hypothesis.support = static_cast<int32_t>(cluster.size());
-    hypothesis.priority = priority;
-    return hypothesis;
-}
-
-BreakpointHypothesis make_paired_breakpoint_hypothesis(
-    std::vector<int32_t> left_positions,
-    std::vector<int32_t> right_positions,
-    int32_t anchor_pos,
-    int32_t priority) {
-    BreakpointHypothesis hypothesis;
-    std::vector<int32_t> left_cluster = anchor_local_breakpoint_cluster(
-        std::move(left_positions),
-        anchor_pos);
-    std::vector<int32_t> right_cluster = anchor_local_breakpoint_cluster(
-        std::move(right_positions),
-        anchor_pos);
-    if (left_cluster.empty() && right_cluster.empty()) {
-        return hypothesis;
-    }
-
-    const int32_t left = !left_cluster.empty()
-        ? median_i32(left_cluster)
-        : median_i32(right_cluster);
-    const int32_t right = !right_cluster.empty()
-        ? median_i32(right_cluster)
-        : median_i32(left_cluster);
-    if (left < 0 || right < 0) {
-        return hypothesis;
-    }
-
-    hypothesis.valid = true;
-    hypothesis.left = std::min(left, right);
-    hypothesis.right = std::max(left, right);
-    hypothesis.center =
-        static_cast<int32_t>(
-            (static_cast<int64_t>(hypothesis.left) + hypothesis.right) / 2);
-    hypothesis.support =
-        static_cast<int32_t>(left_cluster.size() + right_cluster.size());
-    hypothesis.priority = priority;
-    return hypothesis;
-}
-
-bool better_breakpoint_hypothesis(
-    const BreakpointHypothesis& candidate,
-    const BreakpointHypothesis& incumbent,
-    int32_t anchor_pos) {
-    if (!candidate.valid) {
-        return false;
-    }
-    if (!incumbent.valid) {
-        return true;
-    }
-
-    const int32_t candidate_score = breakpoint_hypothesis_score(candidate);
-    const int32_t incumbent_score = breakpoint_hypothesis_score(incumbent);
-    if (candidate_score != incumbent_score) {
-        return candidate_score > incumbent_score;
-    }
-    const int32_t candidate_dist = std::abs(candidate.center - anchor_pos);
-    const int32_t incumbent_dist = std::abs(incumbent.center - anchor_pos);
-    if (candidate_dist != incumbent_dist) {
-        return candidate_dist < incumbent_dist;
-    }
-    if (candidate.support != incumbent.support) {
-        return candidate.support > incumbent.support;
-    }
-    if (candidate.priority != incumbent.priority) {
-        return candidate.priority < incumbent.priority;
-    }
-    if (candidate.left != incumbent.left) {
-        return candidate.left < incumbent.left;
-    }
-    return candidate.right < incumbent.right;
-}
+struct LocalBreakpointHypothesis {
+    bool valid = false;
+    int32_t left = -1;
+    int32_t right = -1;
+    int32_t center = -1;
+    int32_t support = 0;
+    int32_t priority = std::numeric_limits<int32_t>::max();
+};
 
 double mad_from_positions(const std::vector<int32_t>& positions) {
     if (positions.empty()) {
@@ -1016,6 +982,34 @@ uint8_t char_to_2bit(char c) {
         case 'G': return 2;
         case 'T': return 3;
         default: return 4;
+    }
+}
+
+template <typename Fn>
+void for_each_valid_kmer(const std::string& seq, int32_t k, Fn&& fn) {
+    if (k <= 0 || static_cast<int32_t>(seq.size()) < k) {
+        return;
+    }
+
+    const uint64_t mask = (k >= 32)
+        ? std::numeric_limits<uint64_t>::max()
+        : ((uint64_t{1} << (2 * k)) - 1);
+    uint64_t key = 0;
+    int32_t valid_bases = 0;
+    for (int32_t i = 0; i < static_cast<int32_t>(seq.size()); ++i) {
+        const uint8_t code = char_to_2bit(seq[static_cast<size_t>(i)]);
+        if (code > 3) {
+            key = 0;
+            valid_bases = 0;
+            continue;
+        }
+        key = ((key << 2) | code) & mask;
+        if (valid_bases < k) {
+            ++valid_bases;
+        }
+        if (valid_bases >= k) {
+            fn(i - k + 1, key);
+        }
     }
 }
 
@@ -1325,7 +1319,7 @@ std::pair<int32_t, int32_t> infer_component_breakpoint_bounds(
     return {fallback, fallback};
 }
 
-std::vector<BreakpointHypothesis> enumerate_breakpoint_hypotheses(
+std::vector<LocalBreakpointHypothesis> collect_breakpoint_hypotheses(
     const ComponentCall& component,
     const std::vector<const bam1_t*>& local_records,
     const std::vector<InsertionFragment>& fragments,
@@ -1417,52 +1411,162 @@ std::vector<BreakpointHypothesis> enumerate_breakpoint_hypotheses(
         }
     }
 
-    std::vector<BreakpointHypothesis> hypotheses;
-    hypotheses.reserve(6);
-    const auto consider = [&](const BreakpointHypothesis& hypothesis) {
-        if (!hypothesis.valid) {
-            return;
-        }
-        for (const auto& existing : hypotheses) {
-            if (existing.left == hypothesis.left &&
-                existing.right == hypothesis.right) {
-                return;
+    const auto sort_clusters = [&](std::vector<BreakpointPositionCluster>& clusters) {
+        std::sort(clusters.begin(), clusters.end(), [&](const auto& lhs, const auto& rhs) {
+            if (lhs.support != rhs.support) {
+                return lhs.support > rhs.support;
             }
-        }
-        hypotheses.push_back(hypothesis);
+            const int32_t lhs_dist = std::abs(lhs.center - component.anchor_pos);
+            const int32_t rhs_dist = std::abs(rhs.center - component.anchor_pos);
+            if (lhs_dist != rhs_dist) {
+                return lhs_dist < rhs_dist;
+            }
+            return lhs.center < rhs.center;
+        });
     };
 
-    consider(make_paired_breakpoint_hypothesis(
+    const auto make_single_breakpoint_hypotheses = [&](std::vector<int32_t> positions,
+                                                       int32_t priority) {
+        std::vector<LocalBreakpointHypothesis> out;
+        auto clusters = collect_breakpoint_position_clusters(std::move(positions));
+        sort_clusters(clusters);
+        if (clusters.size() > kBreakpointHypothesisMaxSingleClusters) {
+            clusters.resize(kBreakpointHypothesisMaxSingleClusters);
+        }
+
+        out.reserve(clusters.size());
+        for (const auto& cluster : clusters) {
+            LocalBreakpointHypothesis hypothesis;
+            hypothesis.valid = cluster.center >= 0;
+            hypothesis.left = cluster.center;
+            hypothesis.right = cluster.center;
+            hypothesis.center = cluster.center;
+            hypothesis.support = cluster.support;
+            hypothesis.priority = priority;
+            out.push_back(hypothesis);
+        }
+        return out;
+    };
+
+    const auto make_paired_breakpoint_hypotheses = [&](std::vector<int32_t> left_positions,
+                                                       std::vector<int32_t> right_positions,
+                                                       int32_t priority) {
+        std::vector<LocalBreakpointHypothesis> out;
+        auto left_clusters = collect_breakpoint_position_clusters(std::move(left_positions));
+        auto right_clusters = collect_breakpoint_position_clusters(std::move(right_positions));
+        sort_clusters(left_clusters);
+        sort_clusters(right_clusters);
+
+        if (left_clusters.size() > kBreakpointHypothesisMaxClustersPerSide) {
+            left_clusters.resize(kBreakpointHypothesisMaxClustersPerSide);
+        }
+        if (right_clusters.size() > kBreakpointHypothesisMaxClustersPerSide) {
+            right_clusters.resize(kBreakpointHypothesisMaxClustersPerSide);
+        }
+
+        if (left_clusters.empty() && right_clusters.empty()) {
+            return out;
+        }
+
+        if (left_clusters.empty()) {
+            out.reserve(right_clusters.size());
+            for (const auto& right_cluster : right_clusters) {
+                LocalBreakpointHypothesis hypothesis;
+                hypothesis.valid = right_cluster.center >= 0;
+                hypothesis.left = right_cluster.center;
+                hypothesis.right = right_cluster.center;
+                hypothesis.center = right_cluster.center;
+                hypothesis.support = right_cluster.support;
+                hypothesis.priority = priority;
+                out.push_back(hypothesis);
+            }
+            return out;
+        }
+
+        if (right_clusters.empty()) {
+            out.reserve(left_clusters.size());
+            for (const auto& left_cluster : left_clusters) {
+                LocalBreakpointHypothesis hypothesis;
+                hypothesis.valid = left_cluster.center >= 0;
+                hypothesis.left = left_cluster.center;
+                hypothesis.right = left_cluster.center;
+                hypothesis.center = left_cluster.center;
+                hypothesis.support = left_cluster.support;
+                hypothesis.priority = priority;
+                out.push_back(hypothesis);
+            }
+            return out;
+        }
+
+        out.reserve(left_clusters.size() * right_clusters.size());
+        for (const auto& left_cluster : left_clusters) {
+            for (const auto& right_cluster : right_clusters) {
+                const int32_t left = std::min(left_cluster.center, right_cluster.center);
+                const int32_t right = std::max(left_cluster.center, right_cluster.center);
+                if ((right - left) > kBreakpointPairCompatibilityBp) {
+                    continue;
+                }
+
+                LocalBreakpointHypothesis hypothesis;
+                hypothesis.valid = true;
+                hypothesis.left = left;
+                hypothesis.right = right;
+                hypothesis.center =
+                    static_cast<int32_t>((static_cast<int64_t>(left) + right) / 2);
+                hypothesis.support = left_cluster.support + right_cluster.support;
+                hypothesis.priority = priority;
+                out.push_back(hypothesis);
+            }
+        }
+        return out;
+    };
+
+    std::vector<LocalBreakpointHypothesis> hypotheses;
+    hypotheses.reserve(24);
+    const auto append_unique = [&](const std::vector<LocalBreakpointHypothesis>& batch) {
+        for (const auto& hypothesis : batch) {
+            if (!hypothesis.valid) {
+                continue;
+            }
+            bool duplicate = false;
+            for (const auto& existing : hypotheses) {
+                if (existing.left == hypothesis.left &&
+                    existing.right == hypothesis.right) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) {
+                hypotheses.push_back(hypothesis);
+            }
+        }
+    };
+
+    append_unique(make_paired_breakpoint_hypotheses(
         fragment_split_left_positions,
         fragment_split_right_positions,
-        component.anchor_pos,
         0));
-    consider(make_single_breakpoint_hypothesis(
+    append_unique(make_single_breakpoint_hypotheses(
         fragment_indel_positions,
-        component.anchor_pos,
         1));
-    consider(make_paired_breakpoint_hypothesis(
+    append_unique(make_paired_breakpoint_hypotheses(
         raw_split_left_positions,
         raw_split_right_positions,
-        component.anchor_pos,
         2));
-    consider(make_paired_breakpoint_hypothesis(
+    append_unique(make_paired_breakpoint_hypotheses(
         fragment_clip_left_positions,
         fragment_clip_right_positions,
-        component.anchor_pos,
         3));
-    consider(make_single_breakpoint_hypothesis(
+    append_unique(make_single_breakpoint_hypotheses(
         raw_indel_positions,
-        component.anchor_pos,
         4));
-    consider(make_paired_breakpoint_hypothesis(
+    append_unique(make_paired_breakpoint_hypotheses(
         raw_clip_left_positions,
         raw_clip_right_positions,
-        component.anchor_pos,
         5));
 
     if (hypotheses.empty()) {
-        BreakpointHypothesis fallback;
+        LocalBreakpointHypothesis fallback;
         fallback.valid = true;
         fallback.left = std::max(0, component.anchor_pos);
         fallback.right = fallback.left;
@@ -1475,32 +1579,34 @@ std::vector<BreakpointHypothesis> enumerate_breakpoint_hypotheses(
     std::sort(
         hypotheses.begin(),
         hypotheses.end(),
-        [&](const BreakpointHypothesis& lhs, const BreakpointHypothesis& rhs) {
-            return better_breakpoint_hypothesis(lhs, rhs, component.anchor_pos);
+        [&](const LocalBreakpointHypothesis& lhs, const LocalBreakpointHypothesis& rhs) {
+            const int32_t lhs_score =
+                lhs.support * breakpoint_hypothesis_support_weight(lhs.priority);
+            const int32_t rhs_score =
+                rhs.support * breakpoint_hypothesis_support_weight(rhs.priority);
+            if (lhs_score != rhs_score) {
+                return lhs_score > rhs_score;
+            }
+            const int32_t lhs_dist = std::abs(lhs.center - component.anchor_pos);
+            const int32_t rhs_dist = std::abs(rhs.center - component.anchor_pos);
+            if (lhs_dist != rhs_dist) {
+                return lhs_dist < rhs_dist;
+            }
+            if (lhs.support != rhs.support) {
+                return lhs.support > rhs.support;
+            }
+            if (lhs.priority != rhs.priority) {
+                return lhs.priority < rhs.priority;
+            }
+            if (lhs.left != rhs.left) {
+                return lhs.left < rhs.left;
+            }
+            return lhs.right < rhs.right;
         });
     if (top_k > 0 && hypotheses.size() > top_k) {
         hypotheses.resize(top_k);
     }
     return hypotheses;
-}
-
-std::pair<int32_t, int32_t> resolve_event_breakpoint_bounds(
-    const ComponentCall& component,
-    const std::vector<const bam1_t*>& local_records,
-    const std::vector<InsertionFragment>& fragments,
-    int32_t seed_left,
-    int32_t seed_right) {
-    const auto hypotheses = enumerate_breakpoint_hypotheses(
-        component,
-        local_records,
-        fragments,
-        seed_left,
-        seed_right,
-        1);
-    if (!hypotheses.empty()) {
-        return {hypotheses.front().left, hypotheses.front().right};
-    }
-    return {std::max(0, component.anchor_pos), std::max(0, component.anchor_pos)};
 }
 template <typename T>
 class SafeQueue {
@@ -1992,6 +2098,87 @@ std::vector<CandidateWindow> build_density_windows(
 
 }  // namespace
 
+std::vector<Pipeline::BreakpointHypothesis> Pipeline::enumerate_breakpoint_hypotheses(
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<InsertionFragment>& fragments,
+    int32_t seed_left,
+    int32_t seed_right,
+    size_t top_k) const {
+    const auto local_hypotheses = collect_breakpoint_hypotheses(
+        component,
+        local_records,
+        fragments,
+        seed_left,
+        seed_right,
+        0);
+    std::vector<BreakpointHypothesis> hypotheses;
+    hypotheses.reserve(local_hypotheses.size());
+    for (const auto& local : local_hypotheses) {
+        BreakpointHypothesis hypothesis;
+        hypothesis.valid = local.valid;
+        hypothesis.left = local.left;
+        hypothesis.right = local.right;
+        hypothesis.center = local.center;
+        hypothesis.support = local.support;
+        hypothesis.priority = local.priority;
+        hypotheses.push_back(hypothesis);
+    }
+    return select_diverse_breakpoint_hypotheses(hypotheses, top_k);
+}
+
+std::vector<Pipeline::BreakpointHypothesis> Pipeline::select_diverse_breakpoint_hypotheses(
+    const std::vector<BreakpointHypothesis>& hypotheses,
+    size_t top_k) const {
+    constexpr int32_t kBreakpointDiversitySlackBp = 30;
+    if (top_k == 0 || hypotheses.size() <= top_k) {
+        return hypotheses;
+    }
+
+    std::vector<BreakpointHypothesis> selected;
+    selected.reserve(std::min(top_k, hypotheses.size()));
+    for (const auto& hypothesis : hypotheses) {
+        bool redundant = false;
+        for (const auto& incumbent : selected) {
+            const bool close_left =
+                std::abs(hypothesis.left - incumbent.left) <= kBreakpointDiversitySlackBp;
+            const bool close_right =
+                std::abs(hypothesis.right - incumbent.right) <= kBreakpointDiversitySlackBp;
+            if (close_left && close_right) {
+                redundant = true;
+                break;
+            }
+        }
+        if (redundant) {
+            continue;
+        }
+        selected.push_back(hypothesis);
+        if (selected.size() >= top_k) {
+            break;
+        }
+    }
+    return selected;
+}
+
+std::pair<int32_t, int32_t> Pipeline::resolve_event_breakpoint_bounds(
+    const ComponentCall& component,
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<InsertionFragment>& fragments,
+    int32_t seed_left,
+    int32_t seed_right) const {
+    const auto hypotheses = enumerate_breakpoint_hypotheses(
+        component,
+        local_records,
+        fragments,
+        seed_left,
+        seed_right,
+        1);
+    if (!hypotheses.empty()) {
+        return {hypotheses.front().left, hypotheses.front().right};
+    }
+    return {std::max(0, component.anchor_pos), std::max(0, component.anchor_pos)};
+}
+
 EventReadEvidence Pipeline::collect_event_read_evidence(
     const ComponentCall& component,
     const std::vector<const bam1_t*>& local_records,
@@ -2253,6 +2440,320 @@ EventReadEvidence Pipeline::collect_event_read_evidence_for_bounds(
     return evidence;
 }
 
+Pipeline::ComponentSignalCache Pipeline::build_component_signal_cache(
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<ReadReferenceSpan>& read_spans) const {
+    ComponentSignalCache cache;
+    cache.reads.reserve(local_records.size());
+    for (size_t read_idx = 0; read_idx < local_records.size(); ++read_idx) {
+        const bam1_t* record = local_records[read_idx];
+        if (!record) {
+            continue;
+        }
+
+        ReadView read(record);
+        const uint32_t* cigar = read.cigar();
+        const int32_t n_cigar = read.n_cigar();
+
+        CachedLocalSignal cached;
+        cached.qname = record_qname(record);
+        cached.tid = read.tid();
+        cached.mapq = read.mapq();
+        cached.is_primary = is_primary_alignment(record);
+        cached.has_sa_or_supp =
+            read.has_sa_tag() || ((read.flag() & BAM_FSUPPLEMENTARY) != 0);
+        if (read_idx < read_spans.size() && read_spans[read_idx].valid) {
+            cached.span_valid = true;
+            cached.span_start = read_spans[read_idx].start;
+            cached.span_end = read_spans[read_idx].end;
+        }
+
+        if (cigar && n_cigar > 0) {
+            const int first = find_first_non_hard_clip(cigar, n_cigar);
+            const int last = find_last_non_hard_clip(cigar, n_cigar);
+            int32_t ref_pos = read.pos();
+            for (int32_t ci = 0; ci < n_cigar; ++ci) {
+                const int op = bam_cigar_op(cigar[ci]);
+                const int32_t len = static_cast<int32_t>(bam_cigar_oplen(cigar[ci]));
+
+                if (ci == first && op == BAM_CSOFT_CLIP && len >= kSoftClipSignalMin) {
+                    cached.left_clip_pos = ref_pos;
+                }
+                if (ci == last && op == BAM_CSOFT_CLIP && len >= kSoftClipSignalMin) {
+                    cached.right_clip_pos = ref_pos;
+                }
+                if (op == BAM_CINS && len >= kLongInsertionSignalMin) {
+                    cached.indel_positions.push_back(ref_pos);
+                }
+                if ((bam_cigar_type(op) & 2) != 0) {
+                    ref_pos += len;
+                }
+            }
+        }
+
+        cache.reads.push_back(std::move(cached));
+    }
+    return cache;
+}
+
+EventReadEvidence Pipeline::collect_event_read_evidence_for_bounds_cached(
+    const ComponentCall& component,
+    const ComponentSignalCache& cache,
+    const std::vector<InsertionFragment>& fragments,
+    int32_t seed_left,
+    int32_t seed_right,
+    int32_t bp_left,
+    int32_t bp_right) const {
+    EventReadEvidence evidence;
+    (void)seed_left;
+    (void)seed_right;
+    constexpr int32_t kAltSignalSlackBp = 25;
+    constexpr int32_t kRefSignalSlackBp = 75;
+    constexpr int32_t kCandidateClipSlackBp = 25;
+    constexpr int32_t kCandidateClipSupplementMaxOffsetBp = 75;
+    const int32_t left = std::min(bp_left, bp_right);
+    const int32_t right = std::max(bp_left, bp_right);
+    evidence.bp_left = left;
+    evidence.bp_right = right;
+
+    const auto classify_cached_signal = [&](
+        const CachedLocalSignal& cached,
+        int32_t window_start,
+        int32_t window_end) {
+        LocalEventSignal signal;
+        if (window_end < window_start) {
+            return signal;
+        }
+
+        if (cached.left_clip_pos >= window_start && cached.left_clip_pos <= window_end) {
+            signal.left_clip = true;
+            signal.left_clip_pos = cached.left_clip_pos;
+        }
+        if (cached.right_clip_pos >= window_start && cached.right_clip_pos <= window_end) {
+            signal.right_clip = true;
+            signal.right_clip_pos = cached.right_clip_pos;
+        }
+
+        const int32_t window_center = window_start + ((window_end - window_start) / 2);
+        int32_t best_indel_dist = std::numeric_limits<int32_t>::max();
+        for (int32_t pos : cached.indel_positions) {
+            if (pos < window_start || pos > window_end) {
+                continue;
+            }
+            signal.indel = true;
+            const int32_t dist = std::abs(pos - window_center);
+            if (dist < best_indel_dist) {
+                best_indel_dist = dist;
+                signal.indel_pos = pos;
+            }
+        }
+
+        signal.split = cached.has_sa_or_supp && (signal.left_clip || signal.right_clip);
+        if (signal.split) {
+            signal.split_left_pos = signal.left_clip_pos;
+            signal.split_right_pos = signal.right_clip_pos;
+        }
+        return signal;
+    };
+
+    std::unordered_set<std::string> split_qnames;
+    std::unordered_set<std::string> indel_qnames;
+    std::unordered_set<std::string> left_clip_qnames;
+    std::unordered_set<std::string> right_clip_qnames;
+    std::unordered_set<std::string> nearby_candidate_left_clip_qnames;
+    std::unordered_set<std::string> nearby_candidate_right_clip_qnames;
+
+    const int32_t alt_signal_start = std::max(0, evidence.bp_left - kAltSignalSlackBp);
+    const int32_t alt_signal_end = std::max(alt_signal_start, evidence.bp_right + kAltSignalSlackBp);
+    const int32_t ref_signal_start = std::max(0, evidence.bp_left - kRefSignalSlackBp);
+    const int32_t ref_signal_end = std::max(ref_signal_start, evidence.bp_right + kRefSignalSlackBp);
+    const int32_t ref_span_start = alt_signal_start;
+    const int32_t ref_span_end = alt_signal_end;
+
+    std::vector<int32_t> nearby_component_clip_candidates;
+    nearby_component_clip_candidates.reserve(component.breakpoint_candidates.size());
+    for (const auto& candidate : component.breakpoint_candidates) {
+        if (candidate.pos < 0) {
+            continue;
+        }
+        const int32_t dist_to_hypothesis = (candidate.pos < left)
+            ? (left - candidate.pos)
+            : ((candidate.pos > right) ? (candidate.pos - right) : 0);
+        if (dist_to_hypothesis <= kCandidateClipSupplementMaxOffsetBp) {
+            nearby_component_clip_candidates.push_back(candidate.pos);
+        }
+    }
+    std::sort(
+        nearby_component_clip_candidates.begin(),
+        nearby_component_clip_candidates.end());
+    nearby_component_clip_candidates.erase(
+        std::unique(
+            nearby_component_clip_candidates.begin(),
+            nearby_component_clip_candidates.end()),
+        nearby_component_clip_candidates.end());
+
+    const bool have_nearby_component_clip_candidates =
+        !nearby_component_clip_candidates.empty();
+    int32_t candidate_clip_start = 0;
+    int32_t candidate_clip_end = 0;
+    if (have_nearby_component_clip_candidates) {
+        candidate_clip_start = std::max(
+            0,
+            nearby_component_clip_candidates.front() - kCandidateClipSlackBp);
+        candidate_clip_end = std::max(
+            candidate_clip_start,
+            nearby_component_clip_candidates.back() + kCandidateClipSlackBp);
+    }
+    const auto matches_nearby_component_clip_candidate = [&](int32_t pos) {
+        if (pos < 0) {
+            return false;
+        }
+        for (const int32_t candidate_pos : nearby_component_clip_candidates) {
+            if (std::abs(pos - candidate_pos) <= kCandidateClipSlackBp) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (const auto& cached : cache.reads) {
+        if (cached.tid != component.tid || cached.qname.empty()) {
+            continue;
+        }
+
+        const LocalEventSignal signal = classify_cached_signal(
+            cached,
+            alt_signal_start,
+            alt_signal_end);
+        if (signal.split) {
+            split_qnames.insert(cached.qname);
+        }
+        if (signal.indel) {
+            indel_qnames.insert(cached.qname);
+        }
+        if (signal.left_clip) {
+            left_clip_qnames.insert(cached.qname);
+        }
+        if (signal.right_clip) {
+            right_clip_qnames.insert(cached.qname);
+        }
+
+        if (have_nearby_component_clip_candidates) {
+            const LocalEventSignal nearby_signal = classify_cached_signal(
+                cached,
+                candidate_clip_start,
+                candidate_clip_end);
+            if (nearby_signal.left_clip &&
+                matches_nearby_component_clip_candidate(nearby_signal.left_clip_pos)) {
+                nearby_candidate_left_clip_qnames.insert(cached.qname);
+            }
+            if (nearby_signal.right_clip &&
+                matches_nearby_component_clip_candidate(nearby_signal.right_clip_pos)) {
+                nearby_candidate_right_clip_qnames.insert(cached.qname);
+            }
+        }
+    }
+
+    for (const auto& fragment : fragments) {
+        if (fragment.read_id.empty() ||
+            fragment.ref_junc_pos < alt_signal_start ||
+            fragment.ref_junc_pos > alt_signal_end) {
+            continue;
+        }
+        switch (fragment.source) {
+            case InsertionFragmentSource::kSplitSa:
+                split_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kCigarInsertion:
+                indel_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kClipRefLeft:
+                left_clip_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kClipRefRight:
+                right_clip_qnames.insert(fragment.read_id);
+                break;
+            default:
+                break;
+        }
+
+        if (have_nearby_component_clip_candidates &&
+            matches_nearby_component_clip_candidate(fragment.ref_junc_pos)) {
+            switch (fragment.source) {
+                case InsertionFragmentSource::kClipRefLeft:
+                    nearby_candidate_left_clip_qnames.insert(fragment.read_id);
+                    break;
+                case InsertionFragmentSource::kClipRefRight:
+                    nearby_candidate_right_clip_qnames.insert(fragment.read_id);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    const bool has_precise_nonclip_support =
+        !split_qnames.empty() || !indel_qnames.empty();
+    if (has_precise_nonclip_support &&
+        !nearby_candidate_left_clip_qnames.empty() &&
+        !nearby_candidate_right_clip_qnames.empty()) {
+        left_clip_qnames.insert(
+            nearby_candidate_left_clip_qnames.begin(),
+            nearby_candidate_left_clip_qnames.end());
+        right_clip_qnames.insert(
+            nearby_candidate_right_clip_qnames.begin(),
+            nearby_candidate_right_clip_qnames.end());
+    }
+
+    evidence.alt_split_reads = static_cast<int32_t>(split_qnames.size());
+    evidence.alt_indel_reads = static_cast<int32_t>(indel_qnames.size());
+    evidence.alt_left_clip_reads = static_cast<int32_t>(left_clip_qnames.size());
+    evidence.alt_right_clip_reads = static_cast<int32_t>(right_clip_qnames.size());
+
+    std::unordered_set<std::string> alt_qnames = split_qnames;
+    alt_qnames.insert(indel_qnames.begin(), indel_qnames.end());
+    const bool clip_support_has_partner =
+        !alt_qnames.empty() ||
+        (!left_clip_qnames.empty() && !right_clip_qnames.empty());
+    if (clip_support_has_partner) {
+        alt_qnames.insert(left_clip_qnames.begin(), left_clip_qnames.end());
+        alt_qnames.insert(right_clip_qnames.begin(), right_clip_qnames.end());
+    }
+
+    evidence.alt_struct_reads = static_cast<int32_t>(alt_qnames.size());
+    evidence.support_qnames = sorted_string_set(alt_qnames);
+
+    std::unordered_set<std::string> ref_qnames;
+    std::unordered_set<std::string> low_mapq_ref_qnames;
+    for (const auto& cached : cache.reads) {
+        if (!cached.span_valid || cached.tid != component.tid) {
+            continue;
+        }
+        if (cached.span_start > ref_span_start || cached.span_end < ref_span_end) {
+            continue;
+        }
+        if (!cached.is_primary) {
+            continue;
+        }
+        if (cached.qname.empty() || alt_qnames.find(cached.qname) != alt_qnames.end()) {
+            continue;
+        }
+        if (classify_cached_signal(cached, ref_signal_start, ref_signal_end).any()) {
+            continue;
+        }
+        if (cached.mapq >= 20) {
+            ref_qnames.insert(cached.qname);
+        } else {
+            low_mapq_ref_qnames.insert(cached.qname);
+        }
+    }
+
+    evidence.ref_span_reads = static_cast<int32_t>(ref_qnames.size());
+    evidence.low_mapq_ref_span_reads = static_cast<int32_t>(low_mapq_ref_qnames.size());
+    evidence.ref_span_qnames = sorted_string_set(ref_qnames);
+    return evidence;
+}
+
 EventConsensus Pipeline::build_event_consensus(
     const ComponentCall& component,
     const std::vector<const bam1_t*>& local_records,
@@ -2261,73 +2762,19 @@ EventConsensus Pipeline::build_event_consensus(
     EventConsensus consensus;
     (void)component;
 
-    std::unordered_set<std::string> support_qnames(
-        event_evidence.support_qnames.begin(),
-        event_evidence.support_qnames.end());
-    std::unordered_map<std::string, const bam1_t*> records_by_qname;
-    records_by_qname.reserve(local_records.size());
-    for (const bam1_t* record : local_records) {
-        if (!record) {
-            continue;
-        }
-        const std::string qname = record_qname(record);
-        if (qname.empty()) {
-            continue;
-        }
-
-        auto it = records_by_qname.find(qname);
-        if (it == records_by_qname.end()) {
-            records_by_qname.emplace(qname, record);
-            continue;
-        }
-
-        ReadView candidate(record);
-        ReadView incumbent(it->second);
-        const int32_t candidate_seq_len = candidate.seq_len();
-        const int32_t incumbent_seq_len = incumbent.seq_len();
-        if (candidate_seq_len > incumbent_seq_len ||
-            (candidate_seq_len == incumbent_seq_len &&
-             is_primary_alignment(record) &&
-             !is_primary_alignment(it->second))) {
-            it->second = record;
-        }
-    }
-
-    std::unordered_map<std::string, std::string> full_event_by_qname;
-    std::unordered_map<std::string, std::string> partial_event_by_qname;
-    full_event_by_qname.reserve(fragments.size());
-    partial_event_by_qname.reserve(fragments.size());
-
-    for (const auto& fragment : fragments) {
-        if (fragment.read_id.empty() ||
-            support_qnames.find(fragment.read_id) == support_qnames.end() ||
-            !fragment_supports_event_consensus(fragment) ||
-            !fragment_is_local_to_event(fragment, event_evidence.bp_left, event_evidence.bp_right)) {
-            continue;
-        }
-        const auto record_it = records_by_qname.find(fragment.read_id);
-        if (record_it == records_by_qname.end()) {
-            continue;
-        }
-        const std::string event_string = build_event_string_from_fragment(
-            record_it->second,
-            fragment);
-        if (event_string.empty()) {
-            continue;
-        }
-        auto& event_by_qname = fragment_has_full_event_context(fragment)
-            ? full_event_by_qname
-            : partial_event_by_qname;
-        auto it = event_by_qname.find(fragment.read_id);
-        if (it == event_by_qname.end() || event_string.size() > it->second.size()) {
-            event_by_qname[fragment.read_id] = event_string;
-        }
-    }
-
-    const bool use_full_context = !full_event_by_qname.empty();
+    const ConsensusInputSummary inputs = collect_event_consensus_inputs(
+        local_records,
+        fragments,
+        event_evidence);
+    const bool use_full_context = !inputs.full_event_by_qname.empty();
+    consensus.full_context_input_reads = inputs.full_context_input_reads;
+    consensus.partial_context_input_reads = inputs.partial_context_input_reads;
+    consensus.left_anchor_input_reads = inputs.left_anchor_input_reads;
+    consensus.right_anchor_input_reads = inputs.right_anchor_input_reads;
+    consensus.used_full_context = use_full_context;
     const auto& event_by_qname = use_full_context
-        ? full_event_by_qname
-        : partial_event_by_qname;
+        ? inputs.full_event_by_qname
+        : inputs.partial_event_by_qname;
     std::vector<std::string> event_strings;
     event_strings.reserve(event_by_qname.size());
     for (const auto& row : event_by_qname) {
@@ -2367,6 +2814,377 @@ EventConsensus Pipeline::build_event_consensus(
     consensus.qc_pass = true;
     consensus.qc_reason = "PASS_EVENT_CONSENSUS";
     return consensus;
+}
+
+Pipeline::ConsensusInputSummary Pipeline::collect_event_consensus_inputs(
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<InsertionFragment>& fragments,
+    const EventReadEvidence& event_evidence) const {
+    ConsensusInputSummary summary;
+
+    std::unordered_set<std::string> support_qnames(
+        event_evidence.support_qnames.begin(),
+        event_evidence.support_qnames.end());
+    const std::unordered_map<std::string, const bam1_t*> records_by_qname =
+        best_records_by_qname(local_records);
+
+    std::unordered_set<std::string> full_context_qnames;
+    std::unordered_set<std::string> partial_context_qnames;
+    std::unordered_set<std::string> left_anchor_qnames;
+    std::unordered_set<std::string> right_anchor_qnames;
+    summary.full_event_by_qname.reserve(fragments.size());
+    summary.partial_event_by_qname.reserve(fragments.size());
+    full_context_qnames.reserve(fragments.size());
+    partial_context_qnames.reserve(fragments.size());
+    left_anchor_qnames.reserve(fragments.size());
+    right_anchor_qnames.reserve(fragments.size());
+
+    for (const auto& fragment : fragments) {
+        if (fragment.read_id.empty() ||
+            support_qnames.find(fragment.read_id) == support_qnames.end() ||
+            !fragment_supports_event_consensus(fragment) ||
+            !fragment_is_local_to_event(fragment, event_evidence.bp_left, event_evidence.bp_right)) {
+            continue;
+        }
+        const auto record_it = records_by_qname.find(fragment.read_id);
+        if (record_it == records_by_qname.end()) {
+            continue;
+        }
+        if (!can_build_event_string_from_fragment(record_it->second, fragment)) {
+            continue;
+        }
+        const std::string event_string = build_event_string_from_fragment(
+            record_it->second,
+            fragment);
+        if (event_string.empty()) {
+            continue;
+        }
+
+        switch (fragment.source) {
+            case InsertionFragmentSource::kCigarInsertion:
+            case InsertionFragmentSource::kSplitSa:
+                full_context_qnames.insert(fragment.read_id);
+                left_anchor_qnames.insert(fragment.read_id);
+                right_anchor_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kClipRefLeft:
+                partial_context_qnames.insert(fragment.read_id);
+                right_anchor_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kClipRefRight:
+                partial_context_qnames.insert(fragment.read_id);
+                left_anchor_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kUnknown:
+            default:
+                break;
+        }
+
+        auto& event_by_qname = fragment_has_full_event_context(fragment)
+            ? summary.full_event_by_qname
+            : summary.partial_event_by_qname;
+        auto it = event_by_qname.find(fragment.read_id);
+        if (it == event_by_qname.end() || event_string.size() > it->second.size()) {
+            event_by_qname[fragment.read_id] = event_string;
+        }
+    }
+
+    summary.full_context_input_reads = static_cast<int32_t>(full_context_qnames.size());
+    summary.partial_context_input_reads = static_cast<int32_t>(partial_context_qnames.size());
+    summary.left_anchor_input_reads = static_cast<int32_t>(left_anchor_qnames.size());
+    summary.right_anchor_input_reads = static_cast<int32_t>(right_anchor_qnames.size());
+    return summary;
+}
+
+Pipeline::ConsensusInputCounts Pipeline::collect_event_consensus_input_counts(
+    const std::vector<const bam1_t*>& local_records,
+    const std::vector<InsertionFragment>& fragments,
+    const EventReadEvidence& event_evidence) const {
+    ConsensusInputCounts counts;
+
+    std::unordered_set<std::string> support_qnames(
+        event_evidence.support_qnames.begin(),
+        event_evidence.support_qnames.end());
+    const std::unordered_map<std::string, const bam1_t*> records_by_qname =
+        best_records_by_qname(local_records);
+
+    std::unordered_set<std::string> full_context_qnames;
+    std::unordered_set<std::string> partial_context_qnames;
+    std::unordered_set<std::string> left_anchor_qnames;
+    std::unordered_set<std::string> right_anchor_qnames;
+    full_context_qnames.reserve(fragments.size());
+    partial_context_qnames.reserve(fragments.size());
+    left_anchor_qnames.reserve(fragments.size());
+    right_anchor_qnames.reserve(fragments.size());
+
+    for (const auto& fragment : fragments) {
+        if (fragment.read_id.empty() ||
+            support_qnames.find(fragment.read_id) == support_qnames.end() ||
+            !fragment_supports_event_consensus(fragment) ||
+            !fragment_is_local_to_event(fragment, event_evidence.bp_left, event_evidence.bp_right)) {
+            continue;
+        }
+        const auto record_it = records_by_qname.find(fragment.read_id);
+        if (record_it == records_by_qname.end() ||
+            !can_build_event_string_from_fragment(record_it->second, fragment)) {
+            continue;
+        }
+
+        switch (fragment.source) {
+            case InsertionFragmentSource::kCigarInsertion:
+            case InsertionFragmentSource::kSplitSa:
+                full_context_qnames.insert(fragment.read_id);
+                left_anchor_qnames.insert(fragment.read_id);
+                right_anchor_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kClipRefLeft:
+                partial_context_qnames.insert(fragment.read_id);
+                right_anchor_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kClipRefRight:
+                partial_context_qnames.insert(fragment.read_id);
+                left_anchor_qnames.insert(fragment.read_id);
+                break;
+            case InsertionFragmentSource::kUnknown:
+            default:
+                break;
+        }
+    }
+
+    counts.full_context_input_reads = static_cast<int32_t>(full_context_qnames.size());
+    counts.partial_context_input_reads = static_cast<int32_t>(partial_context_qnames.size());
+    counts.left_anchor_input_reads = static_cast<int32_t>(left_anchor_qnames.size());
+    counts.right_anchor_input_reads = static_cast<int32_t>(right_anchor_qnames.size());
+    counts.input_event_reads =
+        counts.full_context_input_reads > 0
+            ? counts.full_context_input_reads
+            : counts.partial_context_input_reads;
+    return counts;
+}
+
+Pipeline::HypothesisValidatorEvidence Pipeline::collect_hypothesis_validator_evidence(
+    const HypothesisSummary& summary,
+    const ConsensusInputCounts& inputs,
+    int32_t anchor_pos) const {
+    HypothesisValidatorEvidence out;
+    out.summary = summary;
+    out.precise_support = summary.alt_split_reads + summary.alt_indel_reads;
+    out.breakpoint_width = std::max(0, summary.bp_right - summary.bp_left);
+    out.anchor_distance = std::min(
+        std::abs(summary.bp_left - anchor_pos),
+        std::abs(summary.bp_right - anchor_pos));
+    out.full_context_input_reads = inputs.full_context_input_reads;
+    out.partial_context_input_reads = inputs.partial_context_input_reads;
+    out.left_anchor_input_reads = inputs.left_anchor_input_reads;
+    out.right_anchor_input_reads = inputs.right_anchor_input_reads;
+    out.input_event_reads = inputs.input_event_reads;
+
+    const bool has_bilateral_anchor =
+        out.left_anchor_input_reads > 0 && out.right_anchor_input_reads > 0;
+    const bool has_precise_or_full_context =
+        out.full_context_input_reads > 0 || out.precise_support > 0;
+    const bool has_strong_bilateral_partial_context =
+        has_strong_bilateral_partial_context_support(
+            out.left_anchor_input_reads,
+            out.right_anchor_input_reads,
+            out.partial_context_input_reads,
+            out.input_event_reads);
+    const bool has_validator_support =
+        has_precise_or_full_context || has_strong_bilateral_partial_context;
+
+    if (!has_bilateral_anchor && !has_precise_or_full_context) {
+        out.qc_reason = "VALIDATOR_NO_BILATERAL_ANCHOR";
+        return out;
+    }
+    if (!has_validator_support) {
+        out.qc_reason = "VALIDATOR_NO_PRECISE_OR_FULL_CONTEXT";
+        return out;
+    }
+
+    out.feasible_for_expensive_stage = true;
+    out.qc_reason = "VALIDATOR_PASS";
+    return out;
+}
+
+bool Pipeline::has_strong_bilateral_partial_context_support(
+    int32_t left_anchor_input_reads,
+    int32_t right_anchor_input_reads,
+    int32_t partial_context_input_reads,
+    int32_t input_event_reads) const {
+    const bool has_bilateral_anchor =
+        left_anchor_input_reads > 0 && right_anchor_input_reads > 0;
+    const int32_t min_partial_only_event_reads = std::max(
+        4,
+        config_.event_consensus_poa_min_reads * 2);
+    return has_bilateral_anchor &&
+        partial_context_input_reads >= min_partial_only_event_reads &&
+        input_event_reads >= min_partial_only_event_reads;
+}
+
+bool Pipeline::compare_hypothesis_validator_priority(
+    const HypothesisValidatorEvidence& lhs,
+    const HypothesisValidatorEvidence& rhs) const {
+    if (lhs.precise_support != rhs.precise_support) {
+        return lhs.precise_support > rhs.precise_support;
+    }
+    if (lhs.full_context_input_reads != rhs.full_context_input_reads) {
+        return lhs.full_context_input_reads > rhs.full_context_input_reads;
+    }
+    const int32_t lhs_anchor_balance =
+        std::min(lhs.left_anchor_input_reads, lhs.right_anchor_input_reads);
+    const int32_t rhs_anchor_balance =
+        std::min(rhs.left_anchor_input_reads, rhs.right_anchor_input_reads);
+    if (lhs_anchor_balance != rhs_anchor_balance) {
+        return lhs_anchor_balance > rhs_anchor_balance;
+    }
+    if (lhs.breakpoint_width != rhs.breakpoint_width) {
+        return lhs.breakpoint_width < rhs.breakpoint_width;
+    }
+    if (lhs.anchor_distance != rhs.anchor_distance) {
+        return lhs.anchor_distance < rhs.anchor_distance;
+    }
+    if (lhs.summary.alt_struct_reads != rhs.summary.alt_struct_reads) {
+        return lhs.summary.alt_struct_reads > rhs.summary.alt_struct_reads;
+    }
+    return lhs.summary.original_index < rhs.summary.original_index;
+}
+
+std::vector<Pipeline::ShortlistedHypothesis> Pipeline::build_expensive_stage_shortlist(
+    const std::vector<HypothesisValidatorEvidence>& candidates) const {
+    std::vector<HypothesisValidatorEvidence> feasible;
+    feasible.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        if (candidate.feasible_for_expensive_stage) {
+            feasible.push_back(candidate);
+        }
+    }
+    if (feasible.empty()) {
+        return {};
+    }
+
+    std::sort(feasible.begin(), feasible.end(), [&](const auto& lhs, const auto& rhs) {
+        return compare_hypothesis_validator_priority(lhs, rhs);
+    });
+
+    std::vector<ShortlistedHypothesis> out;
+    out.push_back(ShortlistedHypothesis{feasible.front(), true});
+    const auto& primary = feasible.front();
+
+    const auto support_jaccard = [](
+                                     const std::vector<std::string>& lhs,
+                                     const std::vector<std::string>& rhs) {
+        size_t i = 0;
+        size_t j = 0;
+        size_t intersect = 0;
+        while (i < lhs.size() && j < rhs.size()) {
+            if (lhs[i] == rhs[j]) {
+                ++intersect;
+                ++i;
+                ++j;
+            } else if (lhs[i] < rhs[j]) {
+                ++i;
+            } else {
+                ++j;
+            }
+        }
+        const size_t union_size = lhs.size() + rhs.size() - intersect;
+        return union_size == 0
+            ? 0.0
+            : static_cast<double>(intersect) / static_cast<double>(union_size);
+    };
+
+    for (size_t i = 1; i < feasible.size(); ++i) {
+        const auto& candidate = feasible[i];
+        const bool spatially_distinct =
+            std::abs(candidate.summary.bp_left - primary.summary.bp_left) > 60 ||
+            std::abs(candidate.summary.bp_right - primary.summary.bp_right) > 60;
+        const bool support_distinct =
+            support_jaccard(candidate.summary.support_qnames, primary.summary.support_qnames) < 0.5;
+        if (!spatially_distinct && !support_distinct) {
+            continue;
+        }
+        out.push_back(ShortlistedHypothesis{candidate, false});
+        break;
+    }
+    return out;
+}
+
+std::string Pipeline::pre_segmentation_gate_reason(
+    const EventReadEvidence& event_evidence,
+    const EventConsensus& event_consensus) const {
+    if (event_consensus.left_anchor_input_reads <= 0 ||
+        event_consensus.right_anchor_input_reads <= 0) {
+        return "PRESEG_NO_BILATERAL_ANCHOR";
+    }
+    const bool has_precise_or_full_context =
+        event_consensus.full_context_input_reads > 0 ||
+        (event_evidence.alt_split_reads + event_evidence.alt_indel_reads) > 0;
+    const bool has_strong_bilateral_partial_context =
+        has_strong_bilateral_partial_context_support(
+            event_consensus.left_anchor_input_reads,
+            event_consensus.right_anchor_input_reads,
+            event_consensus.partial_context_input_reads,
+            event_consensus.input_event_reads);
+    if (!has_precise_or_full_context && !has_strong_bilateral_partial_context) {
+        return "PRESEG_NO_PRECISE_OR_FULL_CONTEXT";
+    }
+    return {};
+}
+
+std::vector<Pipeline::AnchorSeedBin> Pipeline::collect_anchor_seed_bins(
+    const std::string& query,
+    int32_t breakpoint,
+    int32_t ref_window_start,
+    const std::string& ref_window,
+    bool is_left) const {
+    std::unordered_map<uint64_t, std::vector<int32_t>> ref_hits;
+    ref_hits.reserve(ref_window.size());
+    for_each_valid_kmer(ref_window, kEventSegmentationSeedK, [&](int32_t pos, uint64_t key) {
+        ref_hits[key].push_back(pos);
+    });
+
+    std::unordered_map<int32_t, AnchorSeedBin> bins_by_start;
+    bins_by_start.reserve(ref_window.size());
+    for_each_valid_kmer(query, kEventSegmentationSeedK, [&](int32_t query_pos, uint64_t key) {
+        const auto it = ref_hits.find(key);
+        if (it == ref_hits.end()) {
+            return;
+        }
+        for (int32_t ref_pos : it->second) {
+            const int32_t ref_start = ref_window_start + ref_pos - query_pos;
+            const int32_t ref_bin_start =
+                (ref_start / kEventSegmentationSeedBinBp) * kEventSegmentationSeedBinBp;
+            auto& bin = bins_by_start[ref_bin_start];
+            bin.ref_bin_start = ref_bin_start;
+            ++bin.support;
+
+            const int32_t candidate_breakpoint = is_left
+                ? (ref_start + static_cast<int32_t>(query.size()))
+                : ref_start;
+            bin.best_breakpoint_delta = std::min(
+                bin.best_breakpoint_delta,
+                std::abs(candidate_breakpoint - breakpoint));
+        }
+    });
+
+    std::vector<AnchorSeedBin> bins;
+    bins.reserve(bins_by_start.size());
+    for (const auto& entry : bins_by_start) {
+        bins.push_back(entry.second);
+    }
+    std::sort(bins.begin(), bins.end(), [](const AnchorSeedBin& lhs, const AnchorSeedBin& rhs) {
+        if (lhs.support != rhs.support) {
+            return lhs.support > rhs.support;
+        }
+        if (lhs.best_breakpoint_delta != rhs.best_breakpoint_delta) {
+            return lhs.best_breakpoint_delta < rhs.best_breakpoint_delta;
+        }
+        return lhs.ref_bin_start < rhs.ref_bin_start;
+    });
+    if (static_cast<int32_t>(bins.size()) > kEventSegmentationSeedTopBins) {
+        bins.resize(static_cast<size_t>(kEventSegmentationSeedTopBins));
+    }
+    return bins;
 }
 
 EventSegmentation Pipeline::segment_event_consensus(
@@ -2450,6 +3268,22 @@ EventSegmentation Pipeline::segment_event_consensus(
             ref_window_start + static_cast<int32_t>(ref_window.size());
         const int32_t search_lo = std::max(0, breakpoint - kEventSegmentationBreakpointSlackBp);
         const int32_t search_hi = breakpoint + kEventSegmentationBreakpointSlackBp;
+        const int32_t query_seed_len = std::min(
+            max_flank_query_len + query_endpoint_slack,
+            consensus_len);
+        const int32_t query_seed_start = is_left ? 0 : (consensus_len - query_seed_len);
+        const std::string seed_query = is_left
+            ? consensus.substr(0, static_cast<size_t>(query_seed_len))
+            : consensus.substr(static_cast<size_t>(query_seed_start));
+        const std::vector<AnchorSeedBin> seed_bins = collect_anchor_seed_bins(
+            seed_query,
+            breakpoint,
+            ref_window_start,
+            ref_window,
+            is_left);
+        if (seed_bins.empty()) {
+            return result;
+        }
 
         for (int32_t align_len = max_flank_query_len;
              align_len >= kEventSegmentationMinFlankAlignBp;
@@ -2475,7 +3309,8 @@ EventSegmentation Pipeline::segment_event_consensus(
 
             std::vector<EventFlankPlacement> placements;
             placements.reserve(
-                static_cast<size_t>(std::max(0, search_hi - search_lo + 1)) *
+                seed_bins.size() *
+                static_cast<size_t>(kEventSegmentationSeedBinBp) *
                 static_cast<size_t>(std::max(1, query_hi - query_lo + 1)));
 
             for (int32_t query_start = query_lo; query_start <= query_hi; ++query_start) {
@@ -2485,40 +3320,48 @@ EventSegmentation Pipeline::segment_event_consensus(
                 const int32_t endpoint_offset = is_left
                     ? query_start
                     : (consensus_len - (query_start + align_len));
+                const int32_t seed_query_offset = query_start - query_seed_start;
 
-                for (int32_t anchor_pos = search_lo; anchor_pos <= search_hi; ++anchor_pos) {
-                    const int32_t ref_start = is_left ? (anchor_pos - align_len) : anchor_pos;
-                    const int32_t ref_end = is_left ? anchor_pos : (anchor_pos + align_len);
-                    if (ref_start < ref_window_start || ref_end > ref_window_end) {
-                        continue;
+                for (const auto& seed_bin : seed_bins) {
+                    for (int32_t bin_offset = 0;
+                         bin_offset < kEventSegmentationSeedBinBp;
+                         ++bin_offset) {
+                        const int32_t ref_start =
+                            seed_bin.ref_bin_start + seed_query_offset + bin_offset;
+                        const int32_t ref_end = ref_start + align_len;
+                        const int32_t candidate_breakpoint = is_left ? ref_end : ref_start;
+                        if (candidate_breakpoint < search_lo || candidate_breakpoint > search_hi) {
+                            continue;
+                        }
+                        if (ref_start < ref_window_start || ref_end > ref_window_end) {
+                            continue;
+                        }
+
+                        const size_t offset = static_cast<size_t>(ref_start - ref_window_start);
+                        const std::string_view ref_seq(
+                            ref_window.data() + offset,
+                            static_cast<size_t>(align_len));
+                        double identity = 0.0;
+                        if (!edit_identity_if_at_least(
+                                query,
+                                ref_seq,
+                                max_edits,
+                                edit_workspace,
+                                identity)) {
+                            continue;
+                        }
+
+                        EventFlankPlacement placement;
+                        placement.query_start = query_start;
+                        placement.query_end = query_start + align_len;
+                        placement.ref_start = ref_start;
+                        placement.ref_end = ref_end;
+                        placement.align_len = align_len;
+                        placement.identity = identity;
+                        placement.breakpoint_delta = std::abs(candidate_breakpoint - breakpoint);
+                        placement.endpoint_offset = endpoint_offset;
+                        placements.push_back(placement);
                     }
-
-                    const size_t offset = static_cast<size_t>(ref_start - ref_window_start);
-                    const std::string_view ref_seq(
-                        ref_window.data() + offset,
-                        static_cast<size_t>(align_len));
-                    double identity = 0.0;
-                    if (!edit_identity_if_at_least(
-                            query,
-                            ref_seq,
-                            max_edits,
-                            edit_workspace,
-                            identity)) {
-                        continue;
-                    }
-
-                    EventFlankPlacement placement;
-                    placement.query_start = query_start;
-                    placement.query_end = query_start + align_len;
-                    placement.ref_start = ref_start;
-                    placement.ref_end = ref_end;
-                    placement.align_len = align_len;
-                    placement.identity = identity;
-                    placement.breakpoint_delta = is_left
-                        ? std::abs(ref_end - breakpoint)
-                        : std::abs(ref_start - breakpoint);
-                    placement.endpoint_offset = endpoint_offset;
-                    placements.push_back(placement);
                 }
             }
 
@@ -2720,229 +3563,10 @@ std::vector<ComponentCall> LinearBinComponentModule::build(
     int32_t tid,
     int32_t bin_start,
     int32_t bin_end) const {
-    if (bin_records.empty()) {
-        return {};
-    }
-
-    const EvidenceBundle evidence_bundle = extract_evidence_points(bin_records, tid);
-    const auto windows = build_density_windows(evidence_bundle.points, bin_start, bin_end);
-    if (windows.empty()) {
-        return {};
-    }
-
-    std::vector<std::vector<const EvidencePoint*>> evidence_by_read(bin_records.size());
-    for (const auto& point : evidence_bundle.points) {
-        if (point.read_index < evidence_by_read.size()) {
-            evidence_by_read[point.read_index].push_back(&point);
-        }
-    }
-
-    std::vector<int32_t> assigned_window(bin_records.size(), -1);
-    std::vector<int32_t> assigned_count(windows.size(), 0);
-    std::vector<int32_t> ambiguous_count(windows.size(), 0);
-
-    for (size_t read_idx = 0; read_idx < evidence_by_read.size(); ++read_idx) {
-        const auto& read_points = evidence_by_read[read_idx];
-        if (read_points.empty()) {
-            continue;
-        }
-
-        int32_t best_window = -1;
-        ReadWindowAssignmentScore best_score;
-        ReadWindowAssignmentScore second_score;
-
-        for (size_t wi = 0; wi < windows.size(); ++wi) {
-            const auto& window = windows[wi];
-            ReadWindowAssignmentScore score;
-            for (const EvidencePoint* point : read_points) {
-                if (!point) {
-                    continue;
-                }
-                const int32_t dist = std::abs(point->pos - window.center);
-                const double proximity =
-                    (point->pos >= window.start && point->pos <= window.end)
-                    ? 1.0
-                    : std::exp(-static_cast<double>(dist) / kReadAssignDecayBp);
-                accumulate_read_window_assignment_score(
-                    *point,
-                    point->weight * proximity,
-                    score);
-            }
-
-            if (better_read_window_assignment_score(score, best_score)) {
-                second_score = best_score;
-                best_score = score;
-                best_window = static_cast<int32_t>(wi);
-            } else if (better_read_window_assignment_score(score, second_score)) {
-                second_score = score;
-            }
-        }
-
-        if (best_window < 0 ||
-            !best_score.valid ||
-            best_score.specificity_score < kReadAssignMinScore) {
-            continue;
-        }
-        if (second_score.valid &&
-            best_score.specificity_rank == second_score.specificity_rank &&
-            second_score.specificity_score >=
-                best_score.specificity_score * kReadAmbiguousRatio) {
-            ambiguous_count[static_cast<size_t>(best_window)] += 1;
-            continue;
-        }
-
-        assigned_window[read_idx] = best_window;
-        assigned_count[static_cast<size_t>(best_window)] += 1;
-    }
-
-    std::vector<ComponentCall> components;
-    components.reserve(windows.size());
-
-    for (size_t wi = 0; wi < windows.size(); ++wi) {
-        if (assigned_count[wi] <= 0) {
-            continue;
-        }
-
-        ComponentCall call;
-        call.chrom = chrom;
-        call.tid = tid;
-        call.bin_start = windows[wi].start;
-        call.bin_end = windows[wi].end;
-        call.anchor_pos = windows[wi].center;
-        call.peak_weight = windows[wi].peak_weight;
-
-        std::vector<std::pair<int32_t, double>> anchor_points;
-
-        const auto better_point = [&](const EvidencePoint* candidate, const EvidencePoint* incumbent) {
-            if (candidate == nullptr) {
-                return false;
-            }
-            if (incumbent == nullptr) {
-                return true;
-            }
-            const int32_t candidate_dist = std::abs(candidate->pos - windows[wi].center);
-            const int32_t incumbent_dist = std::abs(incumbent->pos - windows[wi].center);
-            if (candidate_dist != incumbent_dist) {
-                return candidate_dist < incumbent_dist;
-            }
-            if (candidate->weight != incumbent->weight) {
-                return candidate->weight > incumbent->weight;
-            }
-            return candidate->pos < incumbent->pos;
-        };
-
-        const auto append_point = [&](const EvidencePoint& point) {
-            anchor_points.push_back({point.pos, point.weight});
-            switch (point.kind) {
-                case EvidenceKind::kSoftClip:
-                    call.evidence_soft_clip_count += 1;
-                    break;
-                case EvidenceKind::kIndel:
-                    call.evidence_indel_count += 1;
-                    break;
-                case EvidenceKind::kSAHint:
-                    call.evidence_sa_hint_count += 1;
-                    break;
-            }
-
-            BreakpointCandidate candidate;
-            candidate.chrom = chrom;
-            candidate.pos = point.pos;
-            candidate.read_index = point.read_index;
-            candidate.class_mask = point.class_mask;
-            if (point.read_index < evidence_bundle.read_summaries.size()) {
-                const auto& summary = evidence_bundle.read_summaries[point.read_index];
-                candidate.read_id = summary.read_id;
-                candidate.is_reverse = summary.is_reverse;
-                candidate.anchor_len = summary.max_soft_clip;
-            }
-            if (point.kind == EvidenceKind::kSoftClip) {
-                candidate.clip_len = point.signal_len;
-            } else if (point.kind == EvidenceKind::kIndel) {
-                candidate.ins_len = point.signal_len;
-            }
-            call.breakpoint_candidates.push_back(std::move(candidate));
-        };
-
-        const auto point_is_local_to_window = [&](const EvidencePoint* point) {
-            if (point == nullptr) {
-                return false;
-            }
-            return point->pos >= windows[wi].start && point->pos <= windows[wi].end;
-        };
-
-        for (size_t read_idx = 0; read_idx < assigned_window.size(); ++read_idx) {
-            if (assigned_window[read_idx] != static_cast<int32_t>(wi)) {
-                continue;
-            }
-            if (read_idx >= evidence_by_read.size()) {
-                continue;
-            }
-            const auto& read_points = evidence_by_read[read_idx];
-            const EvidencePoint* best_softclip = nullptr;
-            const EvidencePoint* best_indel = nullptr;
-            const EvidencePoint* best_sa_hint = nullptr;
-            for (const EvidencePoint* point : read_points) {
-                if (!point || point->read_index >= assigned_window.size()) {
-                    continue;
-                }
-                if (assigned_window[point->read_index] != static_cast<int32_t>(wi)) {
-                    continue;
-                }
-                if (!point_is_local_to_window(point)) {
-                    continue;
-                }
-                switch (point->kind) {
-                    case EvidenceKind::kSoftClip:
-                        if (better_point(point, best_softclip)) {
-                            best_softclip = point;
-                        }
-                        break;
-                    case EvidenceKind::kIndel:
-                        if (better_point(point, best_indel)) {
-                            best_indel = point;
-                        }
-                        break;
-                    case EvidenceKind::kSAHint:
-                        if (better_point(point, best_sa_hint)) {
-                            best_sa_hint = point;
-                        }
-                        break;
-                }
-            }
-
-            if (best_softclip == nullptr && best_indel == nullptr && best_sa_hint == nullptr) {
-                continue;
-            }
-
-            call.read_indices.push_back(read_idx);
-            if (best_softclip != nullptr) {
-                call.soft_clip_read_indices.push_back(read_idx);
-                append_point(*best_softclip);
-            }
-            if (best_indel != nullptr) {
-                call.insertion_read_indices.push_back(read_idx);
-                append_point(*best_indel);
-            }
-            if (best_sa_hint != nullptr) {
-                call.split_sa_read_indices.push_back(read_idx);
-                append_point(*best_sa_hint);
-            }
-        }
-
-        if (!anchor_points.empty()) {
-            const int32_t anchor = weighted_median_position(std::move(anchor_points));
-            if (anchor >= 0) {
-                call.anchor_pos = anchor;
-            }
-        }
-
-        if (!call.read_indices.empty()) {
-            components.push_back(std::move(call));
-        }
-    }
-
-    return components;
+    (void)bin_start;
+    (void)bin_end;
+    DbscanComponentModule module;
+    return module.build(bin_records, chrom, tid);
 }
 
 Pipeline::Pipeline(PipelineConfig config, std::unique_ptr<BamStreamReader> bam_reader)
@@ -3011,179 +3635,78 @@ PipelineResult Pipeline::run_streaming() const {
 
 PipelineResult Pipeline::run_parallel() const {
     PipelineResult result;
-    const size_t worker_count = static_cast<size_t>(std::max(
-        1,
-        (config_.parallel_workers > 0) ? config_.parallel_workers : config_.bam_threads));
-    const size_t ready_cap = (config_.parallel_queue_max_tasks > 0)
-        ? static_cast<size_t>(config_.parallel_queue_max_tasks)
-        : std::max<size_t>(2, worker_count * 2);
-    const size_t result_cap = (config_.parallel_result_buffer_max > 0)
-        ? static_cast<size_t>(config_.parallel_result_buffer_max)
-        : std::max<size_t>(2, worker_count * 2);
-    CostAwareTaskQueue ready_queue(ready_cap);
-    BoundedTaskQueue<ExactBinTaskResult> result_queue(result_cap);
-    DeterministicBinReducer reducer;
-    std::vector<std::thread> workers;
-    workers.reserve(worker_count);
-    std::atomic<size_t> workers_alive{worker_count};
-    std::atomic<int64_t> reads_scanned{0};
-    std::atomic<int64_t> raw_bins_discovered{0};
-    std::atomic<int64_t> tasks_materialized{0};
-    std::atomic<int64_t> tasks_running{0};
-    std::atomic<int64_t> tasks_completed{0};
-    std::atomic<int64_t> reducer_committed{0};
-    std::atomic<size_t> snapshot_window_size{0};
-    {
-        std::ostringstream oss;
-        oss << "[Pipeline] parallel workers=" << worker_count
-            << " ready_queue_cap=" << ready_cap
-            << " result_queue_cap=" << result_cap;
-        emit_pipeline_log_line(oss.str());
+    const int32_t bin_size = std::max(1, config_.bin_size);
+    int32_t worker_count = config_.parallel_workers;
+    if (worker_count <= 0) {
+        worker_count = static_cast<int32_t>(std::thread::hardware_concurrency());
     }
+    worker_count = std::max(1, worker_count);
 
-    const auto emit_parallel_progress = [&]() {
-        if (!config_.log_parallel_progress) {
+    struct ParallelScanState {
+        int32_t current_tid = -1;
+        int32_t current_bin_index = -1;
+        std::vector<BufferedRecord> current_bin_records;
+        std::deque<ExactBinSnapshot> recent_snapshots;
+        size_t next_owner_offset = 0;
+    } state;
+
+    std::vector<ExactBinTask> tasks;
+    std::vector<std::pair<int32_t, int32_t>> task_order;
+    task_order.reserve(1024);
+
+    const auto append_ready_parallel_tasks = [&](const std::vector<ExactBinTask>& ready_tasks) {
+        for (const auto& task : ready_tasks) {
+            task_order.push_back({task.tid, task.bin_index});
+            tasks.push_back(task);
+        }
+    };
+
+    const auto flush_parallel_bin = [&](
+                                       bool flush_all_pending,
+                                       int32_t latest_observed_bin_index) {
+        if (state.current_tid < 0 || state.current_bin_index < 0) {
             return;
         }
-        ParallelProgressSnapshot snapshot;
-        snapshot.reads_scanned = reads_scanned.load();
-        snapshot.raw_bins_discovered = raw_bins_discovered.load();
-        snapshot.tasks_materialized = tasks_materialized.load();
-        snapshot.tasks_running = tasks_running.load();
-        snapshot.tasks_completed = tasks_completed.load();
-        snapshot.reducer_committed = reducer_committed.load();
-        snapshot.snapshot_window_size = snapshot_window_size.load();
-        snapshot.ready_queue_depth = ready_queue.size();
-        snapshot.result_queue_depth = result_queue.size();
-        emit_pipeline_log_line(render_parallel_progress(snapshot));
-    };
 
-    for (size_t wi = 0; wi < worker_count; ++wi) {
-        workers.emplace_back([this,
-                              &ready_queue,
-                              &result_queue,
-                              &workers_alive,
-                              &tasks_running,
-                              &tasks_completed,
-                              &emit_parallel_progress]() {
-            ExactBinTask task;
-            while (ready_queue.pop(task)) {
-                tasks_running.fetch_add(1);
-                const auto started_at = std::chrono::steady_clock::now();
-                PipelineResult partial;
-                std::vector<const bam1_t*> records;
-                records.reserve(task.records.size());
-                for (const auto& ref : task.records) {
-                    records.push_back(ref.record);
-                }
-                process_bin_records(
-                    std::move(records),
-                    task.tid,
-                    task.bin_index,
-                    partial);
-                result_queue.push(ExactBinTaskResult{
-                    task.tid,
-                    task.bin_index,
-                    std::move(partial),
-                    std::chrono::duration<double>(
-                        std::chrono::steady_clock::now() - started_at).count(),
-                });
-                tasks_running.fetch_sub(1);
-                tasks_completed.fetch_add(1);
-                emit_parallel_progress();
-            }
-            workers_alive.fetch_sub(1);
-        });
-    }
-
-    const auto drain_completed_results = [&]() {
-        ExactBinTaskResult partial;
-        bool committed_any = false;
-        while (result_queue.try_pop(partial)) {
-            reducer.push_ready(partial.tid, partial.bin_index, std::move(partial));
+        if (!state.current_bin_records.empty()) {
+            SharedRecordBatch batch = std::make_shared<const std::vector<BufferedRecord>>(
+                std::move(state.current_bin_records));
+            state.current_bin_records.clear();
+            state.recent_snapshots.push_back(ExactBinSnapshot{
+                state.current_tid,
+                state.current_bin_index,
+                std::move(batch),
+            });
         }
-        reducer.drain([&](int32_t, int32_t, ExactBinTaskResult& payload) {
-            result.processed_bins += payload.partial.processed_bins;
-            result.built_components += payload.partial.built_components;
-            result.event_consensus_calls += payload.partial.event_consensus_calls;
-            result.genotype_calls += payload.partial.genotype_calls;
-            result.final_pass_calls += payload.partial.final_pass_calls;
-            for (auto& call : payload.partial.final_calls) {
-                result.final_calls.push_back(std::move(call));
-            }
-            reducer_committed.fetch_add(1);
-            committed_any = true;
-        });
-        if (committed_any) {
-            emit_parallel_progress();
-        }
-    };
 
-    int64_t gate1_passed = 0;
-    int32_t current_tid = -1;
-    int32_t current_bin_index = -1;
-    std::vector<BufferedRecord> current_bin_records;
-    current_bin_records.reserve(config_.batch_size);
-    std::vector<ExactBinSnapshot> exact_snapshots;
-
-    const auto trim_exact_snapshots = [&](int32_t tid, int32_t bin_index) {
-        while (!exact_snapshots.empty()) {
-            const auto& front = exact_snapshots.front();
-            if (front.tid != tid || (bin_index - front.bin_index) > kCrossBinContextBins) {
-                exact_snapshots.erase(exact_snapshots.begin());
-                continue;
-            }
-            break;
-        }
-    };
-
-    const auto flush_bin_task = [&]() {
-        if (current_bin_records.empty()) {
+        if (state.recent_snapshots.empty()) {
             return;
         }
-        SharedRecordBatch current_batch = std::make_shared<const std::vector<BufferedRecord>>(
-            std::move(current_bin_records));
-        trim_exact_snapshots(current_tid, current_bin_index);
-        exact_snapshots.push_back(ExactBinSnapshot{
-            current_tid,
-            current_bin_index,
-            current_batch,
-        });
-        raw_bins_discovered.fetch_add(1);
-        snapshot_window_size.store(exact_snapshots.size());
 
-        ExactBinTask task = build_exact_bin_task(
-            current_tid,
-            current_bin_index,
-            exact_snapshots,
-            config_.bin_size,
+        append_ready_parallel_tasks(materialize_ready_exact_bin_tasks(
+            state.recent_snapshots,
+            state.next_owner_offset,
+            latest_observed_bin_index >= 0
+                ? latest_observed_bin_index
+                : state.recent_snapshots.back().bin_index,
+            flush_all_pending,
+            bin_size,
             kCrossBinContextBins,
-            kWindowBinSlackBp);
-        tasks_materialized.fetch_add(1);
-        reducer.expect(task.tid, task.bin_index);
-        ready_queue.push(std::move(task));
-        trim_exact_snapshots(current_tid, current_bin_index);
-        snapshot_window_size.store(exact_snapshots.size());
+            kWindowBinSlackBp));
 
-        current_bin_records.clear();
-        current_bin_records.reserve(config_.batch_size);
-        emit_parallel_progress();
-        drain_completed_results();
+        if (flush_all_pending) {
+            state.recent_snapshots.clear();
+            state.next_owner_offset = 0;
+        }
     };
 
-    const auto progress_cb = [this, &reads_scanned, &emit_parallel_progress, &drain_completed_results](
-                                 int64_t processed,
-                                 int32_t tid) {
-        reads_scanned.store(processed);
+    const auto progress_cb = [this](int64_t processed, int32_t tid) {
         std::cerr << "[Pipeline] processed=" << processed << " current_tid=" << tid << '\n';
-        emit_parallel_progress();
-        drain_completed_results();
         return true;
     };
 
-    const int64_t total_reads = bam_reader_->stream(
-        [this, &gate1_passed, &current_tid, &current_bin_index, &current_bin_records, &flush_bin_task](
-            BamRecordPtr&& record) {
+    result.total_reads = bam_reader_->stream(
+        [this, &result, &state, bin_size, &flush_parallel_bin](BamRecordPtr&& record) {
             if (!record) {
                 return;
             }
@@ -3192,43 +3715,146 @@ PipelineResult Pipeline::run_parallel() const {
             if (!gate1_module_.pass_preliminary(view)) {
                 return;
             }
-            ++gate1_passed;
 
-            const int32_t bin_index = (config_.bin_size > 0) ? (view.pos() / config_.bin_size) : 0;
-            if (current_tid < 0) {
-                current_tid = view.tid();
-                current_bin_index = bin_index;
+            result.gate1_passed += 1;
+            const int32_t tid = view.tid();
+            const int32_t bin_index = exact_bin_index_for_record(record.get(), bin_size);
+
+            if (state.current_tid < 0) {
+                state.current_tid = tid;
+                state.current_bin_index = bin_index;
             }
 
-            if (view.tid() != current_tid || bin_index != current_bin_index) {
-                flush_bin_task();
-                current_tid = view.tid();
-                current_bin_index = bin_index;
+            if (tid != state.current_tid || bin_index != state.current_bin_index) {
+                flush_parallel_bin(
+                    tid != state.current_tid,
+                    tid == state.current_tid ? bin_index : state.current_bin_index);
+                state.current_tid = tid;
+                state.current_bin_index = bin_index;
             }
+
             BufferedRecord buffered;
             buffered.ref_end = compute_ref_end(view);
             buffered.record = std::move(record);
-            current_bin_records.push_back(std::move(buffered));
+            state.current_bin_records.push_back(std::move(buffered));
         },
         progress_cb,
         config_.progress_interval);
 
-    flush_bin_task();
-    reads_scanned.store(total_reads);
-    emit_parallel_progress();
+    flush_parallel_bin(true, state.current_bin_index);
 
-    ready_queue.close();
-    while (workers_alive.load() > 0) {
-        drain_completed_results();
-        std::this_thread::yield();
+    if (tasks.empty()) {
+        finalize_final_calls(result);
+        return result;
     }
+    if (tasks.size() == 1) {
+        const ExactBinTask& task = tasks.front();
+        std::vector<const bam1_t*> bin_records;
+        bin_records.reserve(task.records.size());
+        for (const auto& record_ref : task.records) {
+            if (record_ref.record) {
+                bin_records.push_back(record_ref.record);
+            }
+        }
+        process_bin_records(
+            std::move(bin_records),
+            task.tid,
+            task.bin_index,
+            task.bin_start,
+            task.bin_end,
+            result);
+        finalize_final_calls(result);
+        return result;
+    }
+
+    worker_count = std::min<int32_t>(
+        worker_count,
+        static_cast<int32_t>(tasks.size()));
+    std::vector<ExactBinTaskResult> task_results(tasks.size());
+    std::atomic<size_t> next_task_index{0};
+    std::exception_ptr worker_error;
+    std::mutex worker_error_mutex;
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<size_t>(worker_count));
+
+    for (int32_t worker_id = 0; worker_id < worker_count; ++worker_id) {
+        workers.emplace_back([&, worker_id]() {
+            (void)worker_id;
+            try {
+                PipelineConfig worker_config = config_;
+                worker_config.enable_parallel = false;
+                worker_config.bam_threads = 1;
+                auto worker_reader = bam_reader_->clone(1);
+                Pipeline worker_pipeline(worker_config, std::move(worker_reader));
+
+                while (true) {
+                    const size_t task_index = next_task_index.fetch_add(1);
+                    if (task_index >= tasks.size()) {
+                        break;
+                    }
+
+                    const ExactBinTask& task = tasks[task_index];
+                    std::vector<const bam1_t*> bin_records;
+                    bin_records.reserve(task.records.size());
+                    for (const auto& record_ref : task.records) {
+                        if (record_ref.record) {
+                            bin_records.push_back(record_ref.record);
+                        }
+                    }
+
+                    PipelineResult partial;
+                    const auto started = std::chrono::steady_clock::now();
+                    worker_pipeline.process_bin_records(
+                        std::move(bin_records),
+                        task.tid,
+                        task.bin_index,
+                        task.bin_start,
+                        task.bin_end,
+                        partial);
+                    ExactBinTaskResult task_result;
+                    task_result.tid = task.tid;
+                    task_result.bin_index = task.bin_index;
+                    task_result.partial = std::move(partial);
+                    task_result.elapsed_s = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - started).count();
+                    task_results[task_index] = std::move(task_result);
+                }
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(worker_error_mutex);
+                if (!worker_error) {
+                    worker_error = std::current_exception();
+                }
+            }
+        });
+    }
+
     for (auto& worker : workers) {
-        worker.join();
+        if (worker.joinable()) {
+            worker.join();
+        }
     }
-    drain_completed_results();
+    if (worker_error) {
+        std::rethrow_exception(worker_error);
+    }
 
-    result.total_reads = total_reads;
-    result.gate1_passed = gate1_passed;
+    for (size_t i = 0; i < task_results.size(); ++i) {
+        const auto& expected = task_order[i];
+        const auto& actual = task_results[i];
+        if (actual.tid != expected.first || actual.bin_index != expected.second) {
+            throw std::runtime_error("parallel exact-bin task result order mismatch");
+        }
+        append_partial_pipeline_result(result, std::move(task_results[i].partial));
+    }
+
+    if (config_.log_parallel_progress) {
+        ParallelProgressSnapshot snapshot;
+        snapshot.reads_scanned = result.total_reads;
+        snapshot.raw_bins_discovered = static_cast<int64_t>(task_order.size());
+        snapshot.tasks_materialized = static_cast<int64_t>(tasks.size());
+        snapshot.tasks_completed = static_cast<int64_t>(task_results.size());
+        snapshot.reducer_committed = static_cast<int64_t>(task_results.size());
+        emit_pipeline_log_line(render_parallel_progress(snapshot));
+    }
 
     finalize_final_calls(result);
     return result;
@@ -3249,28 +3875,13 @@ void Pipeline::consume_record(
 
     result.gate1_passed += 1;
 
-    while (!state.active_window.empty()) {
-        const auto& front = state.active_window.front();
-        const bool different_tid = (view.tid() != front.tid);
-        const bool beyond_window = (!different_tid && (view.pos() - front.pos > config_.window_size));
-        if (!different_tid && !beyond_window) {
-            break;
-        }
-        state.active_window.pop_front();
-    }
-    state.active_window.push_back({view.tid(), view.pos()});
-
-    const int32_t bin_index = (config_.bin_size > 0) ? (view.pos() / config_.bin_size) : 0;
-
     if (state.current_tid < 0) {
         state.current_tid = view.tid();
-        state.current_bin_index = bin_index;
     }
 
-    if (view.tid() != state.current_tid || bin_index != state.current_bin_index) {
+    if (view.tid() != state.current_tid) {
         flush_current_bin(state, result);
         state.current_tid = view.tid();
-        state.current_bin_index = bin_index;
     }
 
     BufferedRecord buffered;
@@ -3286,50 +3897,208 @@ void Pipeline::flush_current_bin(
         return;
     }
 
-    std::vector<const bam1_t*> merged_records;
-    const int32_t bin_start = state.current_bin_index * config_.bin_size;
-    const int32_t snapshot_min_ref_end = bin_start - kWindowBinSlackBp;
-    for (const auto& snapshot : state.recent_bin_snapshots) {
-        if (snapshot.tid != state.current_tid) {
-            continue;
+    std::vector<const bam1_t*> contig_records;
+    contig_records.reserve(state.current_bin_records.size());
+    for (const auto& buffered : state.current_bin_records) {
+        if (buffered.record) {
+            contig_records.push_back(buffered.record.get());
         }
-        if ((state.current_bin_index - snapshot.bin_index) > kCrossBinContextBins) {
-            continue;
-        }
-        append_record_ptrs(snapshot.records, merged_records, snapshot_min_ref_end);
     }
-    append_record_ptrs(
-        state.current_bin_records,
-        merged_records,
-        std::numeric_limits<int32_t>::min());
 
-    if (!merged_records.empty()) {
+    if (!contig_records.empty()) {
         process_bin_records(
-            std::move(merged_records),
+            std::move(contig_records),
             state.current_tid,
-            state.current_bin_index,
+            0,
+            std::numeric_limits<int32_t>::min(),
+            std::numeric_limits<int32_t>::max(),
             result);
     }
 
-    StreamingState::BinSnapshot snapshot;
-    snapshot.tid = state.current_tid;
-    snapshot.bin_index = state.current_bin_index;
-    snapshot.records = std::move(state.current_bin_records);
-    state.recent_bin_snapshots.push_back(std::move(snapshot));
-    while (!state.recent_bin_snapshots.empty()) {
-        const auto& front = state.recent_bin_snapshots.front();
-        if (front.tid != state.current_tid) {
-            state.recent_bin_snapshots.pop_front();
-            continue;
-        }
-        if ((state.current_bin_index - front.bin_index) > kCrossBinContextBins) {
-            state.recent_bin_snapshots.pop_front();
-            continue;
-        }
-        break;
-    }
-
     state.current_bin_records.clear();
+}
+
+std::vector<int32_t> collect_alt_observed_lengths(
+    const ComponentCall& component,
+    const EventReadEvidence& event_evidence) {
+    std::unordered_set<std::string> support_qnames(
+        event_evidence.support_qnames.begin(),
+        event_evidence.support_qnames.end());
+    std::vector<int32_t> lengths;
+    lengths.reserve(component.breakpoint_candidates.size());
+    for (const auto& bp : component.breakpoint_candidates) {
+        if (bp.read_id.empty() || support_qnames.find(bp.read_id) == support_qnames.end()) {
+            continue;
+        }
+        if (bp.ins_len > 0) {
+            lengths.push_back(bp.ins_len);
+        } else if (bp.clip_len > 0) {
+            lengths.push_back(bp.clip_len);
+        }
+    }
+    return lengths;
+}
+
+int32_t infer_event_length_from_alt_support(const std::vector<int32_t>& lengths) {
+    return median_i32(lengths);
+}
+
+double support_jaccard(
+    const std::vector<std::string>& lhs,
+    const std::vector<std::string>& rhs) {
+    size_t i = 0;
+    size_t j = 0;
+    size_t intersect = 0;
+    while (i < lhs.size() && j < rhs.size()) {
+        if (lhs[i] == rhs[j]) {
+            ++intersect;
+            ++i;
+            ++j;
+        } else if (lhs[i] < rhs[j]) {
+            ++i;
+        } else {
+            ++j;
+        }
+    }
+    const size_t union_size = lhs.size() + rhs.size() - intersect;
+    return union_size == 0
+        ? 0.0
+        : static_cast<double>(intersect) / static_cast<double>(union_size);
+}
+
+Pipeline::HypothesisSummary Pipeline::build_hypothesis_summary(
+    const ComponentCall& component,
+    const ComponentSignalCache& signal_cache,
+    const std::vector<InsertionFragment>& fragments,
+    size_t original_index,
+    int32_t bp_left,
+    int32_t bp_right) const {
+    const EventReadEvidence event_evidence = collect_event_read_evidence_for_bounds_cached(
+        component,
+        signal_cache,
+        fragments,
+        bp_left,
+        bp_right,
+        bp_left,
+        bp_right);
+
+    HypothesisSummary summary;
+    summary.original_index = original_index;
+    summary.bp_left = event_evidence.bp_left;
+    summary.bp_right = event_evidence.bp_right;
+    summary.alt_split_reads = event_evidence.alt_split_reads;
+    summary.alt_indel_reads = event_evidence.alt_indel_reads;
+    summary.alt_left_clip_reads = event_evidence.alt_left_clip_reads;
+    summary.alt_right_clip_reads = event_evidence.alt_right_clip_reads;
+    summary.alt_struct_reads = event_evidence.alt_struct_reads;
+    summary.ref_span_reads = event_evidence.ref_span_reads;
+    summary.inferred_event_length = infer_event_length_from_alt_support(
+        collect_alt_observed_lengths(component, event_evidence));
+    summary.support_qnames = event_evidence.support_qnames;
+    return summary;
+}
+
+std::vector<Pipeline::HypothesisSummary> Pipeline::select_hypothesis_summaries_for_expensive_stage(
+    const std::vector<HypothesisSummary>& summaries) const {
+    const auto collapsed = collapse_hypothesis_summaries(summaries);
+    std::vector<HypothesisSummary> selected;
+    selected.reserve(collapsed.size());
+    for (size_t i = 0; i < collapsed.size(); ++i) {
+        if (should_keep_hypothesis_for_expensive_stage(collapsed[i], i == 0)) {
+            selected.push_back(collapsed[i]);
+        }
+    }
+    return selected;
+}
+
+std::vector<Pipeline::HypothesisSummary> Pipeline::collapse_hypothesis_summaries(
+    const std::vector<HypothesisSummary>& summaries) const {
+    constexpr int32_t kHypothesisCollapseSlackBp = 30;
+    constexpr double kHypothesisCollapseMinJaccard = 0.8;
+
+    const auto support_jaccard = [](
+                                     const std::vector<std::string>& lhs,
+                                     const std::vector<std::string>& rhs) {
+        size_t i = 0;
+        size_t j = 0;
+        size_t intersect = 0;
+        while (i < lhs.size() && j < rhs.size()) {
+            if (lhs[i] == rhs[j]) {
+                ++intersect;
+                ++i;
+                ++j;
+            } else if (lhs[i] < rhs[j]) {
+                ++i;
+            } else {
+                ++j;
+            }
+        }
+        const size_t union_size = lhs.size() + rhs.size() - intersect;
+        return union_size == 0
+            ? 0.0
+            : static_cast<double>(intersect) / static_cast<double>(union_size);
+    };
+
+    const auto better_summary_representative = [](
+                                                   const HypothesisSummary& lhs,
+                                                   const HypothesisSummary& rhs) {
+        if (lhs.alt_struct_reads != rhs.alt_struct_reads) {
+            return lhs.alt_struct_reads > rhs.alt_struct_reads;
+        }
+        const int32_t lhs_precise = lhs.alt_split_reads + lhs.alt_indel_reads;
+        const int32_t rhs_precise = rhs.alt_split_reads + rhs.alt_indel_reads;
+        if (lhs_precise != rhs_precise) {
+            return lhs_precise > rhs_precise;
+        }
+        const int32_t lhs_width = std::abs(lhs.bp_right - lhs.bp_left);
+        const int32_t rhs_width = std::abs(rhs.bp_right - rhs.bp_left);
+        if (lhs_width != rhs_width) {
+            return lhs_width < rhs_width;
+        }
+        return lhs.original_index < rhs.original_index;
+    };
+
+    std::vector<HypothesisSummary> kept;
+    kept.reserve(summaries.size());
+    for (const auto& summary : summaries) {
+        bool merged = false;
+        for (auto& incumbent : kept) {
+            const bool close_left =
+                std::abs(summary.bp_left - incumbent.bp_left) <= kHypothesisCollapseSlackBp;
+            const bool close_right =
+                std::abs(summary.bp_right - incumbent.bp_right) <= kHypothesisCollapseSlackBp;
+            if (!close_left || !close_right) {
+                continue;
+            }
+            if (support_jaccard(summary.support_qnames, incumbent.support_qnames) <
+                kHypothesisCollapseMinJaccard) {
+                continue;
+            }
+            if (better_summary_representative(summary, incumbent)) {
+                incumbent = summary;
+            }
+            merged = true;
+            break;
+        }
+        if (!merged) {
+            kept.push_back(summary);
+        }
+    }
+    return kept;
+}
+
+bool Pipeline::should_keep_hypothesis_for_expensive_stage(
+    const HypothesisSummary& summary,
+    bool is_top_ranked_survivor) const {
+    if (is_top_ranked_survivor) {
+        return true;
+    }
+    if (summary.alt_split_reads > 0 || summary.alt_indel_reads > 0) {
+        return true;
+    }
+    const bool bilateral_clip =
+        summary.alt_left_clip_reads > 0 && summary.alt_right_clip_reads > 0;
+    return bilateral_clip && summary.alt_struct_reads >= 2;
 }
 
 GenotypeCall Pipeline::genotype_call(
@@ -3344,6 +4113,8 @@ GenotypeCall Pipeline::genotype_call(
     input.ref_span_reads = event_evidence.ref_span_reads;
     input.min_depth = config_.genotype_min_depth;
     input.error_rate = config_.genotype_error_rate;
+    input.alt_observed_lengths = collect_alt_observed_lengths(component, event_evidence);
+    input.event_length = infer_event_length_from_alt_support(input.alt_observed_lengths);
     const EventGenotypeDecision decision = genotype_event_from_alt_vs_ref(input);
 
     call.genotype = decision.best_gt;
@@ -3428,6 +4199,8 @@ void Pipeline::process_bin_records(
     std::vector<const bam1_t*>&& bin_records,
     int32_t tid,
     int32_t bin_index,
+    int32_t owner_bin_start,
+    int32_t owner_bin_end,
     PipelineResult& result) const {
     if (bin_records.empty()) {
         return;
@@ -3435,11 +4208,39 @@ void Pipeline::process_bin_records(
 
     result.processed_bins += 1;
 
-    const int32_t bin_start = bin_index * config_.bin_size;
-    const int32_t bin_end = bin_start + config_.bin_size;
+    int32_t bin_start = std::numeric_limits<int32_t>::max();
+    int32_t bin_end = std::numeric_limits<int32_t>::min();
+    for (const bam1_t* record : bin_records) {
+        if (!record) {
+            continue;
+        }
+        ReadView read(record);
+        bin_start = std::min(bin_start, read.pos());
+        bin_end = std::max(bin_end, compute_ref_end(read));
+    }
+    if (bin_start == std::numeric_limits<int32_t>::max()) {
+        bin_start = std::max(0, bin_index);
+    }
+    if (bin_end == std::numeric_limits<int32_t>::min()) {
+        bin_end = bin_start;
+    }
     const std::string chrom = bam_reader_->chromosome_name(tid);
 
+    const auto component_build_started = std::chrono::steady_clock::now();
     auto components = component_module_.build(bin_records, chrom, tid, bin_start, bin_end);
+    if (owner_bin_start < owner_bin_end) {
+        components.erase(
+            std::remove_if(
+                components.begin(),
+                components.end(),
+                [owner_bin_start, owner_bin_end](const ComponentCall& component) {
+                    return component.anchor_pos < owner_bin_start ||
+                        component.anchor_pos >= owner_bin_end;
+                }),
+            components.end());
+    }
+    const double component_build_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - component_build_started).count();
     result.built_components += static_cast<int64_t>(components.size());
     std::vector<std::pair<int32_t, int32_t>> component_seed_bounds;
     component_seed_bounds.reserve(components.size());
@@ -3465,6 +4266,7 @@ void Pipeline::process_bin_records(
     reuse_stats.canonical_interval_count = intervals.size();
     std::vector<LocalIntervalCacheEntry> interval_cache;
     interval_cache.reserve(intervals.size());
+    const auto local_fetch_started = std::chrono::steady_clock::now();
     for (const auto& interval : intervals) {
         LocalIntervalCacheEntry entry;
         entry.interval = interval;
@@ -3494,13 +4296,43 @@ void Pipeline::process_bin_records(
         }
         interval_cache.push_back(std::move(entry));
     }
+    const double local_fetch_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - local_fetch_started).count();
 
     struct BinStageStats {
+        int64_t breakpoint_hypotheses_total = 0;
+        int64_t breakpoint_hypotheses_after_collapse = 0;
+        int64_t breakpoint_hypotheses_after_gate = 0;
+        int64_t validator_candidates_total = 0;
+        int64_t validator_feasible_total = 0;
+        int64_t shortlist_empty = 0;
+        int64_t shortlist_primary_only = 0;
+        int64_t shortlist_with_challenger = 0;
+        int64_t expensive_stage_hypotheses_total = 0;
         int64_t event_consensus_calls = 0;
         int64_t event_consensus_rejected = 0;
+        int64_t pre_segmentation_gate_rejected = 0;
+        int64_t pre_segmentation_gate_no_bilateral_anchor = 0;
+        int64_t pre_segmentation_gate_no_precise_or_full_context = 0;
+        int64_t event_segmentation_calls = 0;
+        int64_t event_segmentation_rejected = 0;
+        int64_t te_alignment_calls = 0;
+        int64_t te_alignment_rejected = 0;
         int64_t genotype_calls = 0;
         int64_t final_calls = 0;
+        double component_build_seconds = 0.0;
+        double local_fetch_seconds = 0.0;
+        double projection_seconds = 0.0;
+        double local_component_refresh_seconds = 0.0;
+        double fragment_extract_seconds = 0.0;
+        double signal_cache_build_seconds = 0.0;
+        double hypothesis_summary_seconds = 0.0;
+        double validator_input_count_seconds = 0.0;
+        double event_evidence_seconds = 0.0;
+        ExpensiveStageTiming timing;
     } bin_stats;
+    bin_stats.component_build_seconds = component_build_seconds;
+    bin_stats.local_fetch_seconds = local_fetch_seconds;
 
     if (config_.log_stage_bins) {
         std::ostringstream oss;
@@ -3557,8 +4389,11 @@ void Pipeline::process_bin_records(
         const auto& component = components[ci];
         const std::vector<InsertionFragment> empty_fragments;
         const auto seed_bounds = component_seed_bounds[ci];
+        const auto projection_started = std::chrono::steady_clock::now();
         const LocalIntervalProjection projection =
             project_cached_interval_reads(requests[ci], interval_cache);
+        bin_stats.projection_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - projection_started).count();
         if (projection.records.empty()) {
             log_component(
                 "LOCAL_EVENT_RECOLLECTION_FAILED",
@@ -3569,13 +4404,49 @@ void Pipeline::process_bin_records(
             continue;
         }
 
+        const auto local_component_refresh_started = std::chrono::steady_clock::now();
         const ComponentCall local_component = build_local_fragment_component(
             config_,
             component,
             projection.records);
+        bin_stats.local_component_refresh_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - local_component_refresh_started).count();
+        const auto fragment_extract_started = std::chrono::steady_clock::now();
         const std::vector<InsertionFragment> fragments = ins_fragment_module_.extract(
             local_component,
             projection.records);
+        bin_stats.fragment_extract_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - fragment_extract_started).count();
+        const auto signal_cache_build_started = std::chrono::steady_clock::now();
+        const ComponentSignalCache signal_cache = build_component_signal_cache(
+            projection.records,
+            projection.read_spans);
+        bin_stats.signal_cache_build_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - signal_cache_build_started).count();
+
+        if (config_.log_stage_components) {
+            const auto all_breakpoint_hypotheses = enumerate_breakpoint_hypotheses(
+                component,
+                projection.records,
+                fragments,
+                seed_bounds.first,
+                seed_bounds.second,
+                0);
+            for (const auto& hypothesis : all_breakpoint_hypotheses) {
+                std::ostringstream bp_oss;
+                bp_oss << "[Pipeline][breakpoint_hypothesis]"
+                       << " chrom=" << component.chrom
+                       << " anchor=" << component.anchor_pos
+                       << " bp=" << hypothesis.left << "-" << hypothesis.right
+                       << " center=" << hypothesis.center
+                       << " support=" << hypothesis.support
+                       << " priority=" << hypothesis.priority
+                       << " score="
+                       << (hypothesis.support *
+                           breakpoint_hypothesis_support_weight(hypothesis.priority));
+                emit_pipeline_log_line(bp_oss.str());
+            }
+        }
 
         const auto breakpoint_hypotheses = enumerate_breakpoint_hypotheses(
             component,
@@ -3584,6 +4455,121 @@ void Pipeline::process_bin_records(
             seed_bounds.first,
             seed_bounds.second,
             3);
+        bin_stats.breakpoint_hypotheses_total += static_cast<int64_t>(breakpoint_hypotheses.size());
+        std::vector<HypothesisSummary> hypothesis_summaries;
+        hypothesis_summaries.reserve(breakpoint_hypotheses.size());
+        const auto hypothesis_summary_started = std::chrono::steady_clock::now();
+        for (size_t hi = 0; hi < breakpoint_hypotheses.size(); ++hi) {
+            const auto& hypothesis = breakpoint_hypotheses[hi];
+            hypothesis_summaries.push_back(build_hypothesis_summary(
+                component,
+                signal_cache,
+                fragments,
+                hi,
+                hypothesis.left,
+                hypothesis.right));
+        }
+        bin_stats.hypothesis_summary_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - hypothesis_summary_started).count();
+        const auto collapsed_summaries = collapse_hypothesis_summaries(hypothesis_summaries);
+        bin_stats.breakpoint_hypotheses_after_collapse +=
+            static_cast<int64_t>(collapsed_summaries.size());
+        std::vector<HypothesisSummary> coarse_survivors;
+        coarse_survivors.reserve(collapsed_summaries.size());
+        for (size_t si = 0; si < collapsed_summaries.size(); ++si) {
+            if (should_keep_hypothesis_for_expensive_stage(
+                    collapsed_summaries[si],
+                    si == 0)) {
+                coarse_survivors.push_back(collapsed_summaries[si]);
+            }
+        }
+        bin_stats.breakpoint_hypotheses_after_gate +=
+            static_cast<int64_t>(coarse_survivors.size());
+
+        std::vector<HypothesisValidatorEvidence> validator_candidates;
+        validator_candidates.reserve(coarse_survivors.size());
+        for (const auto& summary : coarse_survivors) {
+            const EventReadEvidence event_evidence = collect_event_read_evidence_for_bounds_cached(
+                component,
+                signal_cache,
+                fragments,
+                summary.bp_left,
+                summary.bp_right,
+                summary.bp_left,
+                summary.bp_right);
+            const auto validator_input_started = std::chrono::steady_clock::now();
+            const ConsensusInputCounts inputs = collect_event_consensus_input_counts(
+                projection.records,
+                fragments,
+                event_evidence);
+            bin_stats.validator_input_count_seconds += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - validator_input_started).count();
+            validator_candidates.push_back(
+                collect_hypothesis_validator_evidence(
+                    summary,
+                    inputs,
+                    component.anchor_pos));
+        }
+        const auto shortlist = build_expensive_stage_shortlist(validator_candidates);
+        bin_stats.validator_candidates_total += static_cast<int64_t>(validator_candidates.size());
+        for (const auto& candidate : validator_candidates) {
+            if (candidate.feasible_for_expensive_stage) {
+                ++bin_stats.validator_feasible_total;
+            }
+        }
+        if (shortlist.empty()) {
+            ++bin_stats.shortlist_empty;
+        } else if (shortlist.size() == 1) {
+            ++bin_stats.shortlist_primary_only;
+        } else {
+            ++bin_stats.shortlist_with_challenger;
+        }
+        bin_stats.expensive_stage_hypotheses_total += static_cast<int64_t>(shortlist.size());
+
+        if (config_.log_stage_components) {
+            std::ostringstream shortlist_oss;
+            shortlist_oss << "[Pipeline][shortlist]"
+                          << " chrom=" << component.chrom
+                          << " anchor=" << component.anchor_pos
+                          << " collapsed_hypotheses=" << collapsed_summaries.size()
+                          << " coarse_survivors=" << coarse_survivors.size()
+                          << " validator_feasible=" << std::count_if(
+                                 validator_candidates.begin(),
+                                 validator_candidates.end(),
+                                 [](const auto& row) { return row.feasible_for_expensive_stage; })
+                          << " shortlist_size=" << shortlist.size();
+            if (!shortlist.empty()) {
+                shortlist_oss << " primary_bp="
+                              << shortlist.front().validator.summary.bp_left
+                              << "-" << shortlist.front().validator.summary.bp_right;
+            }
+            if (shortlist.size() > 1) {
+                shortlist_oss << " challenger_bp="
+                              << shortlist[1].validator.summary.bp_left
+                              << "-" << shortlist[1].validator.summary.bp_right;
+            }
+            emit_pipeline_log_line(shortlist_oss.str());
+
+            for (const auto& candidate : validator_candidates) {
+                std::ostringstream candidate_oss;
+                candidate_oss << "[Pipeline][shortlist_candidate]"
+                              << " chrom=" << component.chrom
+                              << " anchor=" << component.anchor_pos
+                              << " bp=" << candidate.summary.bp_left
+                              << "-" << candidate.summary.bp_right
+                              << " precise=" << candidate.precise_support
+                              << " alt_struct=" << candidate.summary.alt_struct_reads
+                              << " ref_span=" << candidate.summary.ref_span_reads
+                              << " full_context=" << candidate.full_context_input_reads
+                              << " partial_context=" << candidate.partial_context_input_reads
+                              << " input_event_reads=" << candidate.input_event_reads
+                              << " left_anchor=" << candidate.left_anchor_input_reads
+                              << " right_anchor=" << candidate.right_anchor_input_reads
+                              << " feasible=" << bool_as_int(candidate.feasible_for_expensive_stage)
+                              << " qc=" << candidate.qc_reason;
+                emit_pipeline_log_line(candidate_oss.str());
+            }
+        }
 
         bool have_best = false;
         double best_total = -1e9;
@@ -3595,21 +4581,27 @@ void Pipeline::process_bin_records(
         BoundaryEvidence best_boundary_evidence;
         GenotypeCall best_genotype;
 
-        for (const auto& hypothesis : breakpoint_hypotheses) {
-            const EventReadEvidence event_evidence = collect_event_read_evidence_for_bounds(
+        for (const auto& shortlisted : shortlist) {
+            const auto& summary = shortlisted.validator.summary;
+            const auto event_evidence_started = std::chrono::steady_clock::now();
+            const EventReadEvidence event_evidence = collect_event_read_evidence_for_bounds_cached(
                 component,
-                projection.records,
-                projection.read_spans,
+                signal_cache,
                 fragments,
-                hypothesis.left,
-                hypothesis.right,
-                hypothesis.left,
-                hypothesis.right);
+                summary.bp_left,
+                summary.bp_right,
+                summary.bp_left,
+                summary.bp_right);
+            bin_stats.event_evidence_seconds += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - event_evidence_started).count();
+            const auto consensus_started = std::chrono::steady_clock::now();
             const EventConsensus event_consensus = build_event_consensus(
                 component,
                 projection.records,
                 fragments,
                 event_evidence);
+            bin_stats.timing.event_consensus_seconds += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - consensus_started).count();
             result.event_consensus_calls += 1;
             bin_stats.event_consensus_calls += 1;
             if (!event_consensus.qc_pass) {
@@ -3626,20 +4618,52 @@ void Pipeline::process_bin_records(
             existence_input.min_depth = config_.genotype_min_depth;
             existence_input.min_gq = 20;
             existence_input.error_rate = config_.genotype_error_rate;
+            existence_input.alt_observed_lengths =
+                collect_alt_observed_lengths(component, event_evidence);
+            existence_input.event_length =
+                infer_event_length_from_alt_support(existence_input.alt_observed_lengths);
             const EventExistenceEvidence existence = build_event_existence_evidence(
                 existence_input);
 
-            const EventSegmentation event_segmentation = segment_event_consensus(
-                component,
+            EventSegmentation event_segmentation;
+            const std::string preseg_qc = pre_segmentation_gate_reason(
                 event_evidence,
                 event_consensus);
+            if (!preseg_qc.empty()) {
+                event_segmentation.qc_reason = preseg_qc;
+                ++bin_stats.pre_segmentation_gate_rejected;
+                if (preseg_qc == "PRESEG_NO_BILATERAL_ANCHOR") {
+                    ++bin_stats.pre_segmentation_gate_no_bilateral_anchor;
+                } else if (preseg_qc == "PRESEG_NO_PRECISE_OR_FULL_CONTEXT") {
+                    ++bin_stats.pre_segmentation_gate_no_precise_or_full_context;
+                }
+            } else {
+                const auto segmentation_started = std::chrono::steady_clock::now();
+                event_segmentation = segment_event_consensus(
+                    component,
+                    event_evidence,
+                    event_consensus);
+                bin_stats.timing.event_segmentation_seconds += std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - segmentation_started).count();
+                bin_stats.event_segmentation_calls += 1;
+                if (!event_segmentation.pass) {
+                    bin_stats.event_segmentation_rejected += 1;
+                }
+            }
             const EventSegmentationEvidence seg_evidence = analyze_event_segmentation(
                 event_consensus,
                 event_segmentation);
 
             TEAlignmentEvidence te_alignment;
             if (seg_evidence.has_insert_seq) {
+                const auto te_started = std::chrono::steady_clock::now();
                 te_alignment = align_insert_seq_to_te(event_segmentation);
+                bin_stats.timing.te_alignment_seconds += std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - te_started).count();
+                bin_stats.te_alignment_calls += 1;
+                if (!te_alignment.pass) {
+                    bin_stats.te_alignment_rejected += 1;
+                }
             }
 
             const int32_t breakpoint_envelope_width = std::max(
@@ -3658,6 +4682,34 @@ void Pipeline::process_bin_records(
                 te_alignment,
                 boundary_evidence);
             const double candidate_total = joint.best.hard_veto ? -1e9 : joint.best.total;
+
+            if (config_.log_stage_components) {
+                std::ostringstream candidate_joint_oss;
+                candidate_joint_oss << "[Pipeline][shortlist_result]"
+                                    << " chrom=" << component.chrom
+                                    << " anchor=" << component.anchor_pos
+                                    << " bp=" << event_evidence.bp_left
+                                    << "-" << event_evidence.bp_right
+                                    << " primary=" << bool_as_int(shortlisted.is_primary)
+                                    << " alt_reads=" << event_evidence.alt_struct_reads
+                                    << " ref_reads=" << event_evidence.ref_span_reads
+                                    << " consensus_qc=" << display_or_na(event_consensus.qc_reason)
+                                    << " consensus_len=" << event_consensus.consensus_len
+                                    << " seg_qc=" << display_or_na(event_segmentation.qc_reason)
+                                    << " seg_insert_len=" << event_segmentation.insert_seq.size()
+                                    << " te_qc=" << display_or_na(te_alignment.qc_reason)
+                                    << " te_pass=" << bool_as_int(te_alignment.pass)
+                                    << " best_kind=" << final_hypothesis_kind_name(joint.best.kind)
+                                    << " best_total=" << joint.best.total
+                                    << " runner_kind="
+                                    << final_hypothesis_kind_name(joint.runner_up.kind)
+                                    << " runner_total=" << joint.runner_up.total
+                                    << " final_qc=" << display_or_na(joint.final_qc)
+                                    << " emit_te=" << bool_as_int(joint.emit_te_call)
+                                    << " emit_unknown=" << bool_as_int(joint.emit_unknown_te);
+                emit_pipeline_log_line(candidate_joint_oss.str());
+            }
+
             if (!have_best || candidate_total > best_total) {
                 have_best = true;
                 best_total = candidate_total;
@@ -3715,6 +4767,16 @@ void Pipeline::process_bin_records(
             emit_pipeline_log_line(oss.str());
         }
 
+        if (shortlist.empty()) {
+            log_component(
+                "NO_FEASIBLE_EVENT_HYPOTHESIS",
+                component,
+                fragments,
+                nullptr,
+                nullptr);
+            continue;
+        }
+
         if (!have_best || !best_joint.emit_te_call) {
             log_component(
                 have_best ? best_joint.final_qc.c_str() : "NO_BREAKPOINT_HYPOTHESIS",
@@ -3759,18 +4821,49 @@ void Pipeline::process_bin_records(
 
     if (config_.log_stage_bins) {
         std::ostringstream oss;
-        oss << "[Pipeline][bin][done]"
-            << " chrom=" << chrom
-            << " tid=" << tid
-            << " start=" << bin_start
-            << " end=" << bin_end
-            << " records=" << bin_records.size()
-            << " components=" << components.size()
-            << " event_consensus_calls=" << bin_stats.event_consensus_calls
-            << " event_consensus_rejected=" << bin_stats.event_consensus_rejected
-            << " genotype_calls=" << bin_stats.genotype_calls
-            << " final_calls=" << bin_stats.final_calls
-            << " local_reuse_ratio=" << local_interval_reuse_ratio(reuse_stats);
+            oss << "[Pipeline][bin][done]"
+                << " chrom=" << chrom
+                << " tid=" << tid
+                << " start=" << bin_start
+                << " end=" << bin_end
+                << " records=" << bin_records.size()
+                << " components=" << components.size()
+                << " breakpoint_hypotheses_total=" << bin_stats.breakpoint_hypotheses_total
+                << " breakpoint_hypotheses_after_collapse="
+                << bin_stats.breakpoint_hypotheses_after_collapse
+                << " breakpoint_hypotheses_after_gate=" << bin_stats.breakpoint_hypotheses_after_gate
+                << " validator_candidates_total=" << bin_stats.validator_candidates_total
+                << " validator_feasible_total=" << bin_stats.validator_feasible_total
+                << " shortlist_empty=" << bin_stats.shortlist_empty
+                << " shortlist_primary_only=" << bin_stats.shortlist_primary_only
+                << " shortlist_with_challenger=" << bin_stats.shortlist_with_challenger
+                << " expensive_stage_hypotheses_total=" << bin_stats.expensive_stage_hypotheses_total
+                << " event_consensus_calls=" << bin_stats.event_consensus_calls
+                << " event_consensus_rejected=" << bin_stats.event_consensus_rejected
+                << " pre_segmentation_gate_rejected=" << bin_stats.pre_segmentation_gate_rejected
+                << " pre_segmentation_gate_no_bilateral_anchor="
+                << bin_stats.pre_segmentation_gate_no_bilateral_anchor
+                << " pre_segmentation_gate_no_precise_or_full_context="
+                << bin_stats.pre_segmentation_gate_no_precise_or_full_context
+                << " event_segmentation_calls=" << bin_stats.event_segmentation_calls
+                << " event_segmentation_rejected=" << bin_stats.event_segmentation_rejected
+                << " te_alignment_calls=" << bin_stats.te_alignment_calls
+                << " te_alignment_rejected=" << bin_stats.te_alignment_rejected
+                << " component_build_seconds=" << bin_stats.component_build_seconds
+                << " local_fetch_seconds=" << bin_stats.local_fetch_seconds
+                << " projection_seconds=" << bin_stats.projection_seconds
+                << " local_component_refresh_seconds=" << bin_stats.local_component_refresh_seconds
+                << " fragment_extract_seconds=" << bin_stats.fragment_extract_seconds
+                << " signal_cache_build_seconds=" << bin_stats.signal_cache_build_seconds
+                << " hypothesis_summary_seconds=" << bin_stats.hypothesis_summary_seconds
+                << " validator_input_count_seconds=" << bin_stats.validator_input_count_seconds
+                << " event_evidence_seconds=" << bin_stats.event_evidence_seconds
+                << " event_consensus_seconds=" << bin_stats.timing.event_consensus_seconds
+                << " event_segmentation_seconds=" << bin_stats.timing.event_segmentation_seconds
+                << " te_alignment_seconds=" << bin_stats.timing.te_alignment_seconds
+                << " genotype_calls=" << bin_stats.genotype_calls
+                << " final_calls=" << bin_stats.final_calls
+                << " local_reuse_ratio=" << local_interval_reuse_ratio(reuse_stats);
         emit_pipeline_log_line(oss.str());
     }
 }
