@@ -18,6 +18,8 @@ namespace placer {
 
 struct FinalBoundaryDecision;
 struct FinalTeAcceptanceDecision;
+struct TeFamilyAlignmentIndex;
+struct TeFamilyGroupCache;
 
 enum CandidateClassMask : uint8_t {
     kCandidateSoftClip = 1 << 0,
@@ -172,9 +174,11 @@ struct EventSegmentation {
 struct TEAlignmentEvidence {
     std::string best_family;
     std::string best_subfamily;
-    double best_identity = 0.0;
-    double best_query_coverage = 0.0;
+    double best_identity = 0.0;        // Identity on the aligned TE core.
+    double best_query_coverage = 0.0;  // Fraction of insert occupied by the aligned TE core.
     double best_score = 0.0;
+    double coarse_prefilter_score = 0.0;
+    double coarse_chain_coverage = 0.0;
     std::string second_family = "NA";
     double second_score = 0.0;
     double cross_family_margin = 0.0;
@@ -259,6 +263,12 @@ struct PipelineConfig {
     int32_t short_ins_max_len = 300;
     int32_t short_ins_min_reads = 2;
     double short_ins_kmer_relax_identity = 0.15;
+    int32_t te_family_topn = 4;
+    int32_t te_family_representatives = 3;
+    int32_t te_template_refine_topn = 3;
+    int32_t te_exact_align_topn = 2;
+    double te_family_margin_min = 0.05;
+    double te_subfamily_margin_min = 0.04;
     double te_softclip_low_complexity_at_frac_min = 0.90;
     int32_t te_softclip_low_complexity_homopolymer_min = 80;
     double te_softclip_entropy_min = 1.25;
@@ -300,6 +310,15 @@ struct PipelineResult {
 
     std::vector<FinalCall> final_calls;
 };
+
+struct ComponentFinalCallCandidate {
+    int32_t pos = -1;
+    double score = 0.0;
+    bool emit_te = false;
+};
+
+std::vector<size_t> select_component_final_call_indices(
+    const std::vector<ComponentFinalCallCandidate>& candidates);
 
 void finalize_final_calls(PipelineResult& result);
 
@@ -359,12 +378,17 @@ private:
     PipelineConfig config_;
     struct Index;
     struct AlignmentShortlistDb;
+    struct TemplateSeedDb;
     std::shared_ptr<const Index> primary_index_;
     std::vector<std::shared_ptr<const Index>> indices_;
     std::shared_ptr<const AlignmentShortlistDb> alignment_shortlist_db_;
+    std::shared_ptr<const TemplateSeedDb> template_seed_db_;
+    std::shared_ptr<const TeFamilyAlignmentIndex> family_alignment_index_;
+    std::shared_ptr<const TeFamilyGroupCache> family_rep_groups_;
     std::shared_ptr<const std::vector<std::string>> te_names_;
     std::shared_ptr<const std::vector<std::string>> te_sequences_;
     std::shared_ptr<const std::vector<std::string>> te_reverse_complement_sequences_;
+    mutable int32_t last_exact_alignments_ = 0;
 };
 
 struct TsdDetection {
@@ -577,7 +601,8 @@ private:
 
     std::vector<BreakpointHypothesis> select_diverse_breakpoint_hypotheses(
         const std::vector<BreakpointHypothesis>& hypotheses,
-        size_t top_k) const;
+        size_t top_k,
+        int32_t anchor_pos) const;
 
     EventReadEvidence collect_event_read_evidence_for_bounds(
         const ComponentCall& component,

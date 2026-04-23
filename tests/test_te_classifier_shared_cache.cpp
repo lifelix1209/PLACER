@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <cstdio>
 #include <fstream>
@@ -56,6 +59,10 @@ int main() {
     cfg.te_fasta_path = fasta_path;
     cfg.te_kmer_size = 9;
     cfg.te_kmer_sizes_csv = "9,11";
+    assert(cfg.te_family_topn == 4);
+    assert(cfg.te_family_representatives == 3);
+    assert(cfg.te_template_refine_topn == 3);
+    assert(cfg.te_exact_align_topn == 2);
 
     TEKmerQuickClassifierModule first(cfg);
     TEKmerQuickClassifierModule second(cfg);
@@ -66,8 +73,14 @@ int main() {
     assert(second.primary_index_);
     assert(first.alignment_shortlist_db_);
     assert(second.alignment_shortlist_db_);
+    assert(first.family_alignment_index_);
+    assert(second.family_alignment_index_);
+    assert(first.family_rep_groups_);
+    assert(second.family_rep_groups_);
     assert(first.primary_index_.get() == second.primary_index_.get());
     assert(first.alignment_shortlist_db_.get() == second.alignment_shortlist_db_.get());
+    assert(first.family_alignment_index_.get() == second.family_alignment_index_.get());
+    assert(first.family_rep_groups_.get() == second.family_rep_groups_.get());
     assert(first.indices_.size() == second.indices_.size());
     for (size_t i = 0; i < first.indices_.size(); ++i) {
         assert(first.indices_[i].get() == second.indices_[i].get());
@@ -76,6 +89,22 @@ int main() {
     assert(first.te_sequences_.get() == second.te_sequences_.get());
     assert(first.te_reverse_complement_sequences_.get() ==
            second.te_reverse_complement_sequences_.get());
+
+    write_te_fasta(
+        fasta_path,
+        {
+            {"SubGypsyCacheAlt#LTR/Gypsy", build_sequence(160, 211u)},
+            {"SubCopiaCacheAlt#LTR/Copia", build_sequence(160, 307u)},
+        });
+    TEKmerQuickClassifierModule third(cfg);
+    assert(third.is_enabled());
+    assert(third.te_names_);
+    assert(third.te_sequences_);
+    assert(third.family_alignment_index_);
+    assert(third.te_names_.get() != first.te_names_.get());
+    assert(third.te_sequences_.get() != first.te_sequences_.get());
+    assert(third.family_alignment_index_.get() != first.family_alignment_index_.get());
+    assert(third.te_names_->at(0) == "SubGypsyCacheAlt#LTR/Gypsy");
 
     std::remove(fasta_path.c_str());
     return 0;

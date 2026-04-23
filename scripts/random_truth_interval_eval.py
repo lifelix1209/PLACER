@@ -28,6 +28,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence
 
+import pysam
+
 
 @dataclass(frozen=True)
 class TruthRow:
@@ -55,6 +57,17 @@ class WindowSpec:
     @property
     def region(self) -> str:
         return f"{self.chrom}:{self.window_start}-{self.window_end}"
+
+
+@dataclass(frozen=True)
+class PreparedSubset:
+    sample_id: str
+    sample_dir: Path
+    log_path: Path
+    read_names_path: Path
+    subset_bam: Path
+    qname_count: int
+    extract_elapsed_s: float
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -140,8 +153,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--threads",
         type=int,
-        default=1,
-        help="samtools threads used for view/index.",
+        default=None,
+        help="samtools threads used for view/index. Default: all detected CPUs.",
     )
     parser.add_argument(
         "--workers",
@@ -365,6 +378,57 @@ def build_window(row: TruthRow, flank_bp: int, contig_lengths: Dict[str, int]) -
     )
 
 
+def extract_primary_qnames_from_region_view(region_stdout: str, region: str) -> List[str]:
+    qnames: List[str] = []
+    seen: set[str] = set()
+    for line in region_stdout.splitlines():
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) < 2:
+            fail(f"malformed samtools view row for region {region}: {line}")
+        qname = fields[0]
+        try:
+            flag = int(fields[1])
+        except ValueError:
+            fail(f"invalid FLAG in samtools view row for region {region}: {line}")
+        if flag & (0x4 | 0x100 | 0x800):
+            continue
+        if qname not in seen:
+            seen.add(qname)
+            qnames.append(qname)
+    return qnames
+
+
+def resolve_samtools_threads(requested_threads: Optional[int]) -> int:
+    if requested_threads is not None:
+        return requested_threads
+    detected_threads = os.cpu_count() or 1
+    return max(1, detected_threads)
+
+
+def build_qname_membership_maps(
+    sample_to_qnames: Dict[str, Sequence[str]],
+) -> tuple[Dict[str, List[str]], Dict[str, List[str]], List[str]]:
+    normalized: Dict[str, List[str]] = {
+        sample_id: list(qnames)
+        for sample_id, qnames in sample_to_qnames.items()
+    }
+    qname_to_sample_ids: Dict[str, List[str]] = {}
+    union_qnames: List[str] = []
+    seen_union: set[str] = set()
+
+    for sample_id, qnames in normalized.items():
+        for qname in qnames:
+            sample_ids = qname_to_sample_ids.setdefault(qname, [])
+            sample_ids.append(sample_id)
+            if qname not in seen_union:
+                seen_union.add(qname)
+                union_qnames.append(qname)
+
+    return normalized, qname_to_sample_ids, union_qnames
+
+
 def run_command(
     cmd: Sequence[str],
     *,
@@ -396,85 +460,160 @@ def run_command(
         )
 
 
-def extract_subset_bam(
+def split_union_subset_bam(
     *,
-    samtools: str,
-    threads: int,
-    source_bam: Path,
-    region: str,
-    read_names_path: Path,
-    subset_bam: Path,
-    log_path: Path,
-) -> int:
-    region_fetch = subprocess.run(
-        [
-            samtools,
-            "view",
-            "-@",
-            str(threads),
-            str(source_bam),
-            region,
-        ],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write("$ " + " ".join([samtools, "view", "-@", str(threads), str(source_bam), region]) + "\n")
-        if region_fetch.stdout:
-            handle.write(f"[window_records_stdout_lines]\t{len(region_fetch.stdout.splitlines())}\n")
-        if region_fetch.stderr:
-            handle.write(region_fetch.stderr)
-            if not region_fetch.stderr.endswith("\n"):
-                handle.write("\n")
-    if region_fetch.returncode != 0:
+    union_subset_bam: Path,
+    qname_to_sample_ids: Dict[str, Sequence[str]],
+    sample_to_subset_bam: Dict[str, Path],
+) -> Dict[str, int]:
+    writers: Dict[str, pysam.AlignmentFile] = {}
+    record_counts: Dict[str, int] = {
+        sample_id: 0
+        for sample_id in sample_to_subset_bam
+    }
+    seen_qnames: set[str] = set()
+    try:
+        with pysam.AlignmentFile(union_subset_bam, "rb") as in_handle:
+            for sample_id, subset_bam in sample_to_subset_bam.items():
+                writers[sample_id] = pysam.AlignmentFile(
+                    subset_bam,
+                    "wb",
+                    template=in_handle,
+                )
+
+            for record in in_handle:
+                sample_ids = qname_to_sample_ids.get(record.query_name)
+                if not sample_ids:
+                    continue
+                seen_qnames.add(record.query_name)
+                for sample_id in sample_ids:
+                    writers[sample_id].write(record)
+                    record_counts[sample_id] += 1
+    finally:
+        for writer in writers.values():
+            writer.close()
+
+    missing_qnames = set(qname_to_sample_ids).difference(seen_qnames)
+    if missing_qnames:
         fail(
-            f"command failed with exit code {region_fetch.returncode}: "
-            f"{samtools} view -@ {threads} {source_bam} {region}"
+            "union BAM split missed qnames: "
+            + ", ".join(sorted(missing_qnames))
         )
 
-    qnames: List[str] = []
-    seen: set[str] = set()
-    for line in region_fetch.stdout.splitlines():
-        if not line:
-            continue
-        fields = line.split("\t")
-        if len(fields) < 2:
-            fail(f"malformed samtools view row for region {region}: {line}")
-        qname = fields[0]
-        try:
-            flag = int(fields[1])
-        except ValueError:
-            fail(f"invalid FLAG in samtools view row for region {region}: {line}")
-        if flag & (0x4 | 0x100 | 0x800):
-            continue
-        if qname not in seen:
-            seen.add(qname)
-            qnames.append(qname)
-    if not qnames:
-        fail(f"no primary overlapping read names found for region {region}")
-    read_names_path.write_text("".join(name + "\n" for name in qnames), encoding="utf-8")
+    return record_counts
+
+
+def prepare_sample_subset_bams(
+    *,
+    sampled_rows: Sequence[TruthRow],
+    windows_by_sample_id: Dict[str, WindowSpec],
+    args: argparse.Namespace,
+    outdir: Path,
+) -> Dict[str, PreparedSubset]:
+    sample_to_qnames: Dict[str, List[str]] = {}
+    prepared: Dict[str, PreparedSubset] = {}
+    sample_to_subset_bam: Dict[str, Path] = {}
+
+    for row in sampled_rows:
+        window = windows_by_sample_id[row.sample_id]
+        sample_dir = outdir / row.sample_id
+        sample_dir.mkdir(parents=True, exist_ok=False)
+        log_path = sample_dir / "run.log"
+        read_names_path = sample_dir / "window_qnames.txt"
+        subset_bam = sample_dir / "subset.bam"
+
+        started = time.time()
+        region_fetch = subprocess.run(
+            [
+                args.samtools,
+                "view",
+                "-@",
+                str(args.threads),
+                str(args.bam),
+                window.region,
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "$ "
+                + " ".join(
+                    [
+                        args.samtools,
+                        "view",
+                        "-@",
+                        str(args.threads),
+                        str(args.bam),
+                        window.region,
+                    ]
+                )
+                + "\n"
+            )
+            if region_fetch.stdout:
+                handle.write(
+                    f"[window_records_stdout_lines]\t{len(region_fetch.stdout.splitlines())}\n"
+                )
+            if region_fetch.stderr:
+                handle.write(region_fetch.stderr)
+                if not region_fetch.stderr.endswith("\n"):
+                    handle.write("\n")
+        if region_fetch.returncode != 0:
+            fail(
+                f"command failed with exit code {region_fetch.returncode}: "
+                f"{args.samtools} view -@ {args.threads} {args.bam} {window.region}"
+            )
+
+        qnames = extract_primary_qnames_from_region_view(region_fetch.stdout, window.region)
+        if not qnames:
+            fail(f"no primary overlapping read names found for region {window.region}")
+        read_names_path.write_text("".join(name + "\n" for name in qnames), encoding="utf-8")
+        sample_to_qnames[row.sample_id] = qnames
+        prepared[row.sample_id] = PreparedSubset(
+            sample_id=row.sample_id,
+            sample_dir=sample_dir,
+            log_path=log_path,
+            read_names_path=read_names_path,
+            subset_bam=subset_bam,
+            qname_count=len(qnames),
+            extract_elapsed_s=time.time() - started,
+        )
+        sample_to_subset_bam[row.sample_id] = subset_bam
+
+    _, qname_to_sample_ids, union_qnames = build_qname_membership_maps(sample_to_qnames)
+    union_qnames_path = outdir / "union_qnames.txt"
+    union_subset_bam = outdir / "union_subset.bam"
+    extraction_log = outdir / "subset_extraction.log"
+    union_qnames_path.write_text("".join(qname + "\n" for qname in union_qnames), encoding="utf-8")
 
     run_command(
         [
-            samtools,
+            args.samtools,
             "view",
             "-@",
-            str(threads),
+            str(args.threads),
             "-N",
-            str(read_names_path),
+            str(union_qnames_path),
             "-b",
             "-o",
-            str(subset_bam),
-            str(source_bam),
+            str(union_subset_bam),
+            str(args.bam),
         ],
-        log_path=log_path,
+        log_path=extraction_log,
     )
-    run_command(
-        [samtools, "index", "-@", str(threads), str(subset_bam)],
-        log_path=log_path,
+    split_union_subset_bam(
+        union_subset_bam=union_subset_bam,
+        qname_to_sample_ids=qname_to_sample_ids,
+        sample_to_subset_bam=sample_to_subset_bam,
     )
-    return len(qnames)
+    for subset in prepared.values():
+        run_command(
+            [args.samtools, "index", "-@", str(args.threads), str(subset.subset_bam)],
+            log_path=subset.log_path,
+        )
+
+    return prepared
 
 
 def parse_scientific_txt(path: Path) -> List[Dict[str, str]]:
@@ -502,6 +641,42 @@ def parse_scientific_txt(path: Path) -> List[Dict[str, str]]:
     if header is None:
         fail(f"scientific header not found in {path}")
     return rows
+
+
+def parse_scientific_summary(path: Path) -> Dict[str, int]:
+    if not path.is_file():
+        return {}
+
+    summary: Dict[str, int] = {}
+    wanted_keys = {
+        "total_reads",
+        "gate1_passed",
+        "processed_bins",
+        "components",
+        "event_consensus_calls",
+        "genotype_calls",
+        "final_pass_calls",
+    }
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+            if line.startswith("#chrom\t"):
+                break
+            if line.startswith("#"):
+                continue
+            fields = line.split("\t")
+            if len(fields) != 2:
+                continue
+            key, value = fields
+            if key not in wanted_keys:
+                continue
+            try:
+                summary[key] = int(value)
+            except ValueError:
+                fail(f"invalid scientific summary value for {key} in {path}: {line}")
+    return summary
 
 
 def parse_joint_component_metrics(log_path: Path) -> Dict[str, str]:
@@ -587,11 +762,24 @@ def count_nonempty_lines(path: Path) -> int:
         return sum(1 for line in handle if line.strip())
 
 
-def classify_failure_stage(*, detected: bool, joint_metrics: Dict[str, str]) -> str:
+def classify_failure_stage(
+    *,
+    detected: bool,
+    joint_metrics: Dict[str, str],
+    scientific_summary: Optional[Dict[str, int]],
+    best_call: Optional[Dict[str, str]] = None,
+) -> str:
     if detected:
         return "DETECTED"
 
     if joint_metrics["joint_final_qc"] == "NA":
+        summary = scientific_summary or {}
+        if summary.get("final_pass_calls", 0) > 0 and best_call is not None:
+            return "FINAL_CALL_ELSEWHERE"
+        if summary.get("genotype_calls", 0) > 0:
+            return "GENOTYPED_BUT_NO_FINAL_CALL"
+        if summary.get("event_consensus_calls", 0) > 0:
+            return "EVENT_CONSENSUS_BUT_NO_FINAL_CALL"
         return "NO_EVENT_SIGNAL"
 
     if joint_metrics["consensus_qc"] not in {"NA", "PASS_EVENT_CONSENSUS"}:
@@ -643,6 +831,7 @@ def build_result_row(
     placer_elapsed_s: float,
     sample_elapsed_s: float,
     joint_metrics: Dict[str, str],
+    scientific_summary: Optional[Dict[str, int]] = None,
 ) -> Dict[str, str]:
     normalized_joint_metrics = {
         "joint_best_kind": joint_metrics.get("joint_best_kind", "NA"),
@@ -660,7 +849,10 @@ def build_result_row(
     failure_stage = classify_failure_stage(
         detected=detected,
         joint_metrics=normalized_joint_metrics,
+        scientific_summary=scientific_summary,
+        best_call=best_call,
     )
+    normalized_scientific_summary = scientific_summary or {}
     return {
         "sample_id": row.sample_id,
         "uuid": row.uuid,
@@ -708,6 +900,15 @@ def build_result_row(
         "seg_insert_len": normalized_joint_metrics["seg_insert_len"],
         "te_qc": normalized_joint_metrics["te_qc"],
         "te_pass": normalized_joint_metrics["te_pass"],
+        "summary_event_consensus_calls": str(
+            normalized_scientific_summary.get("event_consensus_calls", "NA")
+        ),
+        "summary_genotype_calls": str(
+            normalized_scientific_summary.get("genotype_calls", "NA")
+        ),
+        "summary_final_pass_calls": str(
+            normalized_scientific_summary.get("final_pass_calls", "NA")
+        ),
         "failure_stage": failure_stage,
     }
 
@@ -720,23 +921,30 @@ def run_placer_sample(
     outdir: Path,
 ) -> Dict[str, str]:
     sample_dir = outdir / row.sample_id
-    sample_dir.mkdir(parents=True, exist_ok=False)
+    if not sample_dir.is_dir():
+        fail(f"sample directory not prepared: {sample_dir}")
     log_path = sample_dir / "run.log"
     read_names_path = sample_dir / "window_qnames.txt"
     subset_bam = sample_dir / "subset.bam"
+    if not subset_bam.is_file():
+        fail(f"prepared subset BAM not found: {subset_bam}")
+    if not read_names_path.is_file():
+        fail(f"prepared qname list not found: {read_names_path}")
+
+    prepared_subsets = getattr(args, "_prepared_subsets", {})
+    prepared_subset = prepared_subsets.get(row.sample_id)
 
     sample_started = time.time()
-    extract_started = time.time()
-    qname_count = extract_subset_bam(
-        samtools=args.samtools,
-        threads=args.threads,
-        source_bam=args.bam,
-        region=window.region,
-        read_names_path=read_names_path,
-        subset_bam=subset_bam,
-        log_path=log_path,
+    qname_count = (
+        prepared_subset.qname_count
+        if isinstance(prepared_subset, PreparedSubset)
+        else count_nonempty_lines(read_names_path)
     )
-    extract_elapsed_s = time.time() - extract_started
+    extract_elapsed_s = (
+        prepared_subset.extract_elapsed_s
+        if isinstance(prepared_subset, PreparedSubset)
+        else 0.0
+    )
 
     placer_started = time.time()
     completed = subprocess.run(
@@ -747,7 +955,7 @@ def run_placer_sample(
         capture_output=True,
     )
     placer_elapsed_s = time.time() - placer_started
-    sample_elapsed_s = time.time() - sample_started
+    sample_elapsed_s = extract_elapsed_s + (time.time() - sample_started)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(
             "$ " + " ".join([str(args.placer), str(subset_bam), str(args.ref), str(args.te)]) + "\n"
@@ -762,6 +970,7 @@ def run_placer_sample(
                 handle.write("\n")
 
     scientific_path = sample_dir / "scientific.txt"
+    scientific_summary = parse_scientific_summary(scientific_path) if completed.returncode == 0 else {}
     calls = parse_scientific_txt(scientific_path) if completed.returncode == 0 else []
     best_call = choose_best_call(row, calls)
     detected = (
@@ -785,6 +994,7 @@ def run_placer_sample(
         placer_elapsed_s=placer_elapsed_s,
         sample_elapsed_s=sample_elapsed_s,
         joint_metrics=joint_metrics,
+        scientific_summary=scientific_summary,
     )
 
 
@@ -808,6 +1018,7 @@ def evaluate_existing_sample(
         fail(f"existing scientific.txt not found: {scientific_path}")
 
     qname_count = count_nonempty_lines(read_names_path)
+    scientific_summary = parse_scientific_summary(scientific_path)
     calls = parse_scientific_txt(scientific_path)
     best_call = choose_best_call(row, calls)
     detected = (
@@ -831,6 +1042,7 @@ def evaluate_existing_sample(
         placer_elapsed_s=0.0,
         sample_elapsed_s=0.0,
         joint_metrics=joint_metrics,
+        scientific_summary=scientific_summary,
     )
 
 
@@ -883,6 +1095,20 @@ def evaluate_sample_rows(
     eval_fn = evaluator
     if eval_fn is None:
         eval_fn = evaluate_existing_sample if args.reuse_existing_samples else run_placer_sample
+
+    windows_by_sample_id = {
+        row.sample_id: window
+        for _, row, window in tasks
+    }
+
+    if evaluator is None and not args.reuse_existing_samples:
+        prepared_subsets = prepare_sample_subset_bams(
+            sampled_rows=sampled_rows,
+            windows_by_sample_id=windows_by_sample_id,
+            args=args,
+            outdir=outdir,
+        )
+        setattr(args, "_prepared_subsets", prepared_subsets)
 
     ordered_results: List[Optional[Dict[str, str]]] = [None] * len(tasks)
     worker_count = max(1, args.workers)
@@ -954,6 +1180,7 @@ def build_summary(
 def main(argv: Sequence[str]) -> int:
     started = time.time()
     args = parse_args(argv)
+    args.threads = resolve_samtools_threads(args.threads)
     if args.sampled_truth_tsv is not None:
         args.sampled_truth_tsv = require_file(args.sampled_truth_tsv, "sampled truth TSV")
     args.ground_truth = require_file(args.ground_truth, "ground truth table")

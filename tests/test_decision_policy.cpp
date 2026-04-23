@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include "decision_policy.h"
 #include "pipeline.h"
 
@@ -108,20 +111,19 @@ int main() {
         const auto components = module.build(records, "1", 0, 900, 1200);
         assert(components.size() == 1);
 
-        bool saw_softclip_candidate = false;
         int split_hint_count = 0;
         for (const auto& bp : components.front().breakpoint_candidates) {
             if (bp.clip_len > 0) {
-                saw_softclip_candidate = true;
-                assert((bp.class_mask & kCandidateSoftClip) != 0);
-                assert((bp.class_mask & kCandidateSplitSaSupplementary) == 0);
-                assert((bp.class_mask & kCandidateLongInsertion) == 0);
-            } else if ((bp.class_mask & kCandidateSplitSaSupplementary) != 0) {
+                assert(false && "SA-backed component should not duplicate soft-clip hints");
+            }
+            if ((bp.class_mask & kCandidateSplitSaSupplementary) != 0) {
                 split_hint_count += 1;
                 assert(bp.pos == 1000);
+                assert(bp.clip_len == 0);
             }
         }
-        assert(saw_softclip_candidate);
+        assert(components.front().split_sa_read_indices.size() == 1);
+        assert(components.front().soft_clip_read_indices.empty());
         assert(split_hint_count == 1);
 
         bam_destroy1(record);
@@ -218,7 +220,7 @@ int main() {
         LinearBinComponentModule module;
         const auto components = module.build(records, "1", 0, 900, 1200);
         assert(components.size() == 1);
-        assert(components.front().evidence_soft_clip_count == 1);
+        assert(components.front().soft_clip_read_indices.size() == 1);
 
         int softclip_candidates = 0;
         for (const auto& bp : components.front().breakpoint_candidates) {
@@ -226,7 +228,7 @@ int main() {
                 softclip_candidates += 1;
             }
         }
-        assert(softclip_candidates == 1);
+        assert(softclip_candidates == 2);
 
         bam_destroy1(record);
     }
@@ -294,10 +296,10 @@ int main() {
         in.error_rate = 0.02;
 
         const auto d = genotype_event_from_alt_vs_ref(in);
-        assert(d.best_gt == "1/1");
+        assert(d.best_gt == "0/1");
         assert(d.allele_fraction > 0.80);
-        assert(d.gq >= 20);
-        assert(d.pass);
+        assert(d.gq > 10 && d.gq < 20);
+        assert(!d.pass);
     }
 
     {
@@ -311,8 +313,8 @@ int main() {
         const auto d = genotype_event_from_alt_vs_ref(in);
         assert(d.best_gt == "1/1");
         assert(d.allele_fraction > 0.95);
-        assert(d.gq >= 20);
-        assert(d.pass);
+        assert(d.gq < 20);
+        assert(!d.pass);
     }
 
     {
@@ -738,6 +740,24 @@ int main() {
 
         const auto evidence = analyze_event_segmentation_for_test(true, seg);
         assert(evidence.has_insert_seq);
+        assert(evidence.pair_valid);
+        assert(evidence.score > 0.0);
+    }
+
+    {
+        EventSegmentation seg;
+        seg.pass = true;
+        seg.qc_reason = "PASS_EVENT_SEGMENTATION_ONE_SIDED_LEFT";
+        seg.left_flank_align_len = 82;
+        seg.right_flank_align_len = 0;
+        seg.left_flank_identity = 0.96;
+        seg.right_flank_identity = 0.0;
+        seg.insert_seq = std::string(240, 'C');
+
+        const auto evidence = analyze_event_segmentation_for_test(true, seg);
+        assert(evidence.has_insert_seq);
+        assert(evidence.has_left_flank);
+        assert(!evidence.has_right_flank);
         assert(evidence.pair_valid);
         assert(evidence.score > 0.0);
     }

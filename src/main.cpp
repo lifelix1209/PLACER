@@ -188,6 +188,24 @@ int main(int argc, char** argv) {
         if (placer::env_try_string("PLACER_TE_KMER_SIZES", s)) {
             config.te_kmer_sizes_csv = s;
         }
+        if (placer::env_try_int32("PLACER_TE_FAMILY_TOPN", i)) {
+            config.te_family_topn = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_FAMILY_REPRESENTATIVES", i)) {
+            config.te_family_representatives = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_TEMPLATE_REFINE_TOPN", i)) {
+            config.te_template_refine_topn = std::max(1, i);
+        }
+        if (placer::env_try_int32("PLACER_TE_EXACT_ALIGN_TOPN", i)) {
+            config.te_exact_align_topn = std::max(1, i);
+        }
+        if (placer::env_try_double("PLACER_TE_FAMILY_MARGIN_MIN", v)) {
+            config.te_family_margin_min = std::clamp(v, 0.0, 1.0);
+        }
+        if (placer::env_try_double("PLACER_TE_SUBFAMILY_MARGIN_MIN", v)) {
+            config.te_subfamily_margin_min = std::clamp(v, 0.0, 1.0);
+        }
         if (placer::env_try_int32("PLACER_BAM_THREADS", i)) {
             config.bam_threads = std::max(1, i);
         }

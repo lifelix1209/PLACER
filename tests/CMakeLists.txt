@@ -8,6 +8,22 @@ target_link_libraries(test_decision_policy PRIVATE placer_pipeline)
 
 add_test(NAME test_decision_policy COMMAND test_decision_policy)
 
+add_executable(test_te_alignment_decision_policy
+    test_te_alignment_decision_policy.cpp
+)
+target_include_directories(test_te_alignment_decision_policy PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_te_alignment_decision_policy PRIVATE placer_pipeline)
+
+add_test(NAME test_te_alignment_decision_policy COMMAND test_te_alignment_decision_policy)
+
+add_executable(test_joint_te_emission_alt_only
+    test_joint_te_emission_alt_only.cpp
+)
+target_include_directories(test_joint_te_emission_alt_only PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_joint_te_emission_alt_only PRIVATE placer_pipeline)
+
+add_test(NAME test_joint_te_emission_alt_only COMMAND test_joint_te_emission_alt_only)
+
 add_executable(test_bayesian_sv_genotyping
     test_bayesian_sv_genotyping.cpp
 )
@@ -95,6 +111,42 @@ target_include_directories(test_te_classifier_shared_cache PRIVATE ${CMAKE_SOURC
 target_link_libraries(test_te_classifier_shared_cache PRIVATE placer_pipeline)
 
 add_test(NAME test_te_classifier_shared_cache COMMAND test_te_classifier_shared_cache)
+
+add_executable(test_te_family_prefilter
+    test_te_family_prefilter.cpp
+)
+target_include_directories(test_te_family_prefilter PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/component
+)
+target_link_libraries(test_te_family_prefilter PRIVATE placer_pipeline)
+
+add_test(NAME test_te_family_prefilter COMMAND test_te_family_prefilter)
+
+add_executable(test_te_repetitive_seed_downweight
+    test_te_repetitive_seed_downweight.cpp
+)
+target_include_directories(test_te_repetitive_seed_downweight PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/component
+)
+target_link_libraries(test_te_repetitive_seed_downweight PRIVATE placer_pipeline)
+
+add_test(NAME test_te_repetitive_seed_downweight COMMAND test_te_repetitive_seed_downweight)
+
+add_executable(test_te_exact_alignment_budget
+    test_te_exact_alignment_budget.cpp
+)
+target_include_directories(test_te_exact_alignment_budget PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_te_exact_alignment_budget PRIVATE placer_pipeline)
+
+add_test(NAME test_te_exact_alignment_budget COMMAND test_te_exact_alignment_budget)
+
+add_executable(bench_te_library_alignment
+    bench_te_library_alignment.cpp
+)
+target_include_directories(bench_te_library_alignment PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(bench_te_library_alignment PRIVATE placer_pipeline)
 
 add_executable(test_local_recollection_fragment_refresh
     test_local_recollection_fragment_refresh.cpp
@@ -194,6 +246,14 @@ target_include_directories(test_component_locality PRIVATE ${CMAKE_SOURCE_DIR}/i
 target_link_libraries(test_component_locality PRIVATE placer_pipeline)
 
 add_test(NAME test_component_locality COMMAND test_component_locality)
+
+add_executable(test_component_multi_emit_selection
+    test_component_multi_emit_selection.cpp
+)
+target_include_directories(test_component_multi_emit_selection PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_component_multi_emit_selection PRIVATE placer_pipeline)
+
+add_test(NAME test_component_multi_emit_selection COMMAND test_component_multi_emit_selection)
 
 add_executable(test_hypothesis_pruning
     test_hypothesis_pruning.cpp

@@ -1,4 +1,5 @@
 #include "pipeline.h"
+#include "te_family_alignment.h"
 
 #include <algorithm>
 #include <cctype>
@@ -21,12 +22,19 @@ namespace {
 
 constexpr int32_t kInsertSequenceShortlistTopN = 16;
 constexpr int32_t kInsertSequenceMinLen = 80;
-constexpr double kInsertSequenceMinIdentity = 0.80;
-constexpr double kInsertSequenceMinQueryCoverage = 0.80;
-constexpr double kInsertSequenceMinCrossFamilyMargin = 0.09;
+constexpr double kInsertSequenceResolvedMinIdentity = 0.78;
+constexpr double kInsertSequenceResolvedMinQueryCoverage = 0.72;
+constexpr double kInsertSequenceFamilyOnlyMinIdentity = 0.68;
+constexpr double kInsertSequenceFamilyOnlyMinQueryCoverage = 0.55;
 constexpr double kInsertSequenceUnknownMinIdentity = 0.55;
-constexpr double kInsertSequenceUnknownMinQueryCoverage = 0.60;
-constexpr double kInsertSequenceShortlistSupportWeight = 0.06;
+constexpr double kInsertSequenceUnknownMinQueryCoverage = 0.45;
+constexpr double kInsertSequenceUnknownCoarsePrefilterMin = 0.35;
+constexpr double kInsertSequenceUnknownCoarseChainCoverageMin = 0.55;
+constexpr double kInsertSequenceUnknownHighOccupancyMinQueryCoverage = 0.50;
+constexpr double kInsertSequenceFamilyWinnerScoreMin = 0.52;
+constexpr double kInsertSequenceExactTemplateMinIdentity = 0.99;
+constexpr double kInsertSequenceExactTemplateMinQueryCoverage = 0.99;
+constexpr double kInsertSequenceExactTemplateRunnerUpMaxScore = 0.97;
 
 struct TeEntry {
     std::string name;
@@ -70,6 +78,17 @@ void for_each_valid_kmer(const std::string& seq, int32_t k, Fn&& fn) {
             fn(i - k + 1, key);
         }
     }
+}
+
+void populate_kmer_positions(
+    const std::string& seq,
+    int32_t k,
+    KmerPositionMap& out) {
+    out.clear();
+    out.reserve(seq.size());
+    for_each_valid_kmer(seq, k, [&](int32_t start, uint64_t key) {
+        out[key].push_back(start);
+    });
 }
 
 std::string take_header_token(const std::string& header) {
@@ -566,6 +585,48 @@ bool load_te_entries_from_fasta(
     return !out_entries.empty();
 }
 
+void fnv1a_append_byte(uint64_t& hash, uint8_t byte) {
+    constexpr uint64_t kFnvPrime = 1099511628211ull;
+    hash ^= static_cast<uint64_t>(byte);
+    hash *= kFnvPrime;
+}
+
+void fnv1a_append_string(uint64_t& hash, const std::string& value) {
+    for (unsigned char c : value) {
+        fnv1a_append_byte(hash, c);
+    }
+    fnv1a_append_byte(hash, 0xff);
+}
+
+void fnv1a_append_int32(uint64_t& hash, int32_t value) {
+    for (int shift = 0; shift < 32; shift += 8) {
+        fnv1a_append_byte(hash, static_cast<uint8_t>((value >> shift) & 0xff));
+    }
+}
+
+std::string build_te_library_cache_key(
+    const std::vector<TeEntry>& entries,
+    const std::vector<int32_t>& ks,
+    int32_t requested_kmer_size,
+    int32_t family_representatives) {
+    uint64_t hash = 14695981039346656037ull;
+    fnv1a_append_int32(hash, static_cast<int32_t>(entries.size()));
+    for (const auto& entry : entries) {
+        fnv1a_append_string(hash, entry.name);
+        fnv1a_append_string(hash, entry.sequence);
+    }
+    fnv1a_append_int32(hash, requested_kmer_size);
+    fnv1a_append_int32(hash, static_cast<int32_t>(ks.size()));
+    for (int32_t k : ks) {
+        fnv1a_append_int32(hash, k);
+    }
+    fnv1a_append_int32(hash, family_representatives);
+
+    std::ostringstream out;
+    out << std::hex << hash;
+    return out.str();
+}
+
 std::mutex g_fragment_hits_tsv_mutex;
 
 }  // namespace
@@ -659,6 +720,37 @@ struct TEKmerQuickClassifierModule::AlignmentShortlistDb {
     }
 };
 
+struct TEKmerQuickClassifierModule::TemplateSeedDb {
+    explicit TemplateSeedDb(int32_t kmer_size) : k(kmer_size) {}
+
+    int32_t k = 11;
+    std::vector<KmerPositionMap> forward_positions;
+    std::vector<KmerPositionMap> reverse_positions;
+
+    bool build_from_entries(const std::vector<TeEntry>& entries) {
+        forward_positions.clear();
+        reverse_positions.clear();
+        forward_positions.resize(entries.size());
+        reverse_positions.resize(entries.size());
+
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (static_cast<int32_t>(entries[i].sequence.size()) >= k) {
+                forward_positions[i].reserve(entries[i].sequence.size());
+                populate_kmer_positions(entries[i].sequence, k, forward_positions[i]);
+            }
+            if (static_cast<int32_t>(entries[i].reverse_complement_sequence.size()) >= k) {
+                reverse_positions[i].reserve(entries[i].reverse_complement_sequence.size());
+                populate_kmer_positions(
+                    entries[i].reverse_complement_sequence,
+                    k,
+                    reverse_positions[i]);
+            }
+        }
+
+        return !forward_positions.empty() && !reverse_positions.empty();
+    }
+};
+
 TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
     : config_(std::move(config)) {
     struct CacheState {
@@ -668,9 +760,12 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
         std::vector<std::shared_ptr<const Index>> indices;
         std::shared_ptr<const Index> primary_index;
         std::shared_ptr<const AlignmentShortlistDb> alignment_shortlist_db;
+        std::shared_ptr<const TemplateSeedDb> template_seed_db;
+        std::shared_ptr<const TeFamilyAlignmentIndex> family_alignment_index;
+        std::shared_ptr<const TeFamilyGroupCache> family_rep_groups;
     };
     static std::mutex cache_mutex;
-    static std::unordered_map<std::string, std::weak_ptr<const CacheState>> cache_by_key;
+    static std::unordered_map<std::string, std::shared_ptr<const CacheState>> cache_by_key;
 
     if (!config_.ins_fragment_hits_tsv_path.empty()) {
         std::lock_guard<std::mutex> lock(g_fragment_hits_tsv_mutex);
@@ -684,31 +779,34 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
         return;
     }
 
-    const std::string cache_key =
-        config_.te_fasta_path + "\n" +
-        std::to_string(std::max(7, std::min(31, config_.te_kmer_size))) + "\n" +
-        config_.te_kmer_sizes_csv;
-    {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        const auto it = cache_by_key.find(cache_key);
-        if (it != cache_by_key.end()) {
-            if (auto cached = it->second.lock()) {
-                te_names_ = cached->te_names;
-                te_sequences_ = cached->te_sequences;
-                te_reverse_complement_sequences_ = cached->te_reverse_complement_sequences;
-                indices_ = cached->indices;
-                primary_index_ = cached->primary_index;
-                alignment_shortlist_db_ = cached->alignment_shortlist_db;
-                return;
-            }
-            cache_by_key.erase(it);
-        }
-    }
-
     std::vector<TeEntry> entries;
     if (!load_te_entries_from_fasta(config_.te_fasta_path, entries)) {
         std::cerr << "[TEQuick] failed to parse TE FASTA: " << config_.te_fasta_path << "\n";
         return;
+    }
+
+    const auto ks = parse_kmer_sizes_csv(config_.te_kmer_sizes_csv, config_.te_kmer_size);
+    const std::string cache_key = build_te_library_cache_key(
+        entries,
+        ks,
+        std::max(7, std::min(31, config_.te_kmer_size)),
+        std::max(1, config_.te_family_representatives));
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        const auto it = cache_by_key.find(cache_key);
+        if (it != cache_by_key.end()) {
+            const auto& cached = it->second;
+            te_names_ = cached->te_names;
+            te_sequences_ = cached->te_sequences;
+            te_reverse_complement_sequences_ = cached->te_reverse_complement_sequences;
+            indices_ = cached->indices;
+            primary_index_ = cached->primary_index;
+            alignment_shortlist_db_ = cached->alignment_shortlist_db;
+            template_seed_db_ = cached->template_seed_db;
+            family_alignment_index_ = cached->family_alignment_index;
+            family_rep_groups_ = cached->family_rep_groups;
+            return;
+        }
     }
 
     auto te_names = std::make_shared<std::vector<std::string>>();
@@ -723,7 +821,6 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
         te_reverse_complement_sequences->push_back(e.reverse_complement_sequence);
     }
 
-    const auto ks = parse_kmer_sizes_csv(config_.te_kmer_sizes_csv, config_.te_kmer_size);
     std::vector<std::shared_ptr<const Index>> indices;
     for (int32_t k : ks) {
         auto idx = std::make_shared<Index>(k);
@@ -744,6 +841,18 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
     if (shortlist_db->build_from_entries(entries)) {
         alignment_shortlist_db = std::move(shortlist_db);
     }
+    auto template_seed_db = std::make_shared<TemplateSeedDb>(
+        std::max(7, std::min(31, config_.te_kmer_size)));
+    std::shared_ptr<const TemplateSeedDb> cached_template_seed_db;
+    if (template_seed_db->build_from_entries(entries)) {
+        cached_template_seed_db = std::move(template_seed_db);
+    }
+    const TeFamilyCacheBundle family_cache = build_te_family_cache(
+        *te_names,
+        *te_sequences,
+        *te_reverse_complement_sequences,
+        config_.te_family_representatives,
+        config_.te_kmer_size);
 
     auto best_primary = indices.front();
     for (const auto& idx : indices) {
@@ -759,6 +868,9 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
     cached->indices = indices;
     cached->primary_index = std::move(best_primary);
     cached->alignment_shortlist_db = std::move(alignment_shortlist_db);
+    cached->template_seed_db = std::move(cached_template_seed_db);
+    cached->family_alignment_index = family_cache.alignment_index;
+    cached->family_rep_groups = family_cache.rep_groups;
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache_by_key[cache_key] = cached;
@@ -770,6 +882,9 @@ TEKmerQuickClassifierModule::TEKmerQuickClassifierModule(PipelineConfig config)
     indices_ = cached->indices;
     primary_index_ = cached->primary_index;
     alignment_shortlist_db_ = cached->alignment_shortlist_db;
+    template_seed_db_ = cached->template_seed_db;
+    family_alignment_index_ = cached->family_alignment_index;
+    family_rep_groups_ = cached->family_rep_groups;
 }
 
 bool TEKmerQuickClassifierModule::is_enabled() const {
@@ -1018,13 +1133,15 @@ std::vector<FragmentTEHit> TEKmerQuickClassifierModule::classify(
 TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
     const std::string& raw_insert_seq) const {
     TEAlignmentEvidence evidence;
-    if (!is_enabled() || !alignment_shortlist_db_) {
+    last_exact_alignments_ = 0;
+    if (!family_alignment_index_ || !te_names_ || !te_sequences_ || !te_reverse_complement_sequences_) {
         evidence.qc_reason = "TE_LIBRARY_UNAVAILABLE";
         return evidence;
     }
     const auto& te_names = *te_names_;
     const auto& te_sequences = *te_sequences_;
     const auto& te_reverse_complement_sequences = *te_reverse_complement_sequences_;
+    const auto& family_index = *family_alignment_index_;
 
     const std::string insert_seq = upper_acgt(raw_insert_seq);
     if (insert_seq.empty()) {
@@ -1036,248 +1153,337 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         return evidence;
     }
 
-    std::unordered_set<uint64_t> query_kmers;
-    query_kmers.reserve(insert_seq.size());
-    for_each_valid_kmer(insert_seq, alignment_shortlist_db_->k, [&](int32_t /*start*/, uint64_t key) {
-        query_kmers.insert(key);
-    });
-    if (query_kmers.empty()) {
+    const auto family_scores = score_family_prefilter(
+        family_index,
+        insert_seq,
+        config_.te_kmer_size,
+        config_.te_family_topn);
+    if (family_scores.empty()) {
         evidence.qc_reason = "NO_TE_ALIGNMENT_SHORTLIST";
         return evidence;
     }
 
-    std::unordered_map<int32_t, int32_t> shared_counts;
-    shared_counts.reserve(query_kmers.size());
-    for (uint64_t key : query_kmers) {
-        const auto it = alignment_shortlist_db_->kmer_to_te_ids.find(key);
-        if (it == alignment_shortlist_db_->kmer_to_te_ids.end()) {
-            continue;
-        }
-        for (int32_t te_id : it->second) {
-            auto shared_it = shared_counts.find(te_id);
-            if (shared_it == shared_counts.end()) {
-                shared_counts.emplace(te_id, 1);
-            } else {
-                shared_it->second += 1;
-            }
-        }
-    }
-    std::vector<std::pair<int32_t, double>> ranked;
-    ranked.reserve(shared_counts.size());
-    const double query_kmer_count = static_cast<double>(query_kmers.size());
-    for (const auto& kv : shared_counts) {
-        ranked.push_back({
-            kv.first,
-            static_cast<double>(kv.second) / query_kmer_count,
-        });
-    }
-    std::sort(ranked.begin(), ranked.end(), [](const auto& lhs, const auto& rhs) {
-        if (lhs.second != rhs.second) {
-            return lhs.second > rhs.second;
-        }
-        return lhs.first < rhs.first;
-    });
-    std::vector<std::pair<int32_t, double>> shortlisted;
-    shortlisted.reserve(std::min<int32_t>(
-        kInsertSequenceShortlistTopN,
-        static_cast<int32_t>(ranked.size())));
-    std::unordered_map<std::string, int32_t> per_family_counts;
-    for (const auto& row : ranked) {
-        if (row.first < 0 || row.first >= static_cast<int32_t>(te_names.size())) {
-            continue;
-        }
-        const TeNameParts parts = parse_te_name_parts(
-            te_names[static_cast<size_t>(row.first)]);
-        int32_t& count = per_family_counts[parts.family_key];
-        if (count >= 2) {
-            continue;
-        }
-        shortlisted.push_back(row);
-        count += 1;
-        if (static_cast<int32_t>(shortlisted.size()) >= kInsertSequenceShortlistTopN) {
-            break;
-        }
-    }
-    std::unordered_set<std::string> represented_families;
-    represented_families.reserve(shortlisted.size());
-    for (const auto& row : shortlisted) {
-        if (row.first < 0 || row.first >= static_cast<int32_t>(te_names.size())) {
-            continue;
-        }
-        const TeNameParts parts = parse_te_name_parts(
-            te_names[static_cast<size_t>(row.first)]);
-        represented_families.insert(parts.family_key);
-    }
-    if (static_cast<int32_t>(shortlisted.size()) < kInsertSequenceShortlistTopN) {
-        for (int32_t te_id = 0; te_id < static_cast<int32_t>(te_names.size()); ++te_id) {
-            const TeNameParts parts = parse_te_name_parts(
-                te_names[static_cast<size_t>(te_id)]);
-            if (!represented_families.insert(parts.family_key).second) {
-                continue;
-            }
-            shortlisted.push_back({te_id, 0.0});
-            if (static_cast<int32_t>(shortlisted.size()) >= kInsertSequenceShortlistTopN) {
-                break;
-            }
-        }
-    }
-    if (!shortlisted.empty()) {
-        ranked.swap(shortlisted);
-    }
-    if (ranked.empty()) {
-        evidence.qc_reason = "NO_TE_ALIGNMENT_SHORTLIST";
-        return evidence;
-    }
-
-    struct BestAlignmentHit {
-        std::string te_name;
+    struct FamilyCandidate {
+        int32_t group_index = -1;
+        int32_t representative_index = -1;
+        bool reverse = false;
         TeNameParts name_parts;
         LocalAlignmentSummary alignment;
-        double shortlist_support = 0.0;
-        double family_score = 0.0;
+        double prefilter_score = 0.0;
+        double total_score = 0.0;
     };
-    struct FamilyBestHit {
-        BestAlignmentHit best_alignment_hit;
-        BestAlignmentHit best_family_score_hit;
-        bool have_alignment_hit = false;
-        bool have_family_score_hit = false;
-    };
-    auto better_alignment_hit = [](const BestAlignmentHit& lhs, const BestAlignmentHit& rhs) {
+    std::vector<FamilyCandidate> family_candidates;
+    family_candidates.reserve(family_scores.size());
+
+    for (const auto& family_score : family_scores) {
+        if (family_score.group_index < 0 ||
+            family_score.group_index >= static_cast<int32_t>(family_index.groups.size())) {
+            continue;
+        }
+        const auto& group = family_index.groups[static_cast<size_t>(family_score.group_index)];
+        if (family_score.representative_index < 0 ||
+            family_score.representative_index >=
+                static_cast<int32_t>(group.representatives.size())) {
+            continue;
+        }
+        const auto& rep = group.representatives[
+            static_cast<size_t>(family_score.representative_index)];
+
+        FamilyCandidate candidate;
+        candidate.group_index = family_score.group_index;
+        candidate.representative_index = family_score.representative_index;
+        candidate.reverse = family_score.reverse;
+        candidate.prefilter_score = family_score.family_prefilter_score;
+        candidate.name_parts.family = group.family;
+        candidate.name_parts.family_key = group.family_key;
+        candidate.name_parts.exact_name = rep.exact_name;
+        candidate.name_parts.subfamily = rep.exact_name;
+        candidate.alignment.identity = family_score.chained_query_coverage;
+        candidate.alignment.query_coverage = family_score.chained_query_coverage;
+        candidate.alignment.score = family_score.best_rep_chain_norm;
+        candidate.total_score = family_score.family_prefilter_score;
+        family_candidates.push_back(std::move(candidate));
+    }
+
+    if (family_candidates.empty()) {
+        evidence.qc_reason = "NO_TE_ALIGNMENT_MATCH";
+        return evidence;
+    }
+
+    std::sort(family_candidates.begin(), family_candidates.end(), [](const FamilyCandidate& lhs, const FamilyCandidate& rhs) {
+        if (lhs.total_score != rhs.total_score) {
+            return lhs.total_score > rhs.total_score;
+        }
         if (lhs.alignment.score != rhs.alignment.score) {
             return lhs.alignment.score > rhs.alignment.score;
         }
-        if (lhs.alignment.identity != rhs.alignment.identity) {
-            return lhs.alignment.identity > rhs.alignment.identity;
-        }
-        if (lhs.alignment.query_coverage != rhs.alignment.query_coverage) {
-            return lhs.alignment.query_coverage > rhs.alignment.query_coverage;
-        }
-        if (lhs.shortlist_support != rhs.shortlist_support) {
-            return lhs.shortlist_support > rhs.shortlist_support;
-        }
-        return lhs.te_name < rhs.te_name;
-    };
-    auto better_family_score_hit = [&](const BestAlignmentHit& lhs, const BestAlignmentHit& rhs) {
-        if (lhs.family_score != rhs.family_score) {
-            return lhs.family_score > rhs.family_score;
-        }
-        return better_alignment_hit(lhs, rhs);
+        return lhs.name_parts.family < rhs.name_parts.family;
+    });
+
+    const int32_t band_kmer_size = std::max(7, std::min(31, config_.te_kmer_size));
+    const bool use_cached_template_seeds =
+        template_seed_db_ &&
+        template_seed_db_->k == band_kmer_size &&
+        static_cast<int32_t>(insert_seq.size()) >= band_kmer_size;
+    KmerPositionMap insert_kmer_positions;
+    if (use_cached_template_seeds) {
+        insert_kmer_positions.reserve(insert_seq.size());
+        populate_kmer_positions(insert_seq, band_kmer_size, insert_kmer_positions);
+    }
+
+    struct TemplateCandidate {
+        int32_t te_id = -1;
+        TeNameParts name_parts;
+        LocalAlignmentSummary alignment;
+        bool reverse = false;
+        int32_t band_center = 0;
+        int32_t band_width = 32;
+        bool exact_used = false;
+        double approx_score = 0.0;
+        double refine_score = 0.0;
     };
 
-    std::unordered_map<std::string, FamilyBestHit> family_best_hits;
-    family_best_hits.reserve(ranked.size());
+    const auto better_template_band = [](const TemplateBandEstimate& lhs, const TemplateBandEstimate& rhs) {
+        if (lhs.seed_score != rhs.seed_score) {
+            return lhs.seed_score > rhs.seed_score;
+        }
+        if (lhs.query_coverage != rhs.query_coverage) {
+            return lhs.query_coverage > rhs.query_coverage;
+        }
+        return lhs.band_width < rhs.band_width;
+    };
 
-    for (const auto& row : ranked) {
-        const int32_t te_id = row.first;
-        if (te_id < 0 || te_id >= static_cast<int32_t>(te_sequences.size()) ||
-            te_id >= static_cast<int32_t>(te_reverse_complement_sequences.size()) ||
-            te_id >= static_cast<int32_t>(te_names.size())) {
+    const auto sort_template_candidates = [](std::vector<TemplateCandidate>& candidates) {
+        std::sort(candidates.begin(), candidates.end(), [](const TemplateCandidate& lhs, const TemplateCandidate& rhs) {
+            if (lhs.refine_score != rhs.refine_score) {
+                return lhs.refine_score > rhs.refine_score;
+            }
+            if (lhs.alignment.identity != rhs.alignment.identity) {
+                return lhs.alignment.identity > rhs.alignment.identity;
+            }
+            return lhs.name_parts.exact_name < rhs.name_parts.exact_name;
+        });
+    };
+
+    struct RefinedFamilyCandidate {
+        int32_t group_index = -1;
+        double shortlist_score = 0.0;
+        std::vector<TemplateCandidate> template_candidates;
+    };
+
+    const int32_t refine_family_topn = std::max(1, config_.te_template_refine_topn);
+    std::vector<RefinedFamilyCandidate> refined_families;
+    refined_families.reserve(std::min(
+        static_cast<int32_t>(family_candidates.size()),
+        refine_family_topn));
+    for (int32_t family_rank = 0;
+         family_rank < static_cast<int32_t>(family_candidates.size()) &&
+         family_rank < refine_family_topn;
+         ++family_rank) {
+        const auto& family_candidate = family_candidates[static_cast<size_t>(family_rank)];
+        const auto& group = family_index.groups[
+            static_cast<size_t>(family_candidate.group_index)];
+
+        RefinedFamilyCandidate refined_family;
+        refined_family.group_index = family_candidate.group_index;
+        refined_family.shortlist_score = family_candidate.total_score;
+        refined_family.template_candidates.reserve(group.member_te_ids.size());
+        for (int32_t te_id : group.member_te_ids) {
+            if (te_id < 0 || te_id >= static_cast<int32_t>(te_sequences.size()) ||
+                te_id >= static_cast<int32_t>(te_reverse_complement_sequences.size()) ||
+                te_id >= static_cast<int32_t>(te_names.size())) {
+                continue;
+            }
+            TemplateBandEstimate forward;
+            TemplateBandEstimate reverse;
+            if (use_cached_template_seeds &&
+                te_id < static_cast<int32_t>(template_seed_db_->forward_positions.size()) &&
+                te_id < static_cast<int32_t>(template_seed_db_->reverse_positions.size())) {
+                forward = estimate_template_band_from_positions(
+                    insert_kmer_positions,
+                    static_cast<int32_t>(insert_seq.size()),
+                    template_seed_db_->forward_positions[static_cast<size_t>(te_id)],
+                    static_cast<int32_t>(te_sequences[static_cast<size_t>(te_id)].size()),
+                    band_kmer_size);
+                reverse = estimate_template_band_from_positions(
+                    insert_kmer_positions,
+                    static_cast<int32_t>(insert_seq.size()),
+                    template_seed_db_->reverse_positions[static_cast<size_t>(te_id)],
+                    static_cast<int32_t>(
+                        te_reverse_complement_sequences[static_cast<size_t>(te_id)].size()),
+                    band_kmer_size);
+            } else {
+                forward = estimate_template_band(
+                    insert_seq,
+                    te_sequences[static_cast<size_t>(te_id)],
+                    band_kmer_size);
+                reverse = estimate_template_band(
+                    insert_seq,
+                    te_reverse_complement_sequences[static_cast<size_t>(te_id)],
+                    band_kmer_size);
+            }
+            const bool use_reverse = better_template_band(reverse, forward);
+            const TemplateBandEstimate band = use_reverse ? reverse : forward;
+            if (band.seed_score <= 0.0 && band.query_coverage <= 0.0) {
+                continue;
+            }
+
+            TemplateCandidate candidate;
+            candidate.te_id = te_id;
+            candidate.name_parts = parse_te_name_parts(te_names[static_cast<size_t>(te_id)]);
+            candidate.alignment.identity = band.query_coverage;
+            candidate.alignment.query_coverage = band.query_coverage;
+            candidate.alignment.score = band.seed_score;
+            candidate.reverse = use_reverse;
+            candidate.band_center = band.band_center;
+            candidate.band_width = band.band_width;
+            candidate.approx_score = band.seed_score;
+            candidate.refine_score = band.seed_score;
+            refined_family.template_candidates.push_back(std::move(candidate));
+        }
+        if (refined_family.template_candidates.empty()) {
             continue;
         }
+        sort_template_candidates(refined_family.template_candidates);
+        refined_families.push_back(std::move(refined_family));
+    }
 
-        const std::string& te_seq = te_sequences[static_cast<size_t>(te_id)];
-        const std::string& te_seq_rc =
-            te_reverse_complement_sequences[static_cast<size_t>(te_id)];
-        if (te_seq.empty()) {
-            continue;
+    if (refined_families.empty()) {
+        evidence.qc_reason = "NO_TE_ALIGNMENT_MATCH";
+        return evidence;
+    }
+
+    struct ExactWorkItem {
+        size_t family_index = 0;
+        size_t template_index = 0;
+        double approx_score = 0.0;
+        double shortlist_score = 0.0;
+    };
+
+    std::vector<ExactWorkItem> exact_work;
+    for (size_t family_index = 0; family_index < refined_families.size(); ++family_index) {
+        const auto& refined_family = refined_families[family_index];
+        for (size_t template_index = 0;
+             template_index < refined_family.template_candidates.size();
+             ++template_index) {
+            const auto& candidate = refined_family.template_candidates[template_index];
+            exact_work.push_back({
+                family_index,
+                template_index,
+                candidate.approx_score,
+                refined_family.shortlist_score,
+            });
         }
+    }
 
-        const LocalAlignmentSummary forward = local_alignment_summary(insert_seq, te_seq);
-        const LocalAlignmentSummary reverse = local_alignment_summary(
+    std::sort(exact_work.begin(), exact_work.end(), [](const ExactWorkItem& lhs, const ExactWorkItem& rhs) {
+        if (lhs.approx_score != rhs.approx_score) {
+            return lhs.approx_score > rhs.approx_score;
+        }
+        return lhs.shortlist_score > rhs.shortlist_score;
+    });
+
+    const int32_t exact_limit = std::max(1, config_.te_exact_align_topn);
+    for (int32_t i = 0;
+         i < static_cast<int32_t>(exact_work.size()) && i < exact_limit;
+         ++i) {
+        const ExactWorkItem& work = exact_work[static_cast<size_t>(i)];
+        auto& candidate =
+            refined_families[work.family_index].template_candidates[work.template_index];
+        const std::string& target_seq = candidate.reverse
+            ? te_reverse_complement_sequences[static_cast<size_t>(candidate.te_id)]
+            : te_sequences[static_cast<size_t>(candidate.te_id)];
+        const ExactAlignmentSummary exact = banded_semiglobal_affine_align(
             insert_seq,
-            te_seq_rc);
-        const LocalAlignmentSummary alignment = better_local_alignment_summary(reverse, forward)
-            ? reverse
-            : forward;
-        if (alignment.score <= 0.0) {
-            continue;
-        }
-
-        const TeNameParts name_parts = parse_te_name_parts(
-            te_names[static_cast<size_t>(te_id)]);
-
-        BestAlignmentHit hit;
-        hit.name_parts = name_parts;
-        hit.te_name = name_parts.exact_name;
-        hit.alignment = alignment;
-        hit.shortlist_support = row.second;
-        // Base-level alignment remains primary; shortlist support only nudges
-        // family competition when multiple templates align similarly well.
-        hit.family_score =
-            alignment.score *
-            (1.0 + (kInsertSequenceShortlistSupportWeight * hit.shortlist_support));
-
-        auto& family_best = family_best_hits[name_parts.family_key];
-        if (!family_best.have_alignment_hit ||
-            better_alignment_hit(hit, family_best.best_alignment_hit)) {
-            family_best.best_alignment_hit = hit;
-            family_best.have_alignment_hit = true;
-        }
-        if (!family_best.have_family_score_hit ||
-            better_family_score_hit(hit, family_best.best_family_score_hit)) {
-            family_best.best_family_score_hit = hit;
-            family_best.have_family_score_hit = true;
+            target_seq,
+            candidate.band_center,
+            candidate.band_width);
+        candidate.exact_used = true;
+        ++last_exact_alignments_;
+        if (exact.score > 0.0) {
+            candidate.alignment.identity = exact.identity;
+            candidate.alignment.query_coverage = exact.query_coverage;
+            candidate.alignment.score = exact.score;
+            candidate.refine_score = exact.score;
         }
     }
 
-    if (family_best_hits.empty()) {
-        evidence.qc_reason = "NO_TE_ALIGNMENT_MATCH";
-        return evidence;
+    for (auto& refined_family : refined_families) {
+        sort_template_candidates(refined_family.template_candidates);
     }
 
-    const FamilyBestHit* best_family = nullptr;
-    std::string best_family_key;
-    for (const auto& kv : family_best_hits) {
-        if (!kv.second.have_alignment_hit || !kv.second.have_family_score_hit) {
-            continue;
+    std::sort(refined_families.begin(), refined_families.end(), [](const RefinedFamilyCandidate& lhs, const RefinedFamilyCandidate& rhs) {
+        const TemplateCandidate& lhs_best = lhs.template_candidates.front();
+        const TemplateCandidate& rhs_best = rhs.template_candidates.front();
+        if (lhs_best.refine_score != rhs_best.refine_score) {
+            return lhs_best.refine_score > rhs_best.refine_score;
         }
-        if (!best_family ||
-            better_family_score_hit(
-                kv.second.best_family_score_hit,
-                best_family->best_family_score_hit)) {
-            best_family = &kv.second;
-            best_family_key = kv.first;
+        if (lhs.shortlist_score != rhs.shortlist_score) {
+            return lhs.shortlist_score > rhs.shortlist_score;
         }
-    }
-    if (!best_family) {
-        evidence.qc_reason = "NO_TE_ALIGNMENT_MATCH";
-        return evidence;
+        return lhs_best.name_parts.family < rhs_best.name_parts.family;
+    });
+
+    std::vector<TemplateCandidate>& template_candidates =
+        refined_families.front().template_candidates;
+    const TemplateCandidate& best_template = template_candidates.front();
+    evidence.best_family = best_template.name_parts.family;
+    evidence.second_family = "NA";
+    evidence.second_score = 0.0;
+    if (refined_families.size() >= 2) {
+        evidence.second_family =
+            refined_families[1].template_candidates.front().name_parts.family;
+        evidence.second_score =
+            refined_families[1].template_candidates.front().refine_score;
+    } else if (family_candidates.size() >= 2) {
+        evidence.second_family = family_candidates[1].name_parts.family;
+        evidence.second_score = family_candidates[1].alignment.score;
     }
 
-    evidence.best_family = best_family->best_alignment_hit.name_parts.family;
-    evidence.best_subfamily = best_family->best_alignment_hit.name_parts.subfamily;
-    evidence.best_identity = best_family->best_alignment_hit.alignment.identity;
-    evidence.best_query_coverage = best_family->best_alignment_hit.alignment.query_coverage;
-    evidence.best_score = best_family->best_family_score_hit.family_score;
+    evidence.best_subfamily = best_template.name_parts.subfamily;
+    evidence.best_identity = best_template.alignment.identity;
+    evidence.best_query_coverage = best_template.alignment.query_coverage;
+    evidence.best_score = best_template.refine_score;
+    const double coarse_prefilter_score = family_candidates.front().prefilter_score;
+    const double coarse_chain_coverage = family_candidates.front().alignment.query_coverage;
+    evidence.coarse_prefilter_score = coarse_prefilter_score;
+    evidence.coarse_chain_coverage = coarse_chain_coverage;
+    evidence.cross_family_margin = std::max(
+        0.0,
+        evidence.best_score - evidence.second_score);
 
-    for (const auto& kv : family_best_hits) {
-        if (kv.first == best_family_key ||
-            !kv.second.have_alignment_hit ||
-            !kv.second.have_family_score_hit) {
-            continue;
-        }
-        const BestAlignmentHit& family_hit = kv.second.best_family_score_hit;
-        if (evidence.second_family == "NA" ||
-            family_hit.family_score > evidence.second_score ||
-            (family_hit.family_score == evidence.second_score &&
-             (evidence.second_family == "NA" ||
-              kv.second.best_alignment_hit.name_parts.family < evidence.second_family))) {
-            evidence.second_family = kv.second.best_alignment_hit.name_parts.family;
-            evidence.second_score = family_hit.family_score;
-        }
-    }
-    evidence.cross_family_margin = std::max(0.0, evidence.best_score - evidence.second_score);
-
-    const bool pass_identity = evidence.best_identity + 1e-9 >= kInsertSequenceMinIdentity;
-    const bool pass_query_coverage =
-        evidence.best_query_coverage + 1e-9 >= kInsertSequenceMinQueryCoverage;
-    const bool pass_cross_family_margin =
-        evidence.cross_family_margin + 1e-9 >= kInsertSequenceMinCrossFamilyMargin;
     const bool supports_unknown_call =
         evidence.best_identity + 1e-9 >= kInsertSequenceUnknownMinIdentity &&
         evidence.best_query_coverage + 1e-9 >= kInsertSequenceUnknownMinQueryCoverage;
+    const bool supports_coarse_unknown_call =
+        coarse_prefilter_score + 1e-9 >= kInsertSequenceUnknownCoarsePrefilterMin &&
+        coarse_chain_coverage + 1e-9 >= kInsertSequenceUnknownCoarseChainCoverageMin &&
+        evidence.best_query_coverage + 1e-9 >= kInsertSequenceUnknownMinQueryCoverage;
+    const bool supports_high_occupancy_unknown_call =
+        evidence.best_identity + 1e-9 >= 0.50 &&
+        evidence.best_query_coverage + 1e-9 >= kInsertSequenceUnknownHighOccupancyMinQueryCoverage &&
+        evidence.cross_family_margin >
+            (std::max(config_.te_family_margin_min, 0.05) + 0.02);
+    if (!supports_unknown_call) {
+        if (supports_coarse_unknown_call || supports_high_occupancy_unknown_call) {
+            evidence.best_family = "UNKNOWN";
+            evidence.best_subfamily = "UNKNOWN";
+            evidence.pass = true;
+            evidence.qc_reason = "PASS_INSERT_TE_ALIGNMENT_UNKNOWN";
+            return evidence;
+        }
+        if (evidence.best_identity + 1e-9 < kInsertSequenceUnknownMinIdentity) {
+            evidence.qc_reason = "TE_ALIGNMENT_LOW_IDENTITY";
+        } else {
+            evidence.qc_reason = "TE_ALIGNMENT_LOW_QUERY_COVERAGE";
+        }
+        return evidence;
+    }
 
-    if ((!pass_identity || !pass_query_coverage) && supports_unknown_call) {
+    const bool family_has_winner =
+        evidence.best_score + 1e-9 >= kInsertSequenceFamilyWinnerScoreMin &&
+        evidence.cross_family_margin > (config_.te_family_margin_min + 1e-4);
+    if (!family_has_winner) {
         evidence.best_family = "UNKNOWN";
         evidence.best_subfamily = "UNKNOWN";
         evidence.pass = true;
@@ -1285,16 +1491,39 @@ TEAlignmentEvidence TEKmerQuickClassifierModule::align_insert_sequence(
         return evidence;
     }
 
-    if (!pass_identity) {
-        evidence.qc_reason = "TE_ALIGNMENT_LOW_IDENTITY";
+    const bool supports_family_only =
+        evidence.best_identity + 1e-9 >= kInsertSequenceFamilyOnlyMinIdentity &&
+        evidence.best_query_coverage + 1e-9 >= kInsertSequenceFamilyOnlyMinQueryCoverage;
+    if (!supports_family_only) {
+        evidence.best_family = "UNKNOWN";
+        evidence.best_subfamily = "UNKNOWN";
+        evidence.pass = true;
+        evidence.qc_reason = "PASS_INSERT_TE_ALIGNMENT_UNKNOWN";
         return evidence;
     }
-    if (!pass_query_coverage) {
-        evidence.qc_reason = "TE_ALIGNMENT_LOW_QUERY_COVERAGE";
-        return evidence;
+
+    double subfamily_margin = 1.0;
+    double second_subfamily_score = 0.0;
+    if (template_candidates.size() >= 2) {
+        second_subfamily_score = template_candidates[1].refine_score;
+        subfamily_margin = std::max(
+            0.0,
+            template_candidates[0].refine_score - template_candidates[1].refine_score);
     }
-    if (!pass_cross_family_margin) {
-        evidence.qc_reason = "TE_ALIGNMENT_CROSS_FAMILY_AMBIGUOUS";
+    const bool exact_template_rescue =
+        evidence.best_identity + 1e-9 >= kInsertSequenceExactTemplateMinIdentity &&
+        evidence.best_query_coverage + 1e-9 >= kInsertSequenceExactTemplateMinQueryCoverage &&
+        (template_candidates.size() < 2 ||
+         second_subfamily_score + 1e-9 <= kInsertSequenceExactTemplateRunnerUpMaxScore);
+    const bool supports_subfamily =
+        ((evidence.best_identity + 1e-9 >= kInsertSequenceResolvedMinIdentity &&
+          evidence.best_query_coverage + 1e-9 >= kInsertSequenceResolvedMinQueryCoverage &&
+          subfamily_margin + 1e-9 >= config_.te_subfamily_margin_min) ||
+         exact_template_rescue);
+    if (!supports_subfamily) {
+        evidence.best_subfamily.clear();
+        evidence.pass = true;
+        evidence.qc_reason = "PASS_INSERT_TE_ALIGNMENT_FAMILY_ONLY";
         return evidence;
     }
 

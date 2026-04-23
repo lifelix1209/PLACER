@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <algorithm>
 #include <cassert>
 #include <string>
@@ -98,11 +101,91 @@ int main() {
 
         const auto selected = pipeline.select_diverse_breakpoint_hypotheses(
             {clip_raw, clip_fragment, distant_clip, precise},
-            3);
+            3,
+            1100);
         assert(selected.size() == 3);
         assert(has_hypothesis_in_window(selected, 1000, 1003, 1020, 1029));
         assert(has_hypothesis(selected, 1300, 1400));
         assert(has_hypothesis(selected, 1100, 1100));
+    }
+
+    {
+        Pipeline::BreakpointHypothesis high_score_1;
+        high_score_1.valid = true;
+        high_score_1.left = 1000;
+        high_score_1.right = 1000;
+        high_score_1.center = 1000;
+        high_score_1.support = 6;
+        high_score_1.priority = 1;
+
+        Pipeline::BreakpointHypothesis high_score_2 = high_score_1;
+        high_score_2.left = 1400;
+        high_score_2.right = 1400;
+        high_score_2.center = 1400;
+        high_score_2.support = 5;
+
+        Pipeline::BreakpointHypothesis high_score_3 = high_score_1;
+        high_score_3.left = 1700;
+        high_score_3.right = 1700;
+        high_score_3.center = 1700;
+        high_score_3.support = 4;
+
+        Pipeline::BreakpointHypothesis anchor_proximal = high_score_1;
+        anchor_proximal.left = 2000;
+        anchor_proximal.right = 2000;
+        anchor_proximal.center = 2000;
+        anchor_proximal.support = 2;
+        anchor_proximal.priority = 4;
+
+        const auto selected = pipeline.select_diverse_breakpoint_hypotheses(
+            {high_score_1, high_score_2, high_score_3, anchor_proximal},
+            3,
+            2000);
+        assert(selected.size() == 3);
+        assert(has_hypothesis(selected, 1000, 1000));
+        assert(has_hypothesis(selected, 1400, 1400));
+        assert(has_hypothesis(selected, 2000, 2000));
+    }
+
+    {
+        Pipeline::BreakpointHypothesis high_score;
+        high_score.valid = true;
+        high_score.left = 16603401;
+        high_score.right = 16603401;
+        high_score.center = 16603401;
+        high_score.support = 4;
+        high_score.priority = 1;
+
+        Pipeline::BreakpointHypothesis distant_clip = high_score;
+        distant_clip.left = 16601833;
+        distant_clip.right = 16602029;
+        distant_clip.center = 16601931;
+        distant_clip.support = 7;
+        distant_clip.priority = 5;
+
+        Pipeline::BreakpointHypothesis broad_truth = high_score;
+        broad_truth.left = 16603406;
+        broad_truth.right = 16603538;
+        broad_truth.center = 16603472;
+        broad_truth.support = 5;
+        broad_truth.priority = 5;
+
+        Pipeline::BreakpointHypothesis weak_anchor_noise = high_score;
+        weak_anchor_noise.left = 16601321;
+        weak_anchor_noise.right = 16601480;
+        weak_anchor_noise.center = 16601400;
+        weak_anchor_noise.support = 4;
+        weak_anchor_noise.priority = 3;
+
+        const auto selected = pipeline.select_diverse_breakpoint_hypotheses(
+            {high_score, distant_clip, broad_truth, weak_anchor_noise},
+            3,
+            16602398);
+        assert(selected.size() == 3);
+        assert(has_hypothesis(selected, 16603401, 16603401));
+        assert(has_hypothesis(selected, 16601833, 16602029));
+        assert(has_hypothesis(selected, 16603406, 16603538));
+        assert(!has_hypothesis(selected, 16601321, 16601480));
     }
 
     ComponentCall component;

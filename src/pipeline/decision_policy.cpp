@@ -98,7 +98,26 @@ double clamp_score(double value, double lo = -3.0, double hi = 3.0) {
     return std::clamp(value, lo, hi);
 }
 
+double joint_event_existence_score(const EventExistenceEvidence& existence) {
+    constexpr int32_t kUnopposedAltMinReads = 3;
+    if (existence.ref_span_reads == 0 &&
+        existence.alt_struct_reads >= kUnopposedAltMinReads) {
+        return std::max(0.0, existence.score);
+    }
+    return existence.score;
+}
+
 double te_resolved_score(const TEAlignmentEvidence& te_alignment) {
+    if (te_alignment.qc_reason == "PASS_INSERT_TE_ALIGNMENT_FAMILY_ONLY") {
+        const double identity_term =
+            0.45 * clamp_score((te_alignment.best_identity - 0.68) / 0.07, -2.0, 2.0);
+        const double coverage_term =
+            0.35 * clamp_score((te_alignment.best_query_coverage - 0.55) / 0.07, -2.0, 2.0);
+        const double margin_term =
+            0.20 * clamp_score((te_alignment.cross_family_margin - 0.05) / 0.03, -2.0, 2.0);
+        return identity_term + coverage_term + margin_term;
+    }
+
     const double identity_term =
         0.4 * clamp_score((te_alignment.best_identity - 0.80) / 0.05, -2.0, 2.0);
     const double coverage_term =
@@ -110,7 +129,32 @@ double te_resolved_score(const TEAlignmentEvidence& te_alignment) {
 
 double te_existence_score(const TEAlignmentEvidence& te_alignment) {
     constexpr double kUnknownIdentityMin = 0.55;
-    constexpr double kUnknownCoverageMin = 0.60;
+    constexpr double kUnknownCoverageMin = 0.45;
+    constexpr double kDivergentUnknownIdentityMin = 0.52;
+    constexpr double kDivergentUnknownCoverageMin = 0.95;
+
+    if (te_alignment.pass &&
+        te_alignment.qc_reason == "PASS_INSERT_TE_ALIGNMENT_UNKNOWN") {
+        const double identity_term =
+            0.10 * clamp_score((te_alignment.best_identity - 0.45) / 0.10, -2.0, 2.0);
+        const double coverage_term =
+            0.40 * clamp_score((te_alignment.best_query_coverage - kUnknownCoverageMin) / 0.10, -2.0, 2.0);
+        const double margin_term =
+            0.20 * clamp_score((te_alignment.cross_family_margin - 0.05) / 0.05, -2.0, 2.0);
+        const double raw = 0.35 + identity_term + coverage_term + margin_term;
+        return std::max(0.0, raw);
+    }
+
+    if (te_alignment.qc_reason == "TE_ALIGNMENT_LOW_IDENTITY" &&
+        te_alignment.best_identity + 1e-9 >= kDivergentUnknownIdentityMin &&
+        te_alignment.best_query_coverage + 1e-9 >= kDivergentUnknownCoverageMin) {
+        const double identity_term =
+            0.15 * clamp_score((te_alignment.best_identity - kDivergentUnknownIdentityMin) / 0.03, -2.0, 2.0);
+        const double coverage_term =
+            0.35 * clamp_score((te_alignment.best_query_coverage - kDivergentUnknownCoverageMin) / 0.03, 0.0, 2.0);
+        const double raw = 0.45 + identity_term + coverage_term;
+        return std::max(0.0, raw);
+    }
 
     const double identity_term =
         0.25 * clamp_score((te_alignment.best_identity - kUnknownIdentityMin) / 0.10, -2.0, 2.0);
@@ -268,6 +312,7 @@ JointDecisionResult evaluate_joint_hypotheses(
     const TEAlignmentEvidence& te_alignment,
     const BoundaryEvidence& boundary) {
     JointDecisionResult result;
+    const double existence_support = joint_event_existence_score(existence);
     const double te_presence = te_existence_score(te_alignment);
     const double te_resolved = te_resolved_score(te_alignment);
 
@@ -279,14 +324,14 @@ JointDecisionResult evaluate_joint_hypotheses(
     h0.reason = "REFERENCE";
 
     JointHypothesisScore h1 = make_hypothesis(FinalHypothesisKind::kInsertionNonTe);
-    h1.existence = existence.score;
+    h1.existence = existence_support;
     h1.segmentation = 0.7 * segmentation.score;
     h1.te = -1.0 * std::max(te_presence, 0.0);
     h1.total = h1.existence + h1.segmentation + h1.te;
     h1.reason = "NON_TE_INSERTION";
 
     JointHypothesisScore h2 = make_hypothesis(FinalHypothesisKind::kTeUnknown);
-    h2.existence = existence.score;
+    h2.existence = existence_support;
     h2.segmentation = 0.8 * segmentation.score;
     h2.te = 0.6 * te_presence;
     h2.boundary = 0.2 * boundary.score;
@@ -295,7 +340,7 @@ JointDecisionResult evaluate_joint_hypotheses(
     h2.hard_veto = !segmentation.has_insert_seq || te_alignment.qc_reason == "NO_TE_ALIGNMENT";
 
     JointHypothesisScore h3 = make_hypothesis(FinalHypothesisKind::kTeResolved);
-    h3.existence = existence.score;
+    h3.existence = existence_support;
     h3.segmentation = 0.8 * segmentation.score;
     h3.te = te_resolved;
     h3.boundary = 0.2 * boundary.score;
@@ -367,12 +412,24 @@ EventSegmentationEvidence analyze_event_segmentation_for_test(
     evidence.insert_len = static_cast<int32_t>(segmentation.insert_seq.size());
     evidence.qc = segmentation.qc_reason;
 
-    const int32_t min_flank_len = std::min(evidence.left_align_len, evidence.right_align_len);
-    const double min_flank_identity = std::min(evidence.left_identity, evidence.right_identity);
+    int32_t scoring_flank_len = std::min(evidence.left_align_len, evidence.right_align_len);
+    double scoring_flank_identity = std::min(evidence.left_identity, evidence.right_identity);
+    const bool one_sided_pass =
+        evidence.pair_valid &&
+        evidence.has_insert_seq &&
+        (evidence.has_left_flank != evidence.has_right_flank);
+    if (one_sided_pass) {
+        scoring_flank_len =
+            evidence.has_left_flank ? evidence.left_align_len : evidence.right_align_len;
+        scoring_flank_identity =
+            evidence.has_left_flank ? evidence.left_identity : evidence.right_identity;
+    }
     evidence.score =
-        0.5 * clamp_score((static_cast<double>(min_flank_len) - 50.0) / 25.0, -2.0, 2.0) +
-        0.5 * clamp_score((min_flank_identity - 0.90) / 0.05, -2.0, 2.0);
-    if (!evidence.has_left_flank || !evidence.has_right_flank) {
+        0.5 * clamp_score((static_cast<double>(scoring_flank_len) - 50.0) / 25.0, -2.0, 2.0) +
+        0.5 * clamp_score((scoring_flank_identity - 0.90) / 0.05, -2.0, 2.0);
+    if (one_sided_pass) {
+        evidence.score -= 0.5;
+    } else if (!evidence.has_left_flank || !evidence.has_right_flank) {
         evidence.score -= 1.0;
     }
     if (!evidence.pair_valid) {

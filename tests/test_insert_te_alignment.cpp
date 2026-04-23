@@ -1,4 +1,7 @@
 #include <algorithm>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <cstdio>
 #include <fstream>
@@ -83,6 +86,8 @@ placer::TEAlignmentEvidence run_alignment(
     cfg.te_fasta_path = te_fasta;
     cfg.te_kmer_size = 9;
     cfg.te_kmer_sizes_csv = "9,11";
+    cfg.te_family_margin_min = 0.05;
+    cfg.te_subfamily_margin_min = 0.04;
     placer::Pipeline pipeline(cfg, nullptr);
 
     placer::EventSegmentation segmentation;
@@ -142,6 +147,27 @@ int main() {
     }
 
     {
+        const std::string gypsy = build_sequence(180, 1201u);
+        const std::string copia = build_sequence(180, 1601u);
+        const std::string contaminated =
+            build_sequence(22, 901u) + gypsy + build_sequence(18, 903u);
+        write_te_fasta(
+            fasta_path,
+            {
+                {"SubGypsyOccupancy#LTR/Gypsy", gypsy},
+                {"SubCopiaOccupancy#LTR/Copia", copia},
+            });
+
+        const TEAlignmentEvidence evidence = run_alignment(fasta_path, contaminated);
+        assert(evidence.pass);
+        assert(evidence.best_family == "Gypsy");
+        assert(evidence.best_subfamily == "SubGypsyOccupancy");
+        assert(evidence.best_identity >= 0.95);
+        assert(evidence.best_query_coverage > 0.78);
+        assert(evidence.best_query_coverage < 0.95);
+    }
+
+    {
         const std::string gypsy = build_sequence(120, 37u);
         const std::string copia = mutate_positions(
             gypsy,
@@ -154,12 +180,10 @@ int main() {
             });
 
         const TEAlignmentEvidence evidence = run_alignment(fasta_path, gypsy);
-        assert(!evidence.pass);
-        assert(evidence.best_family == "Gypsy");
-        assert(evidence.best_subfamily == "SubGypsyB");
-        assert(evidence.second_family == "Copia");
-        assert(evidence.qc_reason == "TE_ALIGNMENT_CROSS_FAMILY_AMBIGUOUS");
-        assert(evidence.cross_family_margin < 0.10);
+        assert(evidence.pass);
+        assert(evidence.best_family == "UNKNOWN");
+        assert(evidence.best_subfamily == "UNKNOWN");
+        assert(evidence.qc_reason == "PASS_INSERT_TE_ALIGNMENT_UNKNOWN");
     }
 
     {
@@ -186,6 +210,30 @@ int main() {
     }
 
     {
+        const std::string gypsy_a = build_sequence(160, 601u);
+        const std::string gypsy_b = mutate_positions(
+            gypsy_a,
+            {10, 30, 50, 70, 90, 110, 130, 150});
+        const std::string query = mutate_positions(
+            gypsy_a,
+            {10, 50, 90, 130});
+        const std::string copia = build_sequence(160, 907u);
+        write_te_fasta(
+            fasta_path,
+            {
+                {"SubGypsyFamilyOnlyA#LTR/Gypsy", gypsy_a},
+                {"SubGypsyFamilyOnlyB#LTR/Gypsy", gypsy_b},
+                {"SubCopiaFamilyOnly#LTR/Copia", copia},
+            });
+
+        const TEAlignmentEvidence evidence = run_alignment(fasta_path, query);
+        assert(evidence.pass);
+        assert(evidence.best_family == "Gypsy");
+        assert(evidence.best_subfamily.empty());
+        assert(evidence.qc_reason == "PASS_INSERT_TE_ALIGNMENT_FAMILY_ONLY");
+    }
+
+    {
         const std::string deu = build_sequence(160, 509u);
         const std::string dna_like = mutate_positions(
             deu,
@@ -203,7 +251,7 @@ int main() {
         assert(evidence.best_family == "5S-Deu-L2");
         assert(evidence.best_subfamily == "5S-Deu-L2-3");
         assert(evidence.second_family == "DNA");
-        assert(evidence.cross_family_margin >= 0.09);
+        assert(evidence.cross_family_margin > 0.05);
     }
 
     {

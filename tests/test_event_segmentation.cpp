@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <cstdio>
 #include <fstream>
@@ -169,6 +172,52 @@ int main() {
         assert(segmentation.left_ref_end == 300);
         assert(segmentation.right_ref_start == 300);
         assert(segmentation.right_ref_end >= 370);
+    }
+
+    {
+        const std::string reference = build_reference(760);
+        write_fasta(fasta_path, reference);
+
+        const int32_t bp = 300;
+        const std::string left = reference.substr(230, 70);
+        const std::string insert = "TTAACCGGTTAACCGGTTCCAATTAACCGGTT";
+        const EventSegmentation segmentation = run_segmentation(
+            fasta_path,
+            left + insert,
+            bp,
+            bp);
+        assert(segmentation.pass);
+        assert(segmentation.qc_reason == "PASS_EVENT_SEGMENTATION_ONE_SIDED_LEFT");
+        assert(segmentation.left_flank_seq == left);
+        assert(segmentation.insert_seq == insert);
+        assert(segmentation.left_ref_start == 230);
+        assert(segmentation.left_ref_end == 300);
+        assert(segmentation.right_flank_align_len == 0);
+        assert(segmentation.right_ref_start == 300);
+        assert(segmentation.right_ref_end == 300);
+    }
+
+    {
+        const std::string reference = build_reference(760);
+        write_fasta(fasta_path, reference);
+
+        const int32_t bp = 300;
+        const std::string insert = "CCAATTAACCGGTTAACCGGTTCCAATTAA";
+        const std::string right = reference.substr(300, 70);
+        const EventSegmentation segmentation = run_segmentation(
+            fasta_path,
+            insert + right,
+            bp,
+            bp);
+        assert(segmentation.pass);
+        assert(segmentation.qc_reason == "PASS_EVENT_SEGMENTATION_ONE_SIDED_RIGHT");
+        assert(segmentation.insert_seq == insert);
+        assert(segmentation.right_flank_seq == right);
+        assert(segmentation.left_flank_align_len == 0);
+        assert(segmentation.left_ref_start == 300);
+        assert(segmentation.left_ref_end == 300);
+        assert(segmentation.right_ref_start == 300);
+        assert(segmentation.right_ref_end == 370);
     }
 
     {

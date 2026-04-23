@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -176,6 +179,9 @@ int main() {
             make_span(0, 50, 150),
             make_span(0, 40, 240),
         };
+        const auto signal_cache = pipeline.build_component_signal_cache(
+            local_records,
+            read_spans);
 
         ComponentCall component;
         component.chrom = "chr1";
@@ -189,8 +195,7 @@ int main() {
 
         const auto summary = pipeline.build_hypothesis_summary(
             component,
-            local_records,
-            read_spans,
+            signal_cache,
             {},
             0,
             100,
@@ -397,6 +402,43 @@ int main() {
         assert(shortlist[0].validator.summary.original_index == 0);
         assert(!shortlist[1].is_primary);
         assert(shortlist[1].validator.summary.original_index == 2);
+    }
+
+    {
+        Pipeline::HypothesisValidatorEvidence primary;
+        primary.summary.original_index = 0;
+        primary.summary.bp_left = 1000;
+        primary.summary.bp_right = 1000;
+        primary.summary.support_qnames = {"a1", "a2", "a3", "a4"};
+        primary.precise_support = 4;
+        primary.full_context_input_reads = 2;
+        primary.left_anchor_input_reads = 3;
+        primary.right_anchor_input_reads = 3;
+        primary.feasible_for_expensive_stage = true;
+
+        Pipeline::HypothesisValidatorEvidence first_challenger = primary;
+        first_challenger.summary.original_index = 1;
+        first_challenger.summary.bp_left = 1400;
+        first_challenger.summary.bp_right = 1400;
+        first_challenger.summary.support_qnames = {"b1", "b2"};
+        first_challenger.precise_support = 2;
+
+        Pipeline::HypothesisValidatorEvidence second_challenger = primary;
+        second_challenger.summary.original_index = 2;
+        second_challenger.summary.bp_left = 2000;
+        second_challenger.summary.bp_right = 2000;
+        second_challenger.summary.support_qnames = {"c1", "c2"};
+        second_challenger.precise_support = 1;
+
+        const auto shortlist = pipeline.build_expensive_stage_shortlist(
+            {primary, first_challenger, second_challenger});
+        assert(shortlist.size() == 3);
+        assert(shortlist[0].is_primary);
+        assert(shortlist[0].validator.summary.original_index == 0);
+        assert(!shortlist[1].is_primary);
+        assert(shortlist[1].validator.summary.original_index == 1);
+        assert(!shortlist[2].is_primary);
+        assert(shortlist[2].validator.summary.original_index == 2);
     }
 
     {

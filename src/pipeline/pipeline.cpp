@@ -30,6 +30,9 @@
 #include <abpoa.h>
 
 namespace placer {
+
+constexpr int32_t kFinalCallDedupDistanceBp = 100;
+
 namespace {
 
 constexpr int32_t kSoftClipSignalMin = 20;
@@ -53,7 +56,6 @@ constexpr int32_t kMinWindowSpan = 120;
 constexpr double kReadAssignMinScore = 0.8;
 constexpr double kReadAmbiguousRatio = 0.75;
 constexpr double kReadAssignDecayBp = 150.0;
-constexpr int32_t kFinalCallDedupDistanceBp = 100;
 constexpr int32_t kLocalEventFetchSlackBp = 1000;
 constexpr int32_t kEventConsensusFlankBp = 80;
 constexpr int32_t kEventConsensusMinAnchorBp = 50;
@@ -2098,6 +2100,56 @@ std::vector<CandidateWindow> build_density_windows(
 
 }  // namespace
 
+std::vector<size_t> select_component_final_call_indices(
+    const std::vector<ComponentFinalCallCandidate>& candidates) {
+    std::vector<size_t> order;
+    order.reserve(candidates.size());
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        if (candidates[i].emit_te) {
+            order.push_back(i);
+        }
+    }
+    if (order.empty()) {
+        return {};
+    }
+
+    std::sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
+        if (candidates[lhs].pos != candidates[rhs].pos) {
+            return candidates[lhs].pos < candidates[rhs].pos;
+        }
+        return lhs < rhs;
+    });
+
+    std::vector<size_t> selected;
+    selected.reserve(order.size());
+    size_t cluster_start = 0;
+    while (cluster_start < order.size()) {
+        const int32_t anchor_pos = candidates[order[cluster_start]].pos;
+        size_t best = order[cluster_start];
+        size_t cluster_end = cluster_start;
+        while (cluster_end < order.size() &&
+               std::abs(candidates[order[cluster_end]].pos - anchor_pos) <=
+                   kFinalCallDedupDistanceBp) {
+            const size_t idx = order[cluster_end];
+            if (candidates[idx].score > candidates[best].score ||
+                (candidates[idx].score == candidates[best].score && idx < best)) {
+                best = idx;
+            }
+            ++cluster_end;
+        }
+        selected.push_back(best);
+        cluster_start = cluster_end;
+    }
+
+    std::sort(selected.begin(), selected.end(), [&](size_t lhs, size_t rhs) {
+        if (candidates[lhs].pos != candidates[rhs].pos) {
+            return candidates[lhs].pos < candidates[rhs].pos;
+        }
+        return lhs < rhs;
+    });
+    return selected;
+}
+
 std::vector<Pipeline::BreakpointHypothesis> Pipeline::enumerate_breakpoint_hypotheses(
     const ComponentCall& component,
     const std::vector<const bam1_t*>& local_records,
@@ -2124,27 +2176,43 @@ std::vector<Pipeline::BreakpointHypothesis> Pipeline::enumerate_breakpoint_hypot
         hypothesis.priority = local.priority;
         hypotheses.push_back(hypothesis);
     }
-    return select_diverse_breakpoint_hypotheses(hypotheses, top_k);
+    return select_diverse_breakpoint_hypotheses(hypotheses, top_k, component.anchor_pos);
 }
 
 std::vector<Pipeline::BreakpointHypothesis> Pipeline::select_diverse_breakpoint_hypotheses(
     const std::vector<BreakpointHypothesis>& hypotheses,
-    size_t top_k) const {
+    size_t top_k,
+    int32_t anchor_pos) const {
     constexpr int32_t kBreakpointDiversitySlackBp = 30;
+    constexpr int32_t kAnchorProximalSlackBp = 100;
+    constexpr int32_t kAnchorProximalMinScore = 8;
     if (top_k == 0 || hypotheses.size() <= top_k) {
         return hypotheses;
     }
+
+    const auto same_locus = [](const BreakpointHypothesis& lhs, const BreakpointHypothesis& rhs) {
+        return std::abs(lhs.left - rhs.left) <= kBreakpointDiversitySlackBp &&
+            std::abs(lhs.right - rhs.right) <= kBreakpointDiversitySlackBp;
+    };
+    const auto hypothesis_score = [](const BreakpointHypothesis& hypothesis) {
+        return hypothesis.support * breakpoint_hypothesis_support_weight(hypothesis.priority);
+    };
+    const auto selected_contains = [&](const std::vector<BreakpointHypothesis>& selected,
+                                       const BreakpointHypothesis& hypothesis) {
+        return std::any_of(
+            selected.begin(),
+            selected.end(),
+            [&](const auto& incumbent) {
+                return incumbent.left == hypothesis.left && incumbent.right == hypothesis.right;
+            });
+    };
 
     std::vector<BreakpointHypothesis> selected;
     selected.reserve(std::min(top_k, hypotheses.size()));
     for (const auto& hypothesis : hypotheses) {
         bool redundant = false;
         for (const auto& incumbent : selected) {
-            const bool close_left =
-                std::abs(hypothesis.left - incumbent.left) <= kBreakpointDiversitySlackBp;
-            const bool close_right =
-                std::abs(hypothesis.right - incumbent.right) <= kBreakpointDiversitySlackBp;
-            if (close_left && close_right) {
+            if (same_locus(hypothesis, incumbent)) {
                 redundant = true;
                 break;
             }
@@ -2156,6 +2224,72 @@ std::vector<Pipeline::BreakpointHypothesis> Pipeline::select_diverse_breakpoint_
         if (selected.size() >= top_k) {
             break;
         }
+    }
+
+    const bool has_anchor_proximal = std::any_of(
+        selected.begin(),
+        selected.end(),
+        [&](const auto& hypothesis) {
+            return std::abs(hypothesis.center - anchor_pos) <= kAnchorProximalSlackBp;
+        });
+    if (has_anchor_proximal) {
+        return selected;
+    }
+
+    const BreakpointHypothesis* best_anchor_candidate = nullptr;
+    for (const auto& hypothesis : hypotheses) {
+        if (selected_contains(selected, hypothesis)) {
+            continue;
+        }
+        if (hypothesis_score(hypothesis) < kAnchorProximalMinScore) {
+            continue;
+        }
+        if (best_anchor_candidate == nullptr) {
+            best_anchor_candidate = &hypothesis;
+            continue;
+        }
+        const int32_t dist = std::abs(hypothesis.center - anchor_pos);
+        const int32_t best_dist = std::abs(best_anchor_candidate->center - anchor_pos);
+        if (dist != best_dist) {
+            if (dist < best_dist) {
+                best_anchor_candidate = &hypothesis;
+            }
+            continue;
+        }
+        const int32_t score = hypothesis_score(hypothesis);
+        const int32_t best_score = hypothesis_score(*best_anchor_candidate);
+        if (score != best_score) {
+            if (score > best_score) {
+                best_anchor_candidate = &hypothesis;
+            }
+            continue;
+        }
+        if (hypothesis.support != best_anchor_candidate->support) {
+            if (hypothesis.support > best_anchor_candidate->support) {
+                best_anchor_candidate = &hypothesis;
+            }
+            continue;
+        }
+        if (hypothesis.priority != best_anchor_candidate->priority) {
+            if (hypothesis.priority < best_anchor_candidate->priority) {
+                best_anchor_candidate = &hypothesis;
+            }
+            continue;
+        }
+        if (hypothesis.left < best_anchor_candidate->left ||
+            (hypothesis.left == best_anchor_candidate->left &&
+             hypothesis.right < best_anchor_candidate->right)) {
+            best_anchor_candidate = &hypothesis;
+        }
+    }
+    if (best_anchor_candidate == nullptr) {
+        return selected;
+    }
+
+    if (selected.size() < top_k) {
+        selected.push_back(*best_anchor_candidate);
+    } else if (!selected.empty()) {
+        selected.back() = *best_anchor_candidate;
     }
     return selected;
 }
@@ -3051,6 +3185,7 @@ bool Pipeline::compare_hypothesis_validator_priority(
 
 std::vector<Pipeline::ShortlistedHypothesis> Pipeline::build_expensive_stage_shortlist(
     const std::vector<HypothesisValidatorEvidence>& candidates) const {
+    constexpr size_t kMaxExpensiveStageShortlist = 3;
     std::vector<HypothesisValidatorEvidence> feasible;
     feasible.reserve(candidates.size());
     for (const auto& candidate : candidates) {
@@ -3068,7 +3203,6 @@ std::vector<Pipeline::ShortlistedHypothesis> Pipeline::build_expensive_stage_sho
 
     std::vector<ShortlistedHypothesis> out;
     out.push_back(ShortlistedHypothesis{feasible.front(), true});
-    const auto& primary = feasible.front();
 
     const auto support_jaccard = [](
                                      const std::vector<std::string>& lhs,
@@ -3095,16 +3229,28 @@ std::vector<Pipeline::ShortlistedHypothesis> Pipeline::build_expensive_stage_sho
 
     for (size_t i = 1; i < feasible.size(); ++i) {
         const auto& candidate = feasible[i];
-        const bool spatially_distinct =
-            std::abs(candidate.summary.bp_left - primary.summary.bp_left) > 60 ||
-            std::abs(candidate.summary.bp_right - primary.summary.bp_right) > 60;
-        const bool support_distinct =
-            support_jaccard(candidate.summary.support_qnames, primary.summary.support_qnames) < 0.5;
-        if (!spatially_distinct && !support_distinct) {
+        bool redundant = false;
+        for (const auto& selected : out) {
+            const auto& incumbent = selected.validator;
+            const bool spatially_distinct =
+                std::abs(candidate.summary.bp_left - incumbent.summary.bp_left) > 60 ||
+                std::abs(candidate.summary.bp_right - incumbent.summary.bp_right) > 60;
+            const bool support_distinct =
+                support_jaccard(
+                    candidate.summary.support_qnames,
+                    incumbent.summary.support_qnames) < 0.5;
+            if (!spatially_distinct && !support_distinct) {
+                redundant = true;
+                break;
+            }
+        }
+        if (redundant) {
             continue;
         }
         out.push_back(ShortlistedHypothesis{candidate, false});
-        break;
+        if (out.size() >= kMaxExpensiveStageShortlist) {
+            break;
+        }
     }
     return out;
 }
@@ -3204,20 +3350,19 @@ EventSegmentation Pipeline::segment_event_consensus(
 
     const std::string& consensus = event_consensus.consensus_seq;
     const int32_t consensus_len = static_cast<int32_t>(consensus.size());
-    const int32_t min_total_len =
-        (2 * kEventSegmentationMinFlankAlignBp) + kEventSegmentationMinInsertBp;
-    if (consensus_len < min_total_len) {
+    const int32_t min_one_sided_len =
+        kEventSegmentationMinFlankAlignBp + kEventSegmentationMinInsertBp;
+    if (consensus_len < min_one_sided_len) {
         segmentation.qc_reason = "EVENT_CONSENSUS_TOO_SHORT";
         return segmentation;
     }
 
-    const int32_t max_flank_query_len = std::min(
+    const int32_t paired_max_flank_query_len = std::min(
         kEventSegmentationMaxFlankQueryBp,
         consensus_len - kEventSegmentationMinFlankAlignBp - kEventSegmentationMinInsertBp);
-    if (max_flank_query_len < kEventSegmentationMinFlankAlignBp) {
-        segmentation.qc_reason = "EVENT_CONSENSUS_TOO_SHORT";
-        return segmentation;
-    }
+    const int32_t one_sided_max_flank_query_len = std::min(
+        kEventSegmentationMaxFlankQueryBp,
+        consensus_len - kEventSegmentationMinInsertBp);
 
     const int32_t bp_left = std::min(event_evidence.bp_left, event_evidence.bp_right);
     const int32_t bp_right = std::max(event_evidence.bp_left, event_evidence.bp_right);
@@ -3228,7 +3373,7 @@ EventSegmentation Pipeline::segment_event_consensus(
 
     const int32_t left_window_start = std::max(
         0,
-        bp_left - kEventSegmentationBreakpointSlackBp - max_flank_query_len);
+        bp_left - kEventSegmentationBreakpointSlackBp - one_sided_max_flank_query_len);
     const int32_t left_window_end = std::max(
         left_window_start + 1,
         bp_left + kEventSegmentationBreakpointSlackBp);
@@ -3237,7 +3382,7 @@ EventSegmentation Pipeline::segment_event_consensus(
         bp_right - kEventSegmentationBreakpointSlackBp);
     const int32_t right_window_end = std::max(
         right_window_start + 1,
-        bp_right + kEventSegmentationBreakpointSlackBp + max_flank_query_len);
+        bp_right + kEventSegmentationBreakpointSlackBp + one_sided_max_flank_query_len);
 
     const std::string left_ref_window = tsd_detector_.fetch_window(
         component.chrom,
@@ -3258,9 +3403,10 @@ EventSegmentation Pipeline::segment_event_consensus(
         int32_t breakpoint,
         int32_t ref_window_start,
         const std::string& ref_window,
+        int32_t flank_query_len,
         int32_t query_endpoint_slack) {
         EventFlankSearchResult result;
-        if (ref_window.empty()) {
+        if (ref_window.empty() || flank_query_len < kEventSegmentationMinFlankAlignBp) {
             return result;
         }
 
@@ -3269,7 +3415,7 @@ EventSegmentation Pipeline::segment_event_consensus(
         const int32_t search_lo = std::max(0, breakpoint - kEventSegmentationBreakpointSlackBp);
         const int32_t search_hi = breakpoint + kEventSegmentationBreakpointSlackBp;
         const int32_t query_seed_len = std::min(
-            max_flank_query_len + query_endpoint_slack,
+            flank_query_len + query_endpoint_slack,
             consensus_len);
         const int32_t query_seed_start = is_left ? 0 : (consensus_len - query_seed_len);
         const std::string seed_query = is_left
@@ -3285,7 +3431,7 @@ EventSegmentation Pipeline::segment_event_consensus(
             return result;
         }
 
-        for (int32_t align_len = max_flank_query_len;
+        for (int32_t align_len = flank_query_len;
              align_len >= kEventSegmentationMinFlankAlignBp;
              --align_len) {
             const int32_t max_query_start = consensus_len - align_len;
@@ -3393,6 +3539,7 @@ EventSegmentation Pipeline::segment_event_consensus(
         bp_left,
         left_window_start,
         left_ref_window,
+        paired_max_flank_query_len,
         0);
     if (left_search.candidates.empty() && kEventSegmentationEndpointSlackBp > 0) {
         left_search = collect_candidates(
@@ -3400,11 +3547,8 @@ EventSegmentation Pipeline::segment_event_consensus(
             bp_left,
             left_window_start,
             left_ref_window,
+            paired_max_flank_query_len,
             kEventSegmentationEndpointSlackBp);
-    }
-    if (left_search.candidates.empty()) {
-        segmentation.qc_reason = "NO_LEFT_FLANK_MATCH";
-        return segmentation;
     }
 
     EventFlankSearchResult right_search = collect_candidates(
@@ -3412,6 +3556,7 @@ EventSegmentation Pipeline::segment_event_consensus(
         bp_right,
         right_window_start,
         right_ref_window,
+        paired_max_flank_query_len,
         0);
     if (right_search.candidates.empty() && kEventSegmentationEndpointSlackBp > 0) {
         right_search = collect_candidates(
@@ -3419,9 +3564,150 @@ EventSegmentation Pipeline::segment_event_consensus(
             bp_right,
             right_window_start,
             right_ref_window,
+            paired_max_flank_query_len,
             kEventSegmentationEndpointSlackBp);
     }
+
+    const auto emit_left_sided_segmentation = [&](const EventFlankPlacement& best_left) {
+        const int32_t insert_start = best_left.query_end;
+        const int32_t insert_len = consensus_len - insert_start;
+        if (insert_len < kEventSegmentationMinInsertBp) {
+            segmentation.qc_reason = "EMPTY_EVENT_INSERT_SEGMENT";
+            return;
+        }
+
+        segmentation.left_flank_seq = consensus.substr(
+            static_cast<size_t>(best_left.query_start),
+            static_cast<size_t>(best_left.align_len));
+        segmentation.insert_seq = consensus.substr(
+            static_cast<size_t>(insert_start),
+            static_cast<size_t>(insert_len));
+        segmentation.left_ref_start = best_left.ref_start;
+        segmentation.left_ref_end = best_left.ref_end;
+        segmentation.right_ref_start = bp_right;
+        segmentation.right_ref_end = bp_right;
+        segmentation.left_flank_align_len = best_left.align_len;
+        segmentation.right_flank_align_len = 0;
+        segmentation.left_flank_identity = best_left.identity;
+        segmentation.right_flank_identity = 0.0;
+        segmentation.pass = true;
+        segmentation.qc_reason = "PASS_EVENT_SEGMENTATION_ONE_SIDED_LEFT";
+    };
+
+    const auto emit_right_sided_segmentation = [&](const EventFlankPlacement& best_right) {
+        const int32_t insert_len = best_right.query_start;
+        if (insert_len < kEventSegmentationMinInsertBp) {
+            segmentation.qc_reason = "EMPTY_EVENT_INSERT_SEGMENT";
+            return;
+        }
+
+        segmentation.insert_seq = consensus.substr(
+            0,
+            static_cast<size_t>(insert_len));
+        segmentation.right_flank_seq = consensus.substr(
+            static_cast<size_t>(best_right.query_start),
+            static_cast<size_t>(best_right.align_len));
+        segmentation.left_ref_start = bp_left;
+        segmentation.left_ref_end = bp_left;
+        segmentation.right_ref_start = best_right.ref_start;
+        segmentation.right_ref_end = best_right.ref_end;
+        segmentation.left_flank_align_len = 0;
+        segmentation.right_flank_align_len = best_right.align_len;
+        segmentation.left_flank_identity = 0.0;
+        segmentation.right_flank_identity = best_right.identity;
+        segmentation.pass = true;
+        segmentation.qc_reason = "PASS_EVENT_SEGMENTATION_ONE_SIDED_RIGHT";
+    };
+
+    const auto collect_one_sided_search = [&](bool is_left) {
+        EventFlankSearchResult search = collect_candidates(
+            is_left,
+            is_left ? bp_left : bp_right,
+            is_left ? left_window_start : right_window_start,
+            is_left ? left_ref_window : right_ref_window,
+            one_sided_max_flank_query_len,
+            0);
+        if (search.candidates.empty() && kEventSegmentationEndpointSlackBp > 0) {
+            search = collect_candidates(
+                is_left,
+                is_left ? bp_left : bp_right,
+                is_left ? left_window_start : right_window_start,
+                is_left ? left_ref_window : right_ref_window,
+                one_sided_max_flank_query_len,
+                kEventSegmentationEndpointSlackBp);
+        }
+        return search;
+    };
+
+    const auto better_one_sided = [](
+                                      const EventFlankPlacement& lhs,
+                                      const EventFlankPlacement& rhs) {
+        if (lhs.identity != rhs.identity) {
+            return lhs.identity > rhs.identity;
+        }
+        if (lhs.breakpoint_delta != rhs.breakpoint_delta) {
+            return lhs.breakpoint_delta < rhs.breakpoint_delta;
+        }
+        if (lhs.align_len != rhs.align_len) {
+            return lhs.align_len > rhs.align_len;
+        }
+        if (lhs.endpoint_offset != rhs.endpoint_offset) {
+            return lhs.endpoint_offset < rhs.endpoint_offset;
+        }
+        return lhs.ref_start < rhs.ref_start;
+    };
+
+    const auto emit_best_one_sided = [&](bool allow_left, bool allow_right) {
+        EventFlankSearchResult one_sided_left;
+        EventFlankSearchResult one_sided_right;
+        if (allow_left) {
+            one_sided_left = collect_one_sided_search(true);
+        }
+        if (allow_right) {
+            one_sided_right = collect_one_sided_search(false);
+        }
+
+        const bool have_left = !one_sided_left.candidates.empty();
+        const bool have_right = !one_sided_right.candidates.empty();
+        if (!have_left && !have_right) {
+            return false;
+        }
+        if (have_left && !have_right) {
+            emit_left_sided_segmentation(one_sided_left.candidates.front());
+            return segmentation.pass;
+        }
+        if (!have_left && have_right) {
+            emit_right_sided_segmentation(one_sided_right.candidates.front());
+            return segmentation.pass;
+        }
+        if (better_one_sided(
+                one_sided_left.candidates.front(),
+                one_sided_right.candidates.front())) {
+            emit_left_sided_segmentation(one_sided_left.candidates.front());
+        } else {
+            emit_right_sided_segmentation(one_sided_right.candidates.front());
+        }
+        return segmentation.pass;
+    };
+
+    if (left_search.candidates.empty() && right_search.candidates.empty()) {
+        if (emit_best_one_sided(true, true)) {
+            return segmentation;
+        }
+        segmentation.qc_reason = "NO_LEFT_FLANK_MATCH";
+        return segmentation;
+    }
+    if (left_search.candidates.empty()) {
+        if (emit_best_one_sided(false, true)) {
+            return segmentation;
+        }
+        segmentation.qc_reason = "NO_LEFT_FLANK_MATCH";
+        return segmentation;
+    }
     if (right_search.candidates.empty()) {
+        if (emit_best_one_sided(true, false)) {
+            return segmentation;
+        }
         segmentation.qc_reason = "NO_RIGHT_FLANK_MATCH";
         return segmentation;
     }
@@ -3480,6 +3766,9 @@ EventSegmentation Pipeline::segment_event_consensus(
     }
 
     if (!have_pair) {
+        if (emit_best_one_sided(true, true)) {
+            return segmentation;
+        }
         segmentation.qc_reason = "NO_TRIPARTITE_EVENT_SEGMENTATION";
         return segmentation;
     }
@@ -4160,8 +4449,15 @@ FinalCall Pipeline::emit_final_te_call(
     call.window_start = component.bin_start;
     call.window_end = component.bin_end;
 
-    call.family = te_alignment.best_family.empty() ? "NA" : te_alignment.best_family;
-    call.subfamily = te_alignment.best_subfamily.empty() ? "NA" : te_alignment.best_subfamily;
+    const bool emit_unknown_te =
+        acceptance.qc == "PASS_FINAL_TE_CALL_UNKNOWN" ||
+        acceptance.qc.rfind("PASS_FINAL_TE_CALL_UNKNOWN|", 0) == 0;
+    call.family = emit_unknown_te
+        ? "UNKNOWN"
+        : (te_alignment.best_family.empty() ? "NA" : te_alignment.best_family);
+    call.subfamily = emit_unknown_te
+        ? "UNKNOWN"
+        : (te_alignment.best_subfamily.empty() ? "NA" : te_alignment.best_subfamily);
     call.te_name = (call.subfamily != "NA") ? call.subfamily : call.family;
     call.strand = "NA";
     call.insert_len = static_cast<int32_t>(event_segmentation.insert_seq.size());
@@ -4581,6 +4877,14 @@ void Pipeline::process_bin_records(
         BoundaryEvidence best_boundary_evidence;
         GenotypeCall best_genotype;
 
+        struct ComponentFinalCallEvaluation {
+            FinalCall call;
+            GenotypeCall genotype;
+            double score = 0.0;
+        };
+        std::vector<ComponentFinalCallEvaluation> final_call_candidates;
+        final_call_candidates.reserve(shortlist.size());
+
         for (const auto& shortlisted : shortlist) {
             const auto& summary = shortlisted.validator.summary;
             const auto event_evidence_started = std::chrono::steady_clock::now();
@@ -4721,6 +5025,34 @@ void Pipeline::process_bin_records(
                 best_boundary_evidence = boundary_evidence;
                 best_genotype = genotype;
             }
+
+            if (joint.emit_te_call) {
+                FinalBoundaryDecision boundary;
+                boundary.pass =
+                    boundary_evidence.canonical_pass ||
+                    boundary_evidence.evidence_consistent;
+                boundary.boundary_type = boundary_evidence.boundary_type;
+                boundary.boundary_len = boundary_evidence.boundary_len;
+                boundary.qc = boundary_evidence.qc;
+
+                FinalTeAcceptanceDecision acceptance;
+                acceptance.pass = true;
+                acceptance.qc = joint.final_qc;
+
+                ComponentFinalCallEvaluation evaluation;
+                evaluation.call = emit_final_te_call(
+                    component,
+                    event_evidence,
+                    event_consensus,
+                    event_segmentation,
+                    te_alignment,
+                    genotype,
+                    boundary,
+                    acceptance);
+                evaluation.genotype = genotype;
+                evaluation.score = candidate_total;
+                final_call_candidates.push_back(std::move(evaluation));
+            }
         }
 
         if (config_.log_stage_components && have_best) {
@@ -4746,6 +5078,8 @@ void Pipeline::process_bin_records(
                 << " te_subfamily=" << display_or_na(best_te_alignment.best_subfamily)
                 << " te_identity=" << best_te_alignment.best_identity
                 << " te_cov=" << best_te_alignment.best_query_coverage
+                << " te_coarse_prefilter=" << best_te_alignment.coarse_prefilter_score
+                << " te_coarse_cov=" << best_te_alignment.coarse_chain_coverage
                 << " te_margin=" << best_te_alignment.cross_family_margin
                 << " boundary_qc=" << display_or_na(best_boundary_evidence.qc)
                 << " boundary_defined=" << bool_as_int(best_boundary_evidence.geometry_defined)
@@ -4777,7 +5111,7 @@ void Pipeline::process_bin_records(
             continue;
         }
 
-        if (!have_best || !best_joint.emit_te_call) {
+        if (!have_best || final_call_candidates.empty()) {
             log_component(
                 have_best ? best_joint.final_qc.c_str() : "NO_BREAKPOINT_HYPOTHESIS",
                 component,
@@ -4787,36 +5121,38 @@ void Pipeline::process_bin_records(
             continue;
         }
 
-        FinalBoundaryDecision boundary;
-        boundary.pass =
-            best_boundary_evidence.canonical_pass ||
-            best_boundary_evidence.evidence_consistent;
-        boundary.boundary_type = best_boundary_evidence.boundary_type;
-        boundary.boundary_len = best_boundary_evidence.boundary_len;
-        boundary.qc = best_boundary_evidence.qc;
+        std::vector<ComponentFinalCallCandidate> selection_candidates;
+        selection_candidates.reserve(final_call_candidates.size());
+        for (const auto& candidate : final_call_candidates) {
+            ComponentFinalCallCandidate selection_candidate;
+            selection_candidate.pos = candidate.call.pos;
+            selection_candidate.score = candidate.score;
+            selection_candidate.emit_te = true;
+            selection_candidates.push_back(selection_candidate);
+        }
+        const auto selected_indices = select_component_final_call_indices(selection_candidates);
+        if (selected_indices.empty()) {
+            log_component(
+                best_joint.final_qc.c_str(),
+                component,
+                fragments,
+                &best_genotype,
+                nullptr);
+            continue;
+        }
 
-        FinalTeAcceptanceDecision acceptance;
-        acceptance.pass = true;
-        acceptance.qc = best_joint.final_qc;
+        for (size_t selected_index : selected_indices) {
+            const auto& selected = final_call_candidates[selected_index];
+            result.final_calls.push_back(selected.call);
+            bin_stats.final_calls += 1;
 
-        FinalCall final_call = emit_final_te_call(
-            component,
-            best_event_evidence,
-            best_event_consensus,
-            best_event_segmentation,
-            best_te_alignment,
-            best_genotype,
-            boundary,
-            acceptance);
-        result.final_calls.push_back(final_call);
-        bin_stats.final_calls += 1;
-
-        log_component(
-            acceptance.qc.c_str(),
-            component,
-            fragments,
-            &best_genotype,
-            &result.final_calls.back());
+            log_component(
+                selected.call.final_qc.c_str(),
+                component,
+                fragments,
+                &selected.genotype,
+                &result.final_calls.back());
+        }
     }
 
     if (config_.log_stage_bins) {

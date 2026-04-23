@@ -98,7 +98,6 @@ int main() {
 
         LinearBinComponentModule module;
         const auto components = module.build(records, "chr1", 0, 900, 1800);
-
         assert(components.size() == 1);
         const auto& component = components.front();
         assert(component.soft_clip_read_indices.empty());

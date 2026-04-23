@@ -56,7 +56,226 @@ def write_truth_table(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def write_alignment(
+    out_handle,
+    *,
+    qname: str,
+    flag: int,
+    pos0: int,
+    mapq: int = 60,
+) -> None:
+    import pysam
+
+    seg = pysam.AlignedSegment()
+    seg.query_name = qname
+    seg.flag = flag
+    seg.reference_id = 0
+    seg.reference_start = pos0
+    seg.mapping_quality = mapq
+    seg.cigar = ((0, 4),)
+    seg.query_sequence = "ACGT"
+    seg.query_qualities = pysam.qualitystring_to_array("IIII")
+    out_handle.write(seg)
+
+
 class RandomTruthIntervalEvalTest(unittest.TestCase):
+    def test_resolve_samtools_threads_uses_all_detected_cpus_by_default(self):
+        original_cpu_count = MODULE.os.cpu_count
+        MODULE.os.cpu_count = lambda: 12
+        try:
+            self.assertEqual(MODULE.resolve_samtools_threads(None), 12)
+        finally:
+            MODULE.os.cpu_count = original_cpu_count
+
+    def test_resolve_samtools_threads_preserves_explicit_user_value(self):
+        self.assertEqual(MODULE.resolve_samtools_threads(3), 3)
+
+    def test_extract_primary_qnames_from_region_view_keeps_unique_primary_names(self):
+        region_stdout = "\n".join(
+            [
+                "readA\t0\tchr1\t101\t60\t50M\t*\t0\t0\tACGT\t*",
+                "readA\t2048\tchr1\t130\t60\t50M\t*\t0\t0\tACGT\t*",
+                "readB\t256\tchr1\t140\t60\t50M\t*\t0\t0\tACGT\t*",
+                "readC\t4\t*\t0\t0\t*\t*\t0\t0\tACGT\t*",
+                "readD\t0\tchr1\t155\t60\t50M\t*\t0\t0\tACGT\t*",
+            ]
+        )
+
+        qnames = MODULE.extract_primary_qnames_from_region_view(
+            region_stdout,
+            "chr1:100-200",
+        )
+
+        self.assertEqual(qnames, ["readA", "readD"])
+
+    def test_build_qname_membership_maps_preserves_order_and_shared_qnames(self):
+        sample_to_qnames, qname_to_sample_ids, union_qnames = MODULE.build_qname_membership_maps(
+            {
+                "S01": ["readA", "shared", "readB"],
+                "S02": ["shared", "readC"],
+            }
+        )
+
+        self.assertEqual(sample_to_qnames["S01"], ["readA", "shared", "readB"])
+        self.assertEqual(sample_to_qnames["S02"], ["shared", "readC"])
+        self.assertEqual(qname_to_sample_ids["shared"], ["S01", "S02"])
+        self.assertEqual(union_qnames, ["readA", "shared", "readB", "readC"])
+
+    def test_split_union_subset_bam_duplicates_shared_qnames(self):
+        import pysam
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            union_bam = tmp / "union_subset.bam"
+            s01_bam = tmp / "S01.subset.bam"
+            s02_bam = tmp / "S02.subset.bam"
+
+            header = {
+                "HD": {"VN": "1.6"},
+                "SQ": [{"SN": "chr1", "LN": 1000}],
+            }
+            with pysam.AlignmentFile(union_bam, "wb", header=header) as out_handle:
+                write_alignment(out_handle, qname="shared", flag=0, pos0=100)
+                write_alignment(out_handle, qname="shared", flag=2048, pos0=500)
+                write_alignment(out_handle, qname="only_s1", flag=0, pos0=140)
+                write_alignment(out_handle, qname="only_s2", flag=0, pos0=220)
+
+            record_counts = MODULE.split_union_subset_bam(
+                union_subset_bam=union_bam,
+                qname_to_sample_ids={
+                    "shared": ["S01", "S02"],
+                    "only_s1": ["S01"],
+                    "only_s2": ["S02"],
+                },
+                sample_to_subset_bam={
+                    "S01": s01_bam,
+                    "S02": s02_bam,
+                },
+            )
+
+            self.assertEqual(record_counts, {"S01": 3, "S02": 3})
+            with pysam.AlignmentFile(s01_bam, "rb") as handle:
+                self.assertEqual(
+                    [record.query_name for record in handle],
+                    ["shared", "shared", "only_s1"],
+                )
+            with pysam.AlignmentFile(s02_bam, "rb") as handle:
+                self.assertEqual(
+                    [record.query_name for record in handle],
+                    ["shared", "shared", "only_s2"],
+                )
+
+    def test_evaluate_sample_rows_prepares_subsets_once_before_running_samples(self):
+        rows = [
+            make_truth_row("S01", 100, 110),
+            make_truth_row("S02", 200, 210),
+        ]
+        args = types.SimpleNamespace(
+            window_flank_bp=25,
+            reuse_existing_samples=False,
+            workers=1,
+        )
+        contig_lengths = {"chr1": 1000}
+        trace: list[str] = []
+
+        original_prepare = getattr(MODULE, "prepare_sample_subset_bams", None)
+        original_run = MODULE.run_placer_sample
+
+        def fake_prepare(*, sampled_rows, windows_by_sample_id, args, outdir):
+            trace.append("prepare")
+            return {
+                "S01": {"qname_count": 2, "extract_elapsed_s": 0.1},
+                "S02": {"qname_count": 3, "extract_elapsed_s": 0.2},
+            }
+
+        def fake_run(*, row, window, args, outdir):
+            trace.append(f"run:{row.sample_id}")
+            return {
+                "sample_id": row.sample_id,
+                "window_region": window.region,
+            }
+
+        MODULE.prepare_sample_subset_bams = fake_prepare
+        MODULE.run_placer_sample = fake_run
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                manifest, results = MODULE.evaluate_sample_rows(
+                    sampled_rows=rows,
+                    contig_lengths=contig_lengths,
+                    args=args,
+                    outdir=Path(tmpdir),
+                )
+        finally:
+            if original_prepare is None:
+                delattr(MODULE, "prepare_sample_subset_bams")
+            else:
+                MODULE.prepare_sample_subset_bams = original_prepare
+            MODULE.run_placer_sample = original_run
+
+        self.assertEqual(trace, ["prepare", "run:S01", "run:S02"])
+        self.assertEqual([row["sample_id"] for row in manifest], ["S01", "S02"])
+        self.assertEqual([row["sample_id"] for row in results], ["S01", "S02"])
+
+    def test_run_placer_sample_uses_prepared_subset_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sample_dir = Path(tmpdir) / "S01"
+            sample_dir.mkdir()
+            subset_bam = sample_dir / "subset.bam"
+            subset_bam.write_bytes(b"BAM")
+            (sample_dir / "window_qnames.txt").write_text("readA\nreadB\n", encoding="utf-8")
+
+            row = make_truth_row("S01", 100, 110)
+            window = MODULE.WindowSpec(
+                chrom="chr1",
+                truth_start=100,
+                truth_end=110,
+                window_start=80,
+                window_end=130,
+            )
+            args = types.SimpleNamespace(
+                placer=Path("/tmp/fake_placer"),
+                ref=Path("/tmp/ref.fa"),
+                te=Path("/tmp/te.fa"),
+                match_distance_bp=1000,
+            )
+
+            original_subprocess_run = MODULE.subprocess.run
+            original_parse_scientific_txt = MODULE.parse_scientific_txt
+            original_choose_best_call = MODULE.choose_best_call
+            original_parse_joint_component_metrics = MODULE.parse_joint_component_metrics
+
+            calls = []
+
+            def fake_run(cmd, cwd=None, check=False, text=True, capture_output=True):
+                calls.append((cmd, cwd))
+                return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            MODULE.subprocess.run = fake_run
+            MODULE.parse_scientific_txt = lambda path: []
+            MODULE.choose_best_call = lambda row, calls: None
+            MODULE.parse_joint_component_metrics = lambda path: {
+                "joint_best_kind": "NA",
+                "joint_runner_up_kind": "NA",
+                "joint_final_qc": "NA",
+                "joint_emit_te": "NA",
+                "joint_emit_unknown": "NA",
+            }
+            try:
+                result = MODULE.run_placer_sample(
+                    row=row,
+                    window=window,
+                    args=args,
+                    outdir=Path(tmpdir),
+                )
+            finally:
+                MODULE.subprocess.run = original_subprocess_run
+                MODULE.parse_scientific_txt = original_parse_scientific_txt
+                MODULE.choose_best_call = original_choose_best_call
+                MODULE.parse_joint_component_metrics = original_parse_joint_component_metrics
+
+            self.assertEqual(calls[0][0][1], str(subset_bam))
+            self.assertEqual(result["window_qname_count"], "2")
+
     def test_load_truth_rows_applies_min_length_ins_filter(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             truth_path = Path(tmpdir) / "truth.tsv"
@@ -220,6 +439,33 @@ class RandomTruthIntervalEvalTest(unittest.TestCase):
         self.assertEqual(metrics["te_qc"], "NO_TE_ALIGNMENT")
         self.assertEqual(metrics["te_pass"], "0")
 
+    def test_parse_scientific_summary_extracts_pipeline_counters(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scientific_path = Path(tmpdir) / "scientific.txt"
+            scientific_path.write_text(
+                "#PLACER streaming pipeline summary\n"
+                "total_reads\t72\n"
+                "gate1_passed\t53\n"
+                "processed_bins\t1\n"
+                "components\t7\n"
+                "event_consensus_calls\t5\n"
+                "genotype_calls\t5\n"
+                "final_pass_calls\t1\n"
+                "schema_version\t1.0.0\n"
+                "\n"
+                "#chrom\tpos\tbp_left\tbp_right\tte\tfamily\tsubfamily\tstrand\tinsert_len\t"
+                "support_reads\talt_struct_reads\tref_span_reads\tlow_mapq_ref_span_reads\t"
+                "gt\taf\tgq\tbest_te_identity\tbest_te_query_coverage\tcross_family_margin\t"
+                "tsd_type\ttsd_len\tleft_flank_align_len\tright_flank_align_len\tconsensus_len\tqc\n",
+                encoding="utf-8",
+            )
+
+            summary = MODULE.parse_scientific_summary(scientific_path)
+
+        self.assertEqual(summary["event_consensus_calls"], 5)
+        self.assertEqual(summary["genotype_calls"], 5)
+        self.assertEqual(summary["final_pass_calls"], 1)
+
     def test_classify_failure_stage_returns_event_but_no_consensus(self):
         stage = MODULE.classify_failure_stage(
             detected=False,
@@ -236,6 +482,7 @@ class RandomTruthIntervalEvalTest(unittest.TestCase):
                 "te_qc": "NA",
                 "te_pass": "NA",
             },
+            scientific_summary=None,
         )
 
         self.assertEqual(stage, "EVENT_BUT_NO_CONSENSUS")
@@ -256,6 +503,7 @@ class RandomTruthIntervalEvalTest(unittest.TestCase):
                 "te_qc": "NA",
                 "te_pass": "NA",
             },
+            scientific_summary=None,
         )
 
         self.assertEqual(stage, "CONSENSUS_BUT_NO_SEGMENTATION")
@@ -276,6 +524,7 @@ class RandomTruthIntervalEvalTest(unittest.TestCase):
                 "te_qc": "TE_ALIGNMENT_LOW_QUERY_COVERAGE",
                 "te_pass": "0",
             },
+            scientific_summary=None,
         )
 
         self.assertEqual(stage, "SEGMENTED_BUT_NO_TE_ALIGNMENT")
@@ -296,9 +545,64 @@ class RandomTruthIntervalEvalTest(unittest.TestCase):
                 "te_qc": "PASS_INSERT_TE_ALIGNMENT_UNKNOWN",
                 "te_pass": "1",
             },
+            scientific_summary=None,
         )
 
         self.assertEqual(stage, "TE_EVIDENCE_BUT_NON_TE_WINS")
+
+    def test_classify_failure_stage_uses_scientific_summary_when_joint_metrics_missing(self):
+        stage = MODULE.classify_failure_stage(
+            detected=False,
+            joint_metrics={
+                "joint_best_kind": "NA",
+                "joint_runner_up_kind": "NA",
+                "joint_final_qc": "NA",
+                "joint_emit_te": "NA",
+                "joint_emit_unknown": "NA",
+                "consensus_qc": "NA",
+                "consensus_len": "NA",
+                "seg_qc": "NA",
+                "seg_insert_len": "NA",
+                "te_qc": "NA",
+                "te_pass": "NA",
+            },
+            scientific_summary={
+                "event_consensus_calls": 5,
+                "genotype_calls": 5,
+                "final_pass_calls": 0,
+            },
+            best_call=None,
+        )
+
+        self.assertEqual(stage, "GENOTYPED_BUT_NO_FINAL_CALL")
+
+    def test_classify_failure_stage_reports_final_call_elsewhere(self):
+        stage = MODULE.classify_failure_stage(
+            detected=False,
+            joint_metrics={
+                "joint_best_kind": "NA",
+                "joint_runner_up_kind": "NA",
+                "joint_final_qc": "NA",
+                "joint_emit_te": "NA",
+                "joint_emit_unknown": "NA",
+                "consensus_qc": "NA",
+                "consensus_len": "NA",
+                "seg_qc": "NA",
+                "seg_insert_len": "NA",
+                "te_qc": "NA",
+                "te_pass": "NA",
+            },
+            scientific_summary={
+                "event_consensus_calls": 7,
+                "genotype_calls": 7,
+                "final_pass_calls": 2,
+            },
+            best_call={
+                "interval_distance_bp": "2401",
+            },
+        )
+
+        self.assertEqual(stage, "FINAL_CALL_ELSEWHERE")
 
     def test_build_result_row_includes_joint_component_metrics(self):
         row = make_truth_row("S07", 500, 520)
