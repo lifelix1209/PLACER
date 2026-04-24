@@ -107,6 +107,46 @@ double joint_event_existence_score(const EventExistenceEvidence& existence) {
     return existence.score;
 }
 
+bool is_one_sided_segmentation_pass(const EventSegmentationEvidence& segmentation) {
+    return segmentation.pair_valid &&
+           segmentation.has_insert_seq &&
+           (segmentation.has_left_flank != segmentation.has_right_flank);
+}
+
+double adjusted_nonref_existence_score(
+    const EventExistenceEvidence& existence,
+    const EventSegmentationEvidence& segmentation,
+    double te_presence) {
+    double adjusted = joint_event_existence_score(existence);
+    const bool has_strong_structural_te_support =
+        segmentation.pair_valid &&
+        segmentation.has_insert_seq &&
+        te_presence >= 1.0;
+    const bool alt_not_weaker_than_ref =
+        existence.alt_struct_reads > 0 &&
+        existence.alt_struct_reads >= existence.ref_span_reads;
+    if (has_strong_structural_te_support && alt_not_weaker_than_ref) {
+        adjusted = std::max(0.0, adjusted);
+    }
+    return adjusted;
+}
+
+double adjusted_segmentation_score(const EventSegmentationEvidence& segmentation) {
+    if (is_one_sided_segmentation_pass(segmentation)) {
+        return std::max(0.25, segmentation.score);
+    }
+    return segmentation.score;
+}
+
+double adjusted_te_boundary_score(
+    const EventSegmentationEvidence& segmentation,
+    const BoundaryEvidence& boundary) {
+    if (!boundary.geometry_defined && is_one_sided_segmentation_pass(segmentation)) {
+        return 0.0;
+    }
+    return boundary.score;
+}
+
 double te_resolved_score(const TEAlignmentEvidence& te_alignment) {
     if (te_alignment.qc_reason == "PASS_INSERT_TE_ALIGNMENT_FAMILY_ONLY") {
         const double identity_term =
@@ -312,38 +352,43 @@ JointDecisionResult evaluate_joint_hypotheses(
     const TEAlignmentEvidence& te_alignment,
     const BoundaryEvidence& boundary) {
     JointDecisionResult result;
-    const double existence_support = joint_event_existence_score(existence);
     const double te_presence = te_existence_score(te_alignment);
     const double te_resolved = te_resolved_score(te_alignment);
+    const double existence_support = adjusted_nonref_existence_score(
+        existence,
+        segmentation,
+        te_presence);
+    const double segmentation_support = adjusted_segmentation_score(segmentation);
+    const double te_boundary_support = adjusted_te_boundary_score(segmentation, boundary);
 
     JointHypothesisScore h0 = make_hypothesis(FinalHypothesisKind::kReference);
     h0.existence = -1.0 * std::max(existence.score, 0.0);
-    h0.segmentation = -0.5 * std::max(segmentation.score, 0.0);
+    h0.segmentation = -0.5 * std::max(segmentation_support, 0.0);
     h0.te = -0.8 * std::max(te_presence, 0.0);
     h0.total = h0.existence + h0.segmentation + h0.te;
     h0.reason = "REFERENCE";
 
     JointHypothesisScore h1 = make_hypothesis(FinalHypothesisKind::kInsertionNonTe);
     h1.existence = existence_support;
-    h1.segmentation = 0.7 * segmentation.score;
+    h1.segmentation = 0.7 * segmentation_support;
     h1.te = -1.0 * std::max(te_presence, 0.0);
     h1.total = h1.existence + h1.segmentation + h1.te;
     h1.reason = "NON_TE_INSERTION";
 
     JointHypothesisScore h2 = make_hypothesis(FinalHypothesisKind::kTeUnknown);
     h2.existence = existence_support;
-    h2.segmentation = 0.8 * segmentation.score;
+    h2.segmentation = 0.8 * segmentation_support;
     h2.te = 0.6 * te_presence;
-    h2.boundary = 0.2 * boundary.score;
+    h2.boundary = 0.2 * te_boundary_support;
     h2.total = h2.existence + h2.segmentation + h2.te + h2.boundary;
     h2.reason = "TE_UNKNOWN";
     h2.hard_veto = !segmentation.has_insert_seq || te_alignment.qc_reason == "NO_TE_ALIGNMENT";
 
     JointHypothesisScore h3 = make_hypothesis(FinalHypothesisKind::kTeResolved);
     h3.existence = existence_support;
-    h3.segmentation = 0.8 * segmentation.score;
+    h3.segmentation = 0.8 * segmentation_support;
     h3.te = te_resolved;
-    h3.boundary = 0.2 * boundary.score;
+    h3.boundary = 0.2 * te_boundary_support;
     h3.total = h3.existence + h3.segmentation + h3.te + h3.boundary;
     h3.reason = "TE_RESOLVED";
     h3.hard_veto = !segmentation.has_insert_seq || !te_alignment.pass ||

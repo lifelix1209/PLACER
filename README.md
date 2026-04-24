@@ -33,7 +33,8 @@ cmake --build build -j
 (cd build && ctest --output-on-failure)
 ```
 
-Current CTest covers the C++ pipeline units plus Python regression tests for shard merging and random-truth evaluation.
+Current CTest covers tracked engineering regression tests only. It does not
+decide whether the algorithm is release-ready on the real dataset.
 
 ## Repository Hygiene
 
@@ -226,6 +227,31 @@ python3 scripts/random_truth_interval_eval.py \
 ```
 
 `evaluation.tsv` records per-sample detection calls, timing fields, and parsed joint-decision diagnostics from `run.log`.
+This script is the evaluation engine used by the release-readiness wrapper.
+
+## Release Readiness
+
+Release readiness is evaluated only on the repository-local real dataset under
+`test_data/`.
+
+The release gate is:
+
+- `5` independent random rounds
+- `150` truth rows per round
+- every round must satisfy `detection_rate > 0.90`
+
+Run:
+
+```bash
+python3 scripts/check_release_readiness.py
+```
+
+The command exits `0` only when all five rounds pass. Any round with
+`detection_rate <= 0.90` means the current algorithm is not ready to release.
+
+This command is the only release-readiness verdict. GitHub CI does not run it,
+because the required BAM, FASTA, TE library, and truth table are local ignored
+files rather than tracked repository inputs.
 
 ## Tuning
 

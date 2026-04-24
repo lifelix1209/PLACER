@@ -776,5 +776,107 @@ int main() {
         assert(evidence.score > 0.0);
     }
 
+    {
+        EventExistenceEvidence existence;
+        existence.best_gt = "1/1";
+        existence.af = 1.0;
+        existence.gq = 5;
+        existence.alt_struct_reads = 2;
+        existence.ref_span_reads = 0;
+        existence.depth = 2;
+        existence.score = -0.75;
+
+        EventSegmentationEvidence seg;
+        seg.has_consensus = true;
+        seg.has_left_flank = true;
+        seg.has_right_flank = true;
+        seg.has_insert_seq = true;
+        seg.pair_valid = true;
+        seg.left_align_len = 80;
+        seg.right_align_len = 80;
+        seg.left_identity = 0.95;
+        seg.right_identity = 0.95;
+        seg.insert_len = 285;
+        seg.score = 1.225;
+        seg.qc = "PASS_EVENT_SEGMENTATION";
+
+        TEAlignmentEvidence te;
+        te.best_family = "UNKNOWN";
+        te.best_subfamily = "UNKNOWN";
+        te.best_identity = 0.578313;
+        te.best_query_coverage = 0.989474;
+        te.cross_family_margin = 0.526612;
+        te.pass = true;
+        te.qc_reason = "PASS_INSERT_TE_ALIGNMENT_UNKNOWN";
+
+        BoundaryEvidence boundary;
+        boundary.geometry_defined = true;
+        boundary.canonical_pass = true;
+        boundary.evidence_consistent = true;
+        boundary.boundary_type = "BLUNT";
+        boundary.boundary_len = 0;
+        boundary.score = 1.0;
+        boundary.qc = "PASS_BOUNDARY_BLUNT";
+
+        const auto joint = evaluate_joint_hypotheses(existence, seg, te, boundary);
+        if (joint.best.kind != FinalHypothesisKind::kTeUnknown ||
+            !joint.emit_te_call ||
+            !joint.emit_unknown_te ||
+            joint.final_qc != "PASS_FINAL_TE_CALL_UNKNOWN") {
+            return 101;
+        }
+    }
+
+    {
+        EventExistenceEvidence existence;
+        existence.best_gt = "1/1";
+        existence.af = 1.0;
+        existence.gq = 36;
+        existence.alt_struct_reads = 13;
+        existence.ref_span_reads = 0;
+        existence.depth = 13;
+        existence.score = 0.8;
+
+        EventSegmentation seg_input;
+        seg_input.pass = true;
+        seg_input.qc_reason = "PASS_EVENT_SEGMENTATION_ONE_SIDED_RIGHT";
+        seg_input.left_flank_align_len = 0;
+        seg_input.right_flank_align_len = 50;
+        seg_input.left_flank_identity = 0.0;
+        seg_input.right_flank_identity = 0.92;
+        seg_input.insert_seq = std::string(283, 'T');
+
+        const auto seg = analyze_event_segmentation_for_test(true, seg_input);
+        if (seg.score >= 0.0) {
+            return 102;
+        }
+
+        TEAlignmentEvidence te;
+        te.best_family = "UNKNOWN";
+        te.best_subfamily = "UNKNOWN";
+        te.best_identity = 0.563863;
+        te.best_query_coverage = 0.971731;
+        te.cross_family_margin = 0.0115714;
+        te.pass = true;
+        te.qc_reason = "PASS_INSERT_TE_ALIGNMENT_UNKNOWN";
+
+        BoundaryEvidence boundary;
+        boundary.geometry_defined = false;
+        boundary.canonical_pass = false;
+        boundary.evidence_consistent = false;
+        boundary.boundary_type = "REJECT";
+        boundary.boundary_len = 0;
+        boundary.score = -2.0;
+        boundary.qc = "REJECT_BOUNDARY_INVALID_REF_SEGMENTS";
+
+        const auto joint = evaluate_joint_hypotheses(existence, seg, te, boundary);
+        if (joint.best.kind != FinalHypothesisKind::kTeUnknown ||
+            !joint.emit_te_call ||
+            !joint.emit_unknown_te ||
+            joint.final_qc != "PASS_FINAL_TE_CALL_UNKNOWN") {
+            return 103;
+        }
+    }
+
     return 0;
 }

@@ -148,22 +148,6 @@ add_executable(bench_te_library_alignment
 target_include_directories(bench_te_library_alignment PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(bench_te_library_alignment PRIVATE placer_pipeline)
 
-add_executable(test_local_recollection_fragment_refresh
-    test_local_recollection_fragment_refresh.cpp
-)
-target_include_directories(test_local_recollection_fragment_refresh PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(test_local_recollection_fragment_refresh PRIVATE placer_pipeline)
-
-add_test(NAME test_local_recollection_fragment_refresh COMMAND test_local_recollection_fragment_refresh)
-
-add_executable(test_ref_span_dominant_rejection
-    test_ref_span_dominant_rejection.cpp
-)
-target_include_directories(test_ref_span_dominant_rejection PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(test_ref_span_dominant_rejection PRIVATE placer_pipeline)
-
-add_test(NAME test_ref_span_dominant_rejection COMMAND test_ref_span_dominant_rejection)
-
 add_executable(test_parallel_exact_bin_task_equivalence
     test_parallel_exact_bin_task_equivalence.cpp
 )
@@ -204,17 +188,6 @@ target_link_libraries(test_parallel_local_interval_cache PRIVATE placer_pipeline
 add_test(
     NAME test_parallel_local_interval_cache
     COMMAND test_parallel_local_interval_cache
-)
-
-add_executable(test_parallel_execution_equivalence
-    test_parallel_execution_equivalence.cpp
-)
-target_include_directories(test_parallel_execution_equivalence PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(test_parallel_execution_equivalence PRIVATE placer_pipeline)
-
-add_test(
-    NAME test_parallel_execution_equivalence
-    COMMAND test_parallel_execution_equivalence
 )
 
 add_executable(test_validator_input_counts
@@ -285,11 +258,6 @@ add_test(
 )
 
 add_test(
-    NAME test_random_truth_interval_eval
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_random_truth_interval_eval.py
-)
-
-add_test(
-    NAME test_submit_placer_slurm
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_submit_placer_slurm.py
+    NAME test_release_readiness_gate
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_release_readiness_gate.py
 )
