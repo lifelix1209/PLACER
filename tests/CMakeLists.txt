@@ -252,9 +252,22 @@ target_link_libraries(test_denovo_cli PRIVATE placer_denovo)
 
 add_test(NAME test_denovo_cli COMMAND test_denovo_cli)
 
+add_executable(test_bam_io_region_stream
+    test_bam_io_region_stream.cpp
+)
+target_include_directories(test_bam_io_region_stream PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_bam_io_region_stream PRIVATE placer_bam_io)
+
+add_test(NAME test_bam_io_region_stream COMMAND test_bam_io_region_stream)
+
 add_test(
     NAME test_run_sharded_placer
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_run_sharded_placer.py
+)
+
+add_test(
+    NAME test_cluster_scripts
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_cluster_scripts.py
 )
 
 add_test(

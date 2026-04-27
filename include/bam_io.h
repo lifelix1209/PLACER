@@ -58,6 +58,14 @@ using RecordHandler = std::function<void(BamRecordPtr&&)>;
 using FetchRecordHandler = std::function<bool(BamRecordPtr&&)>;
 using ProgressHandler = std::function<bool(int64_t processed, int32_t current_tid)>;
 
+struct BamRegionScope {
+    bool enabled = false;
+    std::string chrom;
+    // 0-based half-open interval. end <= 0 means through the end of chrom.
+    int32_t start = 0;
+    int32_t end = -1;
+};
+
 class BamStreamReader {
 public:
     virtual ~BamStreamReader() = default;
@@ -84,6 +92,11 @@ public:
 std::unique_ptr<BamStreamReader> make_bam_reader(
     const std::string& bam_path,
     int32_t decompression_threads = 2);
+
+std::unique_ptr<BamStreamReader> make_bam_reader(
+    const std::string& bam_path,
+    int32_t decompression_threads,
+    const BamRegionScope& region_scope);
 
 }  // namespace placer
 

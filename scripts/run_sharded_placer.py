@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Shard BAM by contig/region, run PLACER per shard, and merge scientific outputs.
+"""Run PLACER per indexed BAM contig/region shard and merge scientific outputs.
 
 Design goals:
 - Keep all PLACER modules enabled (no algorithm feature drop).
-- Improve scalability on very large BAMs through data sharding.
+- Improve scalability on very large BAMs through indexed data sharding.
 - Preserve accuracy:
   * `contig` mode is exact (no overlap, no duplicated loci).
   * `region` mode uses overlap padding + core-range filtering at merge time.
@@ -726,9 +726,7 @@ def run_single_shard(
     ref: Path,
     te: Optional[Path],
     placer_bin: Path,
-    samtools_bin: str,
     shard_root: Path,
-    samtools_threads: int,
     extra_env: Dict[str, str],
     progress_cb: Optional[Callable[[ShardSpec, str, str], None]] = None,
 ) -> ShardResult:
@@ -736,14 +734,11 @@ def run_single_shard(
     workdir = shard_root / spec.label
     workdir.mkdir(parents=True, exist_ok=True)
 
-    shard_bam = workdir / "input.shard.bam"
-    extract_stdout = workdir / "extract.stdout.log"
-    extract_stderr = workdir / "extract.stderr.log"
     run_stdout = workdir / "placer.stdout.log"
     run_stderr = workdir / "placer.stderr.log"
     success_marker = shard_success_marker_path(workdir)
 
-    for log_path in (extract_stdout, extract_stderr, run_stdout, run_stderr):
+    for log_path in (run_stdout, run_stderr):
         if log_path.exists():
             log_path.unlink()
     if success_marker.exists():
@@ -754,37 +749,7 @@ def run_single_shard(
             progress_cb(spec, stage, note)
 
     try:
-        update("extract", spec.region)
-        run_command(
-            [
-                samtools_bin,
-                "view",
-                "-@",
-                str(max(1, samtools_threads)),
-                "-b",
-                "-o",
-                str(shard_bam),
-                str(bam),
-                spec.region,
-            ],
-            stdout_path=extract_stdout,
-            stderr_path=extract_stderr,
-        )
-        update("index", shard_bam.name)
-        run_command(
-            [
-                samtools_bin,
-                "index",
-                "-@",
-                str(max(1, samtools_threads)),
-                str(shard_bam),
-            ],
-            stdout_path=extract_stdout,
-            stderr_path=extract_stderr,
-            append=True,
-        )
-
-        cmd = [str(placer_bin), str(shard_bam), str(ref)]
+        cmd = [str(placer_bin), "--region", spec.region, str(bam), str(ref)]
         if te is not None:
             cmd.append(str(te))
         env = os.environ.copy()
@@ -942,11 +907,6 @@ def main() -> int:
         default=[],
         help="Extra env for PLACER subprocess, can repeat. Example: --env PLACER_PARALLEL=1",
     )
-    parser.add_argument(
-        "--keep-shard-bam",
-        action="store_true",
-        help="Keep per-shard BAM/BAM.bai files after merge.",
-    )
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     args = parser.parse_args()
@@ -986,7 +946,10 @@ def main() -> int:
         )
     except subprocess.CalledProcessError:
         print(f"[sharded] BAM index missing/invalid, building: {bam}", file=sys.stderr)
-        subprocess.run([args.samtools, "index", str(bam)], check=True)
+        subprocess.run(
+            [args.samtools, "index", "-@", str(max(1, args.samtools_threads)), str(bam)],
+            check=True,
+        )
 
     contigs = order_contigs_for_execution(
         load_contigs(args.samtools, bam, max(0, args.min_mapped_reads))
@@ -1067,9 +1030,7 @@ def main() -> int:
             ref=ref,
             te=te,
             placer_bin=placer_bin,
-            samtools_bin=args.samtools,
             shard_root=shard_root,
-            samtools_threads=max(1, args.samtools_threads),
             extra_env=extra_env,
             progress_cb=tracker.update_stage,
         )
@@ -1159,15 +1120,6 @@ def main() -> int:
         results_by_label=results_by_label,
         failures_by_label=failures_by_label,
     )
-
-    if not args.keep_shard_bam:
-        for result in shard_results:
-            bam_path = result.workdir / "input.shard.bam"
-            bai_path = result.workdir / "input.shard.bam.bai"
-            if bam_path.exists():
-                bam_path.unlink()
-            if bai_path.exists():
-                bai_path.unlink()
 
     print(f"[sharded] merged scientific: {merged_scientific}", flush=True)
     print(f"[sharded] manifest: {manifest_path}", flush=True)

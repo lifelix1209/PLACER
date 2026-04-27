@@ -229,6 +229,7 @@ struct PipelineConfig {
     std::string bam_path;
     std::string reference_fasta_path;
     std::string te_fasta_path;
+    BamRegionScope bam_region_scope;
 
     int32_t bam_threads = 2;
     int64_t progress_interval = 100000;

@@ -267,6 +267,70 @@ class RunShardedPlacerTest(unittest.TestCase):
             self.assertIn("0001_chr1\tchr1\treused\tdone\t500", text)
             self.assertIn("0002_chr2\tchr2\tfailed\tfailed\t100", text)
 
+    def test_run_single_shard_invokes_placer_native_region_without_materializing_bam(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bam = root / "input.bam"
+            ref = root / "ref.fa"
+            te = root / "te.fa"
+            args_path = root / "placer.args"
+            placer = root / "fake_placer.py"
+            for path in (bam, ref, te):
+                path.write_text("", encoding="utf-8")
+
+            placer.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env python3",
+                        "import pathlib, sys",
+                        f"pathlib.Path({str(args_path)!r}).write_text('\\n'.join(sys.argv[1:]), encoding='utf-8')",
+                        "out = pathlib.Path('scientific.txt')",
+                        "out.write_text(",
+                        "    '#PLACER streaming pipeline summary\\n'",
+                        "    'total_reads\\t1\\n'",
+                        "    'gate1_passed\\t0\\n'",
+                        "    'processed_bins\\t0\\n'",
+                        "    'components\\t0\\n'",
+                        "    'event_consensus_calls\\t0\\n'",
+                        "    'genotype_calls\\t0\\n'",
+                        "    'final_pass_calls\\t0\\n'",
+                        "    'schema_version\\t1.0.0\\n\\n'",
+                        "    '#' + '\\t'.join(" + repr(MODULE.EXPECTED_SCIENTIFIC_HEADER) + ") + '\\n',",
+                        "    encoding='utf-8')",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            placer.chmod(0o755)
+
+            spec = MODULE.ShardSpec(
+                shard_id=1,
+                label="0001_chr1",
+                chrom="chr1",
+                core_start=1,
+                core_end=1000,
+                fetch_start=1,
+                fetch_end=1000,
+            )
+
+            result = MODULE.run_single_shard(
+                spec,
+                bam=bam,
+                ref=ref,
+                te=te,
+                placer_bin=placer,
+                shard_root=root / "shards",
+                extra_env={},
+            )
+
+            self.assertEqual(result.n_rows_raw, 0)
+            args = args_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(args[:2], ["--region", "chr1:1-1000"])
+            self.assertEqual(args[2:], [str(bam), str(ref), str(te)])
+            self.assertFalse((result.workdir / "input.shard.bam").exists())
+            self.assertFalse((result.workdir / "input.shard.bam.bai").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

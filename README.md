@@ -57,6 +57,14 @@ The audit script fails if tracked files include large binaries, data-like output
 ./build/placer <input.bam> <ref.fa> <te.fa>
 ```
 
+Limit the initial BAM scan to an indexed region while keeping event-level
+local fetches on the same original BAM:
+
+```bash
+./build/placer --region chr1:1-50000000 <input.bam> <ref.fa> <te.fa>
+./build/placer --contig chr1 <input.bam> <ref.fa> <te.fa>
+```
+
 Default output:
 
 - `scientific.txt`
@@ -127,7 +135,9 @@ If `[PLACER] run started` never appears in the run logs, the job did not reach t
 
 ## Sharded Run (Large BAM)
 
-For very large BAMs on a single node, use exact contig sharding as the primary path:
+For very large BAMs on a single node, use exact contig sharding as the primary path.
+The runner calls `placer --region` on the original indexed BAM; it does not
+materialize per-shard BAM files.
 
 ```bash
 python3 scripts/run_sharded_placer.py \
@@ -145,7 +155,7 @@ Outputs:
 
 - `sharded_placer_out/scientific.sharded.txt` (canonical merged exact callset)
 - `sharded_placer_out/shard_manifest.tsv` (live shard state + final per-shard timing)
-- `sharded_placer_out/shards/<label>/scientific.txt` (per-contig shard result)
+- `sharded_placer_out/shards/<label>/scientific.txt` (per-contig region result)
 
 Operational notes:
 

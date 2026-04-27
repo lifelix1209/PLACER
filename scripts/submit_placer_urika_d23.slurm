@@ -2,9 +2,9 @@
 #SBATCH -J placer_batch
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=192G
-#SBATCH --time=3-00:00:00
+#SBATCH --cpus-per-task=96
+#SBATCH --mem=320G
+#SBATCH --time=7-00:00:00
 #SBATCH --output=placer_batch_%j.out
 #SBATCH --error=placer_batch_%j.err
 
@@ -68,7 +68,11 @@ for path in \
 done
 
 TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-1}"
-PLACER_SHARD_WORKERS="${PLACER_SHARD_WORKERS:-$TOTAL_CPUS}"
+DEFAULT_SHARD_WORKERS=48
+if [[ "$TOTAL_CPUS" =~ ^[0-9]+$ && "$TOTAL_CPUS" -lt "$DEFAULT_SHARD_WORKERS" ]]; then
+    DEFAULT_SHARD_WORKERS="$TOTAL_CPUS"
+fi
+PLACER_SHARD_WORKERS="${PLACER_SHARD_WORKERS:-$DEFAULT_SHARD_WORKERS}"
 PLACER_SAMTOOLS_THREADS="${PLACER_SAMTOOLS_THREADS:-1}"
 PLACER_SHARD_HEARTBEAT_S="${PLACER_SHARD_HEARTBEAT_S:-60}"
 
@@ -81,9 +85,20 @@ export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
+if [[ -n "${HTSLIB_ROOT:-}" ]]; then
+    export PATH="$HTSLIB_ROOT/bin:$PATH"
+    export LD_LIBRARY_PATH="$HTSLIB_ROOT/lib:${LD_LIBRARY_PATH:-}"
+elif [[ -n "${CONDA_PREFIX:-}" ]]; then
+    export PATH="$CONDA_PREFIX/bin:$PATH"
+    export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+fi
+
 echo "[slurm] bam=$BAM"
 echo "[slurm] ref=$REF"
 echo "[slurm] te=$TE"
+echo "[slurm] htslib_root=${HTSLIB_ROOT:-NA}"
+echo "[slurm] htslib_include_dir=${HTSLIB_INCLUDE_DIR:-NA}"
+echo "[slurm] htslib_library=${HTSLIB_LIBRARY:-NA}"
 echo "[slurm] PLACER_BUILD_JOBS=$PLACER_BUILD_JOBS"
 echo "[slurm] PLACER_PARALLEL=disabled"
 echo "[slurm] PLACER_SHARD_WORKERS=$PLACER_SHARD_WORKERS"

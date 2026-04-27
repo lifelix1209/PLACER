@@ -1,7 +1,9 @@
 #include "bam_io.h"
 
+#include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -16,9 +18,14 @@ constexpr char kBamSeqChars[] = "=ACMGRSVTWYHKDBN";
 
 class HtslibBamStreamReader final : public BamStreamReader {
 public:
-    explicit HtslibBamStreamReader(std::string bam_path, int32_t decompression_threads)
+    explicit HtslibBamStreamReader(
+        std::string bam_path,
+        int32_t decompression_threads,
+        BamRegionScope region_scope = {})
         : bam_path_(std::move(bam_path)),
-          decompression_threads_(decompression_threads > 0 ? decompression_threads : 1) {
+          decompression_threads_(decompression_threads > 0 ? decompression_threads : 1),
+          region_scope_(std::move(region_scope)) {
+        normalize_region_scope();
         file_ = hts_open(bam_path_.c_str(), "r");
         if (!file_) {
             std::cerr << "[BAM_IO] failed to open BAM: " << bam_path_ << '\n';
@@ -82,7 +89,7 @@ public:
         const int32_t threads = decompression_threads > 0
             ? decompression_threads
             : decompression_threads_;
-        return std::make_unique<HtslibBamStreamReader>(bam_path_, threads);
+        return std::make_unique<HtslibBamStreamReader>(bam_path_, threads, region_scope_);
     }
 
     const std::string& bam_path() const override { return bam_path_; }
@@ -117,8 +124,20 @@ public:
             return false;
         }
 
-        const int32_t query_start = std::max<int32_t>(0, start);
-        const int32_t query_end = std::max(query_start + 1, end);
+        int32_t query_start = std::max<int32_t>(0, start);
+        int32_t query_end = std::max(query_start + 1, end);
+        if (region_scope_.enabled) {
+            if (chrom != region_scope_.chrom) {
+                return false;
+            }
+            query_start = std::max(query_start, std::max<int32_t>(0, region_scope_.start));
+            if (region_scope_.end > 0) {
+                query_end = std::min(query_end, region_scope_.end);
+            }
+            if (query_end <= query_start) {
+                return true;
+            }
+        }
         hts_itr_t* iter = sam_itr_queryi(index_, tid, query_start, query_end);
         if (!iter) {
             return false;
@@ -159,6 +178,9 @@ public:
         int64_t progress_interval) override {
         if (!valid_ || !record_handler) {
             return -1;
+        }
+        if (region_scope_.enabled) {
+            return stream_scoped(record_handler, progress_handler, progress_interval);
         }
 
         int64_t processed = 0;
@@ -205,8 +227,102 @@ public:
     }
 
 private:
+    void normalize_region_scope() {
+        if (!region_scope_.enabled) {
+            return;
+        }
+        if (region_scope_.chrom.empty()) {
+            region_scope_.enabled = false;
+            return;
+        }
+        region_scope_.start = std::max<int32_t>(0, region_scope_.start);
+        if (region_scope_.end > 0 && region_scope_.end <= region_scope_.start) {
+            region_scope_.end = region_scope_.start + 1;
+        }
+    }
+
+    int64_t stream_scoped(
+        const RecordHandler& record_handler,
+        const ProgressHandler& progress_handler,
+        int64_t progress_interval) {
+        if (!can_fetch()) {
+            std::cerr << "[BAM_IO] scoped streaming requires a BAM index: " << bam_path_ << '\n';
+            return -1;
+        }
+
+        const int32_t tid = sam_hdr_name2tid(header_, region_scope_.chrom.c_str());
+        if (tid < 0) {
+            std::cerr << "[BAM_IO] region contig not found in BAM header: " << region_scope_.chrom << '\n';
+            return -1;
+        }
+
+        const int32_t target_len = header_->target_len ? static_cast<int32_t>(header_->target_len[tid]) : 0;
+        const int32_t query_start = std::max<int32_t>(0, region_scope_.start);
+        if (target_len > 0 && query_start >= target_len) {
+            if (progress_handler) {
+                progress_handler(0, tid);
+            }
+            return 0;
+        }
+        int32_t query_end = region_scope_.end > 0 ? region_scope_.end : target_len;
+        if (target_len > 0) {
+            query_end = std::min(query_end, target_len);
+        }
+        query_end = std::max(query_start + 1, query_end);
+
+        hts_itr_t* iter = sam_itr_queryi(index_, tid, query_start, query_end);
+        if (!iter) {
+            return -1;
+        }
+
+        bam1_t* record = bam_init1();
+        if (!record) {
+            sam_itr_destroy(iter);
+            std::cerr << "[BAM_IO] failed to allocate BAM record\n";
+            return -1;
+        }
+
+        int64_t processed = 0;
+        int64_t last_progress = 0;
+        while (sam_itr_next(file_, iter, record) >= 0) {
+            if (record->core.flag & BAM_FSECONDARY) {
+                continue;
+            }
+            if (record->core.flag & BAM_FUNMAP) {
+                continue;
+            }
+
+            BamRecordPtr copy(bam_dup1(record));
+            if (!copy) {
+                bam_destroy1(record);
+                sam_itr_destroy(iter);
+                return -1;
+            }
+            record_handler(std::move(copy));
+            ++processed;
+
+            if (progress_handler && progress_interval > 0 &&
+                processed - last_progress >= progress_interval) {
+                if (!progress_handler(processed, tid)) {
+                    break;
+                }
+                last_progress = processed;
+            }
+        }
+
+        bam_destroy1(record);
+        sam_itr_destroy(iter);
+
+        if (progress_handler) {
+            progress_handler(processed, tid);
+        }
+
+        return processed;
+    }
+
     std::string bam_path_;
     int32_t decompression_threads_ = 1;
+    BamRegionScope region_scope_;
     htsFile* file_ = nullptr;
     bam_hdr_t* header_ = nullptr;
     // Indexed fetch is intentionally serialized per reader instance. Parallel
@@ -362,6 +478,13 @@ std::unique_ptr<BamStreamReader> make_bam_reader(
     const std::string& bam_path,
     int32_t decompression_threads) {
     return std::make_unique<HtslibBamStreamReader>(bam_path, decompression_threads);
+}
+
+std::unique_ptr<BamStreamReader> make_bam_reader(
+    const std::string& bam_path,
+    int32_t decompression_threads,
+    const BamRegionScope& region_scope) {
+    return std::make_unique<HtslibBamStreamReader>(bam_path, decompression_threads, region_scope);
 }
 
 }  // namespace placer

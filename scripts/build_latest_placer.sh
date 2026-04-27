@@ -7,6 +7,28 @@ BUILD_DIR="${PLACER_BUILD_DIR:-$REPO_ROOT/build}"
 BUILD_TYPE="${PLACER_CMAKE_BUILD_TYPE:-Release}"
 BINARY_PATH="$BUILD_DIR/placer"
 
+ensure_abpoa_submodule() {
+    local abpoa_cmake="$REPO_ROOT/third_party/abPOA/CMakeLists.txt"
+    local abpoa_header="$REPO_ROOT/third_party/abPOA/include/abpoa.h"
+
+    if [[ -f "$abpoa_cmake" && -f "$abpoa_header" ]]; then
+        return
+    fi
+
+    if ! command -v git >/dev/null 2>&1; then
+        echo "[build-latest] abPOA submodule is missing and git is not available" >&2
+        exit 2
+    fi
+
+    echo "[build-latest] initializing abPOA submodule" >&2
+    git -C "$REPO_ROOT" submodule update --init --recursive
+
+    if [[ ! -f "$abpoa_cmake" || ! -f "$abpoa_header" ]]; then
+        echo "[build-latest] abPOA submodule is still incomplete after initialization" >&2
+        exit 2
+    fi
+}
+
 detect_jobs() {
     if [[ -n "${PLACER_BUILD_JOBS:-}" ]]; then
         printf '%s\n' "$PLACER_BUILD_JOBS"
@@ -66,6 +88,28 @@ find_newer_source() {
     return 1
 }
 
+cmake_configure_args=(
+    -S "$REPO_ROOT"
+    -B "$BUILD_DIR"
+    -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+)
+
+explicit_htslib_config=0
+if [[ -n "${HTSLIB_ROOT:-}" ]]; then
+    cmake_configure_args+=("-DHTSLIB_ROOT=$HTSLIB_ROOT")
+    explicit_htslib_config=1
+fi
+if [[ -n "${HTSLIB_INCLUDE_DIR:-}" ]]; then
+    cmake_configure_args+=("-DHTSLIB_INCLUDE_DIR=$HTSLIB_INCLUDE_DIR")
+    explicit_htslib_config=1
+fi
+if [[ -n "${HTSLIB_LIBRARY:-}" ]]; then
+    cmake_configure_args+=("-DHTSLIB_LIBRARY=$HTSLIB_LIBRARY")
+    explicit_htslib_config=1
+fi
+
+ensure_abpoa_submodule
+
 needs_configure=0
 needs_build=0
 reason=""
@@ -74,6 +118,20 @@ if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
     needs_configure=1
     needs_build=1
     reason="missing CMake cache"
+fi
+
+if [[ "${PLACER_FORCE_CONFIGURE:-0}" == "1" ]]; then
+    needs_configure=1
+    needs_build=1
+    reason="PLACER_FORCE_CONFIGURE=1"
+fi
+
+if [[ "$explicit_htslib_config" -eq 1 ]]; then
+    needs_configure=1
+    needs_build=1
+    if [[ -z "$reason" ]]; then
+        reason="explicit htslib configuration"
+    fi
 fi
 
 if [[ ! -x "$BINARY_PATH" ]]; then
@@ -96,7 +154,7 @@ mkdir -p "$BUILD_DIR"
 
 if [[ "$needs_configure" -eq 1 ]]; then
     echo "[build-latest] configuring build dir: $BUILD_DIR" >&2
-    cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+    cmake "${cmake_configure_args[@]}"
 fi
 
 if [[ "$needs_build" -eq 1 ]]; then

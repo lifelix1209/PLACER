@@ -2,11 +2,13 @@
 #include "pipeline.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 
 namespace placer {
@@ -91,6 +93,65 @@ std::string safe_absolute_path(const std::string& path) {
     }
 }
 
+void print_usage() {
+    std::cerr << "Usage: placer [--contig <chrom> | --region <chrom:start-end>] "
+              << "<input.bam> <ref.fa> <te.fa>" << std::endl;
+}
+
+bool parse_positive_i64(const std::string& text, int64_t& out) {
+    if (text.empty()) {
+        return false;
+    }
+    for (char ch : text) {
+        if (!std::isdigit(static_cast<unsigned char>(ch))) {
+            return false;
+        }
+    }
+    try {
+        out = std::stoll(text);
+    } catch (const std::exception&) {
+        return false;
+    }
+    return out > 0;
+}
+
+BamRegionScope parse_region_scope_or_throw(const std::string& region) {
+    if (region.empty()) {
+        throw std::runtime_error("empty region");
+    }
+
+    BamRegionScope scope;
+    scope.enabled = true;
+
+    const size_t colon = region.rfind(':');
+    if (colon == std::string::npos) {
+        scope.chrom = region;
+        scope.start = 0;
+        scope.end = -1;
+        return scope;
+    }
+
+    scope.chrom = region.substr(0, colon);
+    const std::string range = region.substr(colon + 1);
+    const size_t dash = range.find('-');
+    if (scope.chrom.empty() || dash == std::string::npos) {
+        throw std::runtime_error("invalid region: " + region);
+    }
+
+    int64_t start_1based = 0;
+    int64_t end_1based = 0;
+    if (!parse_positive_i64(range.substr(0, dash), start_1based) ||
+        !parse_positive_i64(range.substr(dash + 1), end_1based) ||
+        end_1based < start_1based ||
+        end_1based > std::numeric_limits<int32_t>::max()) {
+        throw std::runtime_error("invalid region: " + region);
+    }
+
+    scope.start = static_cast<int32_t>(start_1based - 1);
+    scope.end = static_cast<int32_t>(end_1based);
+    return scope;
+}
+
 void write_scientific_txt(const PipelineResult& result, const std::string& output_path) {
     std::ofstream out(output_path);
     if (!out.is_open()) {
@@ -151,15 +212,53 @@ int main(int argc, char** argv) {
         return placer::run_denovo_cli(argc - 1, argv + 1);
     }
 
-    if (argc < 4) {
-        std::cerr << "Usage: placer <input.bam> <ref.fa> <te.fa>" << std::endl;
+    placer::BamRegionScope bam_region_scope;
+    int argi = 1;
+    while (argi < argc) {
+        const std::string arg = argv[argi];
+        if (arg == "--region") {
+            if (bam_region_scope.enabled || argi + 1 >= argc) {
+                placer::print_usage();
+                return 1;
+            }
+            try {
+                bam_region_scope = placer::parse_region_scope_or_throw(argv[argi + 1]);
+            } catch (const std::exception& ex) {
+                std::cerr << "[PLACER] invalid --region: " << ex.what() << std::endl;
+                return 1;
+            }
+            argi += 2;
+            continue;
+        }
+        if (arg == "--contig") {
+            if (bam_region_scope.enabled || argi + 1 >= argc) {
+                placer::print_usage();
+                return 1;
+            }
+            bam_region_scope.enabled = true;
+            bam_region_scope.chrom = argv[argi + 1];
+            bam_region_scope.start = 0;
+            bam_region_scope.end = -1;
+            argi += 2;
+            continue;
+        }
+        if (arg.rfind("--", 0) == 0) {
+            placer::print_usage();
+            return 1;
+        }
+        break;
+    }
+
+    if (argc - argi != 3) {
+        placer::print_usage();
         return 1;
     }
 
     placer::PipelineConfig config;
-    config.bam_path = argv[1];
-    config.reference_fasta_path = argv[2];
-    config.te_fasta_path = argv[3];
+    config.bam_path = argv[argi];
+    config.reference_fasta_path = argv[argi + 1];
+    config.te_fasta_path = argv[argi + 2];
+    config.bam_region_scope = bam_region_scope;
 
     config.enable_parallel = placer::env_flag_enabled("PLACER_PARALLEL");
     {
@@ -260,6 +359,13 @@ int main(int argc, char** argv) {
         std::cerr << "[PLACER] run started\n"
                   << "  cwd=" << placer::safe_current_path() << "\n"
                   << "  bam=" << config.bam_path << "\n"
+                  << "  bam_region=" << (config.bam_region_scope.enabled
+                                           ? config.bam_region_scope.chrom + ":" +
+                                                 std::to_string(config.bam_region_scope.start + 1) + "-" +
+                                                 (config.bam_region_scope.end > 0
+                                                      ? std::to_string(config.bam_region_scope.end)
+                                                      : std::string("end"))
+                                           : std::string("ALL")) << "\n"
                   << "  reference=" << config.reference_fasta_path << "\n"
                   << "  te_fasta=" << (config.te_fasta_path.empty() ? "NA" : config.te_fasta_path) << "\n"
                   << "  mode=" << (config.enable_parallel ? "parallel" : "streaming") << "\n"

@@ -22,7 +22,13 @@ else
     echo "Skipping tests because PLACER_RUN_TESTS=0"
 fi
 
-if [[ $# -ge 2 ]]; then
+if [[ $# -gt 0 && $# -lt 3 ]]; then
+    echo "[build] missing run arguments" >&2
+    echo "Usage: ./build.sh <input.bam> <ref.fa> <te.fa>" >&2
+    exit 2
+fi
+
+if [[ $# -ge 3 ]]; then
     echo ""
     echo "=== Running PLACER ==="
     exec "$PLACER_BIN" "$@"
@@ -31,4 +37,8 @@ fi
 echo ""
 echo "=== Run skipped ==="
 echo "Provide BAM/REF paths to run PLACER:"
-echo "  ./build.sh <input.bam> <ref.fa> [te.fa]"
+echo "  ./build.sh <input.bam> <ref.fa> <te.fa>"
+echo ""
+echo "For an explicit conda htslib build, run for example:"
+echo "  HTSLIB_ROOT=/path/to/conda ./build.sh"
+echo "  HTSLIB_INCLUDE_DIR=/path/to/conda/include HTSLIB_LIBRARY=/path/to/conda/lib/libhts.so ./build.sh"
