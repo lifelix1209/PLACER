@@ -162,6 +162,20 @@ add_test(
     COMMAND test_parallel_exact_bin_task_equivalence
 )
 
+add_executable(test_owner_bin_component_context
+    test_owner_bin_component_context.cpp
+)
+target_include_directories(test_owner_bin_component_context PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/pipeline
+)
+target_link_libraries(test_owner_bin_component_context PRIVATE placer_pipeline)
+
+add_test(
+    NAME test_owner_bin_component_context
+    COMMAND test_owner_bin_component_context
+)
+
 add_executable(test_parallel_bounded_scheduler
     test_parallel_bounded_scheduler.cpp
 )

@@ -93,6 +93,22 @@ class RunShardedPlacerTest(unittest.TestCase):
             ["chr_big", "chr_tie_a", "chr_tie_b", "chr_small"],
         )
 
+    def test_build_shards_always_uses_region_core_and_overlap(self):
+        contigs = [
+            MODULE.ContigInfo(name="chr1", length=2500, mapped=100, unmapped=0),
+        ]
+
+        shards = MODULE.build_shards(contigs, region_size=1000, overlap_bp=100)
+
+        self.assertEqual(
+            [(s.label, s.core_start, s.core_end, s.fetch_start, s.fetch_end) for s in shards],
+            [
+                ("0001_chr1_1_1000", 1, 1000, 1, 1100),
+                ("0002_chr1_1001_2000", 1001, 2000, 901, 2100),
+                ("0003_chr1_2001_2500", 2001, 2500, 1901, 2500),
+            ],
+        )
+
     def test_parse_scientific_rejects_unexpected_schema(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "unexpected.scientific.txt"
@@ -140,12 +156,12 @@ class RunShardedPlacerTest(unittest.TestCase):
             shard_one = MODULE.ShardResult(
                 spec=MODULE.ShardSpec(
                     shard_id=1,
-                    label="0001_chr1",
+                    label="0001_chr1_1_1000",
                     chrom="chr1",
                     core_start=1,
                     core_end=1000,
                     fetch_start=1,
-                    fetch_end=1000,
+                    fetch_end=1100,
                 ),
                 workdir=root,
                 scientific_path=shard_one_path,
@@ -156,12 +172,12 @@ class RunShardedPlacerTest(unittest.TestCase):
             shard_two = MODULE.ShardResult(
                 spec=MODULE.ShardSpec(
                     shard_id=2,
-                    label="0002_chr1",
+                    label="0002_chr1_1_1000",
                     chrom="chr1",
                     core_start=1,
                     core_end=1000,
                     fetch_start=1,
-                    fetch_end=1000,
+                    fetch_end=1100,
                 ),
                 workdir=root,
                 scientific_path=shard_two_path,
@@ -172,7 +188,6 @@ class RunShardedPlacerTest(unittest.TestCase):
 
             MODULE.merge_shard_results(
                 [shard_one, shard_two],
-                mode="contig",
                 dedup_bp=10,
                 chrom_order={"chr1": 0},
                 region_size=1000,
@@ -182,13 +197,133 @@ class RunShardedPlacerTest(unittest.TestCase):
 
             summary, header, rows = MODULE.parse_scientific(merged_path)
             self.assertEqual(header, MODULE.EXPECTED_SCIENTIFIC_HEADER)
-            self.assertEqual(summary["event_consensus_calls"], "7")
+            self.assertEqual(summary["event_consensus_calls"], "-1")
             self.assertEqual(summary["final_pass_calls"], "1")
+            self.assertEqual(summary["merge_mode"], "region")
             self.assertEqual(summary["schema_version"], "1.0.0-sharded")
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["te"], "L1HS")
             self.assertEqual(rows[0]["family"], "L1")
             self.assertEqual(rows[0]["cross_family_margin"], "0.37")
+
+    def test_merge_shard_results_filters_rows_outside_core(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scientific = root / "scientific.txt"
+            merged = root / "merged.txt"
+            in_core = make_row(pos="950", te="KEEP")
+            overlap_only = make_row(pos="1050", te="DROP")
+            write_scientific(scientific, make_summary(), [in_core, overlap_only])
+
+            shard = MODULE.ShardResult(
+                spec=MODULE.ShardSpec(1, "0001_chr1_1_1000", "chr1", 1, 1000, 1, 1100),
+                workdir=root,
+                scientific_path=scientific,
+                summary=make_summary(),
+                n_rows_raw=2,
+                elapsed_s=1.0,
+            )
+
+            MODULE.merge_shard_results(
+                [shard],
+                dedup_bp=50,
+                chrom_order={"chr1": 0},
+                region_size=1000,
+                overlap_bp=100,
+                out_path=merged,
+            )
+
+            _, _, rows = MODULE.parse_scientific(merged)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["te"], "KEEP")
+
+    def test_merge_shard_results_dedups_by_breakpoint_similarity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            shard_one_path = root / "shard1.scientific.txt"
+            shard_two_path = root / "shard2.scientific.txt"
+            merged_path = root / "merged.txt"
+
+            weaker = make_row(pos="1000", bp_left="990", bp_right="1010", support_reads="3", gq="20", te="WEAK")
+            stronger = make_row(pos="1040", bp_left="994", bp_right="1014", support_reads="6", gq="30", te="STRONG")
+            write_scientific(shard_one_path, make_summary(), [weaker])
+            write_scientific(shard_two_path, make_summary(), [stronger])
+
+            shards = [
+                MODULE.ShardResult(
+                    spec=MODULE.ShardSpec(1, "0001_chr1_1_1200", "chr1", 1, 1200, 1, 1400),
+                    workdir=root,
+                    scientific_path=shard_one_path,
+                    summary=make_summary(),
+                    n_rows_raw=1,
+                    elapsed_s=1.0,
+                ),
+                MODULE.ShardResult(
+                    spec=MODULE.ShardSpec(2, "0002_chr1_801_1800", "chr1", 801, 1800, 601, 2000),
+                    workdir=root,
+                    scientific_path=shard_two_path,
+                    summary=make_summary(),
+                    n_rows_raw=1,
+                    elapsed_s=1.0,
+                ),
+            ]
+
+            MODULE.merge_shard_results(
+                shards,
+                dedup_bp=10,
+                chrom_order={"chr1": 0},
+                region_size=1000,
+                overlap_bp=200,
+                out_path=merged_path,
+            )
+
+            _, _, rows = MODULE.parse_scientific(merged_path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["te"], "STRONG")
+
+    def test_merge_shard_results_dedups_breakpoint_match_past_intervening_call(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            shard_one_path = root / "shard1.scientific.txt"
+            shard_two_path = root / "shard2.scientific.txt"
+            merged_path = root / "merged.txt"
+
+            weaker = make_row(pos="1000", bp_left="990", bp_right="1010", support_reads="3", gq="20", te="WEAK")
+            intervening = make_row(pos="1020", bp_left="2000", bp_right="2010", support_reads="4", gq="25", te="KEEP")
+            stronger = make_row(pos="1040", bp_left="994", bp_right="1014", support_reads="6", gq="30", te="STRONG")
+            write_scientific(shard_one_path, make_summary(), [weaker, intervening])
+            write_scientific(shard_two_path, make_summary(), [stronger])
+
+            shards = [
+                MODULE.ShardResult(
+                    spec=MODULE.ShardSpec(1, "0001_chr1_1_1200", "chr1", 1, 1200, 1, 1400),
+                    workdir=root,
+                    scientific_path=shard_one_path,
+                    summary=make_summary(),
+                    n_rows_raw=2,
+                    elapsed_s=1.0,
+                ),
+                MODULE.ShardResult(
+                    spec=MODULE.ShardSpec(2, "0002_chr1_801_1800", "chr1", 801, 1800, 601, 2000),
+                    workdir=root,
+                    scientific_path=shard_two_path,
+                    summary=make_summary(),
+                    n_rows_raw=1,
+                    elapsed_s=1.0,
+                ),
+            ]
+
+            MODULE.merge_shard_results(
+                shards,
+                dedup_bp=10,
+                chrom_order={"chr1": 0},
+                region_size=1000,
+                overlap_bp=200,
+                out_path=merged_path,
+            )
+
+            _, _, rows = MODULE.parse_scientific(merged_path)
+            self.assertEqual([row["te"] for row in rows], ["KEEP", "STRONG"])
 
     def test_try_resume_shard_requires_success_marker_and_scientific(self):
         with tempfile.TemporaryDirectory() as tmpdir:

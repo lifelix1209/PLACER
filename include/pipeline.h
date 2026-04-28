@@ -433,25 +433,6 @@ public:
     PipelineResult run() const;
 
 private:
-    struct WindowCoord {
-        int32_t tid = -1;
-        int32_t pos = -1;
-    };
-
-    struct StreamingState {
-        struct BinSnapshot {
-            int32_t tid = -1;
-            int32_t bin_index = -1;
-            std::vector<BufferedRecord> records;
-        };
-
-        std::deque<WindowCoord> active_window;
-        std::deque<BinSnapshot> recent_bin_snapshots;
-        std::vector<BufferedRecord> current_bin_records;
-        int32_t current_tid = -1;
-        int32_t current_bin_index = -1;
-    };
-
     struct HypothesisSummary {
         size_t original_index = 0;
         int32_t bp_left = -1;
@@ -561,15 +542,6 @@ private:
     bool should_keep_hypothesis_for_expensive_stage(
         const HypothesisSummary& summary,
         bool is_top_ranked_survivor) const;
-
-    void consume_record(
-        BamRecordPtr&& record,
-        StreamingState& state,
-        PipelineResult& result) const;
-
-    void flush_current_bin(
-        StreamingState& state,
-        PipelineResult& result) const;
 
     void process_bin_records(
         std::vector<const bam1_t*>&& bin_records,

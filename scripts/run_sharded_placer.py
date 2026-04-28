@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Run PLACER per indexed BAM contig/region shard and merge scientific outputs.
+"""Run PLACER per indexed BAM region shard and merge scientific outputs.
 
 Design goals:
 - Keep all PLACER modules enabled (no algorithm feature drop).
 - Improve scalability on very large BAMs through indexed data sharding.
 - Preserve accuracy:
-  * `contig` mode is exact (no overlap, no duplicated loci).
-  * `region` mode uses overlap padding + core-range filtering at merge time.
+  * fixed region shards use overlap padding + core-range filtering at merge time.
 """
 
 from __future__ import annotations
@@ -369,29 +368,12 @@ def sanitize_label(s: str) -> str:
 def build_shards(
     contigs: Sequence[ContigInfo],
     *,
-    mode: str,
     region_size: int,
     overlap_bp: int,
 ) -> List[ShardSpec]:
     shards: List[ShardSpec] = []
     sid = 0
     for contig in contigs:
-        if mode == "contig":
-            sid += 1
-            label = sanitize_label(f"{sid:04d}_{contig.name}")
-            shards.append(
-                ShardSpec(
-                    shard_id=sid,
-                    label=label,
-                    chrom=contig.name,
-                    core_start=1,
-                    core_end=contig.length,
-                    fetch_start=1,
-                    fetch_end=contig.length,
-                )
-            )
-            continue
-
         start = 1
         while start <= contig.length:
             core_start = start
@@ -526,10 +508,33 @@ def parse_float(value: str, default: float = 0.0) -> float:
         return default
 
 
+def valid_pos(value: int) -> bool:
+    return value >= 0
+
+
 def same_call_locus(a: Dict[str, str], b: Dict[str, str], dedup_bp: int) -> bool:
     if a.get("chrom", "") != b.get("chrom", ""):
         return False
-    return abs(parse_int(a.get("pos", "-1"), -1) - parse_int(b.get("pos", "-1"), -1)) <= dedup_bp
+
+    a_pos = parse_int(a.get("pos", "-1"), -1)
+    b_pos = parse_int(b.get("pos", "-1"), -1)
+    if valid_pos(a_pos) and valid_pos(b_pos) and abs(a_pos - b_pos) <= dedup_bp:
+        return True
+
+    a_left = parse_int(a.get("bp_left", "-1"), -1)
+    a_right = parse_int(a.get("bp_right", "-1"), -1)
+    b_left = parse_int(b.get("bp_left", "-1"), -1)
+    b_right = parse_int(b.get("bp_right", "-1"), -1)
+    if all(valid_pos(v) for v in (a_left, a_right, b_left, b_right)):
+        if abs(a_left - b_left) <= dedup_bp and abs(a_right - b_right) <= dedup_bp:
+            return True
+        a_width = abs(a_right - a_left)
+        b_width = abs(b_right - b_left)
+        if a_width <= dedup_bp and valid_pos(b_pos):
+            return abs(((a_left + a_right) // 2) - b_pos) <= dedup_bp
+        if b_width <= dedup_bp and valid_pos(a_pos):
+            return abs(((b_left + b_right) // 2) - a_pos) <= dedup_bp
+    return False
 
 
 def prefer_new_call(cur: Dict[str, str], incumbent: Dict[str, str]) -> bool:
@@ -594,25 +599,26 @@ def dedup_calls(
     ordered = sorted(rows, key=sort_key)
     out: List[Dict[str, str]] = []
     for row in ordered:
-        if out and same_call_locus(row, out[-1], dedup_bp):
-            if prefer_new_call(row, out[-1]):
-                out[-1] = row
+        duplicate_index: Optional[int] = None
+        for idx in range(len(out) - 1, -1, -1):
+            if out[idx].get("chrom", "") != row.get("chrom", ""):
+                break
+            if same_call_locus(row, out[idx], dedup_bp):
+                duplicate_index = idx
+                break
+
+        if duplicate_index is None:
+            out.append(row)
             continue
-        out.append(row)
-    return out
 
-
-def sum_summary_key(shards: Sequence[ShardResult], key: str) -> int:
-    total = 0
-    for shard in shards:
-        total += parse_int(shard.summary.get(key, "0"), 0)
-    return total
+        if prefer_new_call(row, out[duplicate_index]):
+            out[duplicate_index] = row
+    return sorted(out, key=sort_key)
 
 
 def merge_shard_results(
     shards: Sequence[ShardResult],
     *,
-    mode: str,
     dedup_bp: int,
     chrom_order: Dict[str, int],
     region_size: int,
@@ -638,18 +644,14 @@ def merge_shard_results(
             pos = parse_int(row.get("pos", "-1"), -1)
             if pos < 0:
                 continue
-            if mode == "region":
-                if pos < shard.spec.core_start or pos > shard.spec.core_end:
-                    continue
+            if pos < shard.spec.core_start or pos > shard.spec.core_end:
+                continue
             merged_rows.append(row)
 
     assert base_header is not None
     deduped = dedup_calls(merged_rows, chrom_order=chrom_order, dedup_bp=dedup_bp)
 
-    if mode == "contig":
-        summary_values = {k: sum_summary_key(shards, k) for k in SUMMARY_INT_KEYS}
-    else:
-        summary_values = {k: -1 for k in SUMMARY_INT_KEYS}
+    summary_values = {k: -1 for k in SUMMARY_INT_KEYS}
     summary_values["final_pass_calls"] = len(deduped)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -665,11 +667,10 @@ def merge_shard_results(
             "final_pass_calls",
         ]:
             out.write(f"{key}\t{summary_values.get(key, 0)}\n")
-        out.write(f"merge_mode\t{mode}\n")
+        out.write("merge_mode\tregion\n")
         out.write(f"merge_dedup_distance_bp\t{dedup_bp}\n")
-        if mode == "region":
-            out.write(f"region_size_bp\t{region_size}\n")
-            out.write(f"region_overlap_bp\t{overlap_bp}\n")
+        out.write(f"region_size_bp\t{region_size}\n")
+        out.write(f"region_overlap_bp\t{overlap_bp}\n")
         out.write("schema_version\t1.0.0-sharded\n")
         out.write("\n")
         out.write("#" + "\t".join(base_header) + "\n")
@@ -869,12 +870,6 @@ def main() -> int:
     parser.add_argument("--te", default="", help="TE FASTA (optional).")
     parser.add_argument("--placer", default="build/placer", help="PLACER binary path.")
     parser.add_argument("--samtools", default="samtools", help="samtools executable.")
-    parser.add_argument(
-        "--mode",
-        choices=["contig", "region"],
-        default="contig",
-        help="contig: exact by chromosome; region: fixed windows with overlap.",
-    )
     parser.add_argument("--region-size", type=int, default=50_000_000)
     parser.add_argument("--overlap-bp", type=int, default=200_000)
     parser.add_argument("--min-mapped-reads", type=int, default=1)
@@ -960,7 +955,6 @@ def main() -> int:
 
     shards = build_shards(
         contigs,
-        mode=args.mode,
         region_size=max(1, args.region_size),
         overlap_bp=max(0, args.overlap_bp),
     )
@@ -981,7 +975,7 @@ def main() -> int:
     failures_by_label: Dict[str, str] = {}
 
     print(
-        f"[sharded] mode={args.mode} contigs={len(contigs)} shards={len(shards)} "
+        f"[sharded] mode=region contigs={len(contigs)} shards={len(shards)} "
         f"workers={max(1, args.workers)}"
         f" heartbeat={max(0.0, args.progress_heartbeat_s):.1f}s",
         flush=True,
@@ -1105,7 +1099,6 @@ def main() -> int:
     shard_results.sort(key=lambda x: x.spec.shard_id)
     merge_shard_results(
         shard_results,
-        mode=args.mode,
         dedup_bp=max(0, args.dedup_bp),
         chrom_order=chrom_order,
         region_size=max(1, args.region_size),

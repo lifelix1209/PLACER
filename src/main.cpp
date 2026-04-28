@@ -94,7 +94,7 @@ std::string safe_absolute_path(const std::string& path) {
 }
 
 void print_usage() {
-    std::cerr << "Usage: placer [--contig <chrom> | --region <chrom:start-end>] "
+    std::cerr << "Usage: placer [--region <chrom:start-end>] "
               << "<input.bam> <ref.fa> <te.fa>" << std::endl;
 }
 
@@ -227,18 +227,6 @@ int main(int argc, char** argv) {
                 std::cerr << "[PLACER] invalid --region: " << ex.what() << std::endl;
                 return 1;
             }
-            argi += 2;
-            continue;
-        }
-        if (arg == "--contig") {
-            if (bam_region_scope.enabled || argi + 1 >= argc) {
-                placer::print_usage();
-                return 1;
-            }
-            bam_region_scope.enabled = true;
-            bam_region_scope.chrom = argv[argi + 1];
-            bam_region_scope.start = 0;
-            bam_region_scope.end = -1;
             argi += 2;
             continue;
         }

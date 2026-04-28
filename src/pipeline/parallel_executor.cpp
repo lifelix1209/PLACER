@@ -56,6 +56,61 @@ void prune_consumed_exact_bin_snapshots(
     }
 }
 
+void snapshot_current_exact_bin(ExactBinScanState& state) {
+    if (state.current_tid < 0 || state.current_bin_index < 0 ||
+        state.current_bin_records.empty()) {
+        return;
+    }
+
+    SharedRecordBatch batch = std::make_shared<const std::vector<BufferedRecord>>(
+        std::move(state.current_bin_records));
+    state.current_bin_records.clear();
+    state.recent_snapshots.push_back(ExactBinSnapshot{
+        state.current_tid,
+        state.current_bin_index,
+        std::move(batch),
+    });
+}
+
+std::vector<ExactBinTask> materialize_scan_ready_tasks(
+    ExactBinScanState& state,
+    bool flush_all,
+    int32_t latest_completed_bin_index,
+    int32_t bin_size,
+    int32_t cross_bin_context_bins,
+    int32_t window_bin_slack_bp) {
+    snapshot_current_exact_bin(state);
+    if (state.recent_snapshots.empty()) {
+        if (flush_all) {
+            state.current_tid = -1;
+            state.current_bin_index = -1;
+            state.next_owner_offset = 0;
+        }
+        return {};
+    }
+
+    const int32_t latest_completed =
+        latest_completed_bin_index >= 0
+            ? latest_completed_bin_index
+            : state.recent_snapshots.back().bin_index;
+    std::vector<ExactBinTask> ready = materialize_ready_exact_bin_tasks(
+        state.recent_snapshots,
+        state.next_owner_offset,
+        latest_completed,
+        flush_all,
+        bin_size,
+        cross_bin_context_bins,
+        window_bin_slack_bp);
+
+    if (flush_all) {
+        state.recent_snapshots.clear();
+        state.next_owner_offset = 0;
+        state.current_tid = -1;
+        state.current_bin_index = -1;
+    }
+    return ready;
+}
+
 }  // namespace
 
 ExactBinTaskCost estimate_exact_bin_task_cost(const ExactBinTask& task) {
@@ -154,6 +209,70 @@ std::vector<ExactBinTask> materialize_ready_exact_bin_tasks(
     return tasks;
 }
 
+std::vector<ExactBinTask> append_record_to_exact_bin_scan(
+    ExactBinScanState& state,
+    BufferedRecord&& record,
+    int32_t tid,
+    int32_t bin_index,
+    int32_t bin_size,
+    int32_t cross_bin_context_bins,
+    int32_t window_bin_slack_bp) {
+    if (tid < 0 || bin_index < 0) {
+        return {};
+    }
+
+    if (state.current_tid < 0) {
+        state.current_tid = tid;
+        state.current_bin_index = bin_index;
+        state.current_bin_records.push_back(std::move(record));
+        return {};
+    }
+
+    std::vector<ExactBinTask> ready;
+    if (tid != state.current_tid) {
+        ready = materialize_scan_ready_tasks(
+            state,
+            true,
+            state.current_bin_index,
+            bin_size,
+            cross_bin_context_bins,
+            window_bin_slack_bp);
+        state.current_tid = tid;
+        state.current_bin_index = bin_index;
+    } else if (bin_index != state.current_bin_index) {
+        const int32_t latest_completed_bin_index =
+            bin_index > state.current_bin_index
+                ? bin_index - 1
+                : state.current_bin_index;
+        ready = materialize_scan_ready_tasks(
+            state,
+            false,
+            latest_completed_bin_index,
+            bin_size,
+            cross_bin_context_bins,
+            window_bin_slack_bp);
+        state.current_tid = tid;
+        state.current_bin_index = bin_index;
+    }
+
+    state.current_bin_records.push_back(std::move(record));
+    return ready;
+}
+
+std::vector<ExactBinTask> flush_exact_bin_scan(
+    ExactBinScanState& state,
+    int32_t bin_size,
+    int32_t cross_bin_context_bins,
+    int32_t window_bin_slack_bp) {
+    return materialize_scan_ready_tasks(
+        state,
+        true,
+        state.current_bin_index,
+        bin_size,
+        cross_bin_context_bins,
+        window_bin_slack_bp);
+}
+
 CostAwareTaskQueue::CostAwareTaskQueue(size_t capacity)
     : capacity_(capacity) {}
 
@@ -189,13 +308,13 @@ bool CostAwareTaskQueue::try_push(ExactBinTask task) {
     return true;
 }
 
-void CostAwareTaskQueue::push(ExactBinTask task) {
+bool CostAwareTaskQueue::push(ExactBinTask task) {
     std::unique_lock<std::mutex> lock(mu_);
     cv_not_full_.wait(lock, [this]() {
         return closed_ || capacity_ == 0 || heap_.size() < capacity_;
     });
     if (closed_) {
-        return;
+        return false;
     }
     ReadyEntry entry;
     entry.cost = estimate_exact_bin_task_cost(task);
@@ -204,6 +323,7 @@ void CostAwareTaskQueue::push(ExactBinTask task) {
     heap_.push(std::move(entry));
     lock.unlock();
     cv_not_empty_.notify_one();
+    return true;
 }
 
 bool CostAwareTaskQueue::pop(ExactBinTask& out) {

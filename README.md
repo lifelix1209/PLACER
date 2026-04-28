@@ -62,7 +62,7 @@ local fetches on the same original BAM:
 
 ```bash
 ./build/placer --region chr1:1-50000000 <input.bam> <ref.fa> <te.fa>
-./build/placer --contig chr1 <input.bam> <ref.fa> <te.fa>
+./build/placer --region chr1 <input.bam> <ref.fa> <te.fa>
 ```
 
 Default output:
@@ -117,8 +117,8 @@ The submission script writes run logs into:
 Expected log chain:
 
 - `[slurm] ...`
-- `[run-latest] ...`
 - `[PLACER] run started`
+- `[Pipeline] starting mode=parallel`
 
 If `[PLACER] run started` never appears in the run logs, the job did not reach the current repository binary entrypoint.
 
@@ -133,57 +133,24 @@ If `[PLACER] run started` never appears in the run logs, the job did not reach t
 - `left_flank_align_len`, `right_flank_align_len`, `consensus_len`
 - `qc`
 
-## Sharded Run (Large BAM)
+## Large BAM Performance Run
 
-For very large BAMs on a single node, use exact contig sharding as the primary path.
-The runner calls `placer --region` on the original indexed BAM; it does not
-materialize per-shard BAM files.
-
-```bash
-python3 scripts/run_sharded_placer.py \
-  --bam <input.bam> \
-  --ref <ref.fa> \
-  --te <te.fa> \
-  --placer ./build/placer \
-  --mode contig \
-  --workers 32 \
-  --resume \
-  --outdir sharded_placer_out
-```
-
-Outputs:
-
-- `sharded_placer_out/scientific.sharded.txt` (canonical merged exact callset)
-- `sharded_placer_out/shard_manifest.tsv` (live shard state + final per-shard timing)
-- `sharded_placer_out/shards/<label>/scientific.txt` (per-contig region result)
-
-Operational notes:
-
-- `--mode contig` is the exact production path for large BAMs.
-- Restarting the same `--outdir` with `--resume` reuses completed shard results.
-- Large-BAM SLURM runs should launch the sharded orchestrator directly rather than `run_placer_latest.sh`.
-
-Accuracy notes:
-
-- `--mode contig` is exact (no overlap artifacts).
-- `--mode region` uses overlap + core-range merge filtering for boundary safety.
-
-Memory/backpressure tuning for internal parallel mode:
+For one large BAM, the preferred performance path is one PLACER process with
+C++ taskgraph parallelism:
 
 ```bash
 PLACER_PARALLEL=1 \
-PLACER_PARALLEL_WORKERS=8 \
-PLACER_PARALLEL_QUEUE_MAX_TASKS=16 \
-PLACER_PARALLEL_RESULT_BUFFER_MAX=16 \
+PLACER_PARALLEL_WORKERS=48 \
+PLACER_PARALLEL_QUEUE_MAX_TASKS=192 \
+PLACER_BAM_THREADS=2 \
 PLACER_LOG_PARALLEL_PROGRESS=1 \
 ./build/placer <input.bam> <ref.fa> <te.fa>
 ```
 
-`processed=` still reports BAM scan progress. The new `[Pipeline][parallel] ...` lines report raw bins discovered, the bounded snapshot window, ready backlog, running tasks, completed tasks, and reducer-committed bins. If `reads_scanned` rises quickly while `tasks_completed` and `reducer_committed` stall, the bottleneck is task execution rather than BAM scanning.
-
-### Exact Micro-Shard Parallel Executor
-
-The internal parallel executor now materializes exact `(tid, bin_index)` tasks rather than letting the BAM reader run arbitrarily far ahead of bin execution. This keeps semantics aligned with the existing bin logic while bounding queue growth and exposing task-level progress.
+The taskgraph executor streams the BAM once, materializes exact `(tid,
+bin_index)` owner-bin tasks, and keeps worker input bounded by
+`PLACER_PARALLEL_QUEUE_MAX_TASKS`. Workers may finish out of order, but final
+results are reduced in deterministic owner-bin order.
 
 Useful environment variables:
 
@@ -201,6 +168,44 @@ Interpretation:
 - `[Pipeline] processed=...` reports BAM scan progress.
 - `[Pipeline][parallel] ...` reports raw bins discovered, snapshot-window size, executor backlog, running tasks, completed tasks, and reducer-committed bins.
 - If scan progress rises while reducer-committed bins stall, the hot path is exact task execution rather than BAM reading.
+
+## Sharded Replay / Debugging
+
+Use `scripts/run_sharded_placer.py` for coarse replay/debugging or operational
+batching, not as the default single-BAM speed path.
+The runner calls `placer --region` on the original indexed BAM; it does not
+materialize per-shard BAM files.
+
+```bash
+python3 scripts/run_sharded_placer.py \
+  --bam <input.bam> \
+  --ref <ref.fa> \
+  --te <te.fa> \
+  --placer ./build/placer \
+  --region-size 50000000 \
+  --overlap-bp 200000 \
+  --workers 32 \
+  --resume \
+  --outdir sharded_placer_out
+```
+
+Outputs:
+
+- `sharded_placer_out/scientific.sharded.txt` (canonical merged exact callset)
+- `sharded_placer_out/shard_manifest.tsv` (live shard state + final per-shard timing)
+- `sharded_placer_out/shards/<label>/scientific.txt` (per-region shard result)
+
+Operational notes:
+
+- `--region-size` controls each shard's owner interval.
+- `--overlap-bp` controls context fetched around each owner interval.
+- Restarting the same `--outdir` with `--resume` reuses completed shard results.
+
+Accuracy notes:
+
+- Each shard analyzes an overlapped fetch interval, but merged call ownership is
+  assigned only by breakpoint/anchor position inside the shard core interval.
+- Boundary duplicate calls are merged by position and breakpoint similarity.
 
 ## Random Truth Evaluation
 

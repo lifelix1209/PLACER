@@ -682,6 +682,17 @@ int32_t exact_bin_index_for_record(const bam1_t* record, int32_t bin_size) {
     return view.pos() / bin_size;
 }
 
+std::vector<const bam1_t*> collect_task_record_ptrs(const ExactBinTask& task) {
+    std::vector<const bam1_t*> bin_records;
+    bin_records.reserve(task.records.size());
+    for (const auto& record_ref : task.records) {
+        if (record_ref.record) {
+            bin_records.push_back(record_ref.record);
+        }
+    }
+    return bin_records;
+}
+
 void append_partial_pipeline_result(PipelineResult& dst, PipelineResult&& src) {
     dst.processed_bins += src.processed_bins;
     dst.built_components += src.built_components;
@@ -3903,89 +3914,26 @@ PipelineResult Pipeline::run() const {
 
 PipelineResult Pipeline::run_streaming() const {
     PipelineResult result;
-    StreamingState state;
-
-    const auto progress_cb = [this](int64_t processed, int32_t tid) {
-        std::cerr << "[Pipeline] processed=" << processed << " current_tid=" << tid << '\n';
-        return true;
-    };
-
-    result.total_reads = bam_reader_->stream(
-        [this, &state, &result](BamRecordPtr&& record) {
-            consume_record(std::move(record), state, result);
-        },
-        progress_cb,
-        config_.progress_interval);
-
-    flush_current_bin(state, result);
-    finalize_final_calls(result);
-    return result;
-}
-
-PipelineResult Pipeline::run_parallel() const {
-    PipelineResult result;
     const int32_t bin_size = std::max(1, config_.bin_size);
-    int32_t worker_count = config_.parallel_workers;
-    if (worker_count <= 0) {
-        worker_count = static_cast<int32_t>(std::thread::hardware_concurrency());
-    }
-    worker_count = std::max(1, worker_count);
+    ExactBinScanState state;
 
-    struct ParallelScanState {
-        int32_t current_tid = -1;
-        int32_t current_bin_index = -1;
-        std::vector<BufferedRecord> current_bin_records;
-        std::deque<ExactBinSnapshot> recent_snapshots;
-        size_t next_owner_offset = 0;
-    } state;
-
-    std::vector<ExactBinTask> tasks;
-    std::vector<std::pair<int32_t, int32_t>> task_order;
-    task_order.reserve(1024);
-
-    const auto append_ready_parallel_tasks = [&](const std::vector<ExactBinTask>& ready_tasks) {
-        for (const auto& task : ready_tasks) {
-            task_order.push_back({task.tid, task.bin_index});
-            tasks.push_back(task);
+    const auto process_task = [&](const ExactBinTask& task) {
+        std::vector<const bam1_t*> bin_records = collect_task_record_ptrs(task);
+        if (bin_records.empty()) {
+            return;
         }
+        process_bin_records(
+            std::move(bin_records),
+            task.tid,
+            task.bin_index,
+            task.bin_start,
+            task.bin_end,
+            result);
     };
 
-    const auto flush_parallel_bin = [&](
-                                       bool flush_all_pending,
-                                       int32_t latest_observed_bin_index) {
-        if (state.current_tid < 0 || state.current_bin_index < 0) {
-            return;
-        }
-
-        if (!state.current_bin_records.empty()) {
-            SharedRecordBatch batch = std::make_shared<const std::vector<BufferedRecord>>(
-                std::move(state.current_bin_records));
-            state.current_bin_records.clear();
-            state.recent_snapshots.push_back(ExactBinSnapshot{
-                state.current_tid,
-                state.current_bin_index,
-                std::move(batch),
-            });
-        }
-
-        if (state.recent_snapshots.empty()) {
-            return;
-        }
-
-        append_ready_parallel_tasks(materialize_ready_exact_bin_tasks(
-            state.recent_snapshots,
-            state.next_owner_offset,
-            latest_observed_bin_index >= 0
-                ? latest_observed_bin_index
-                : state.recent_snapshots.back().bin_index,
-            flush_all_pending,
-            bin_size,
-            kCrossBinContextBins,
-            kWindowBinSlackBp));
-
-        if (flush_all_pending) {
-            state.recent_snapshots.clear();
-            state.next_owner_offset = 0;
+    const auto process_ready = [&](std::vector<ExactBinTask> ready) {
+        for (const auto& task : ready) {
+            process_task(task);
         }
     };
 
@@ -3995,7 +3943,7 @@ PipelineResult Pipeline::run_parallel() const {
     };
 
     result.total_reads = bam_reader_->stream(
-        [this, &result, &state, bin_size, &flush_parallel_bin](BamRecordPtr&& record) {
+        [this, &state, &result, bin_size, &process_ready](BamRecordPtr&& record) {
             if (!record) {
                 return;
             }
@@ -4009,63 +3957,113 @@ PipelineResult Pipeline::run_parallel() const {
             const int32_t tid = view.tid();
             const int32_t bin_index = exact_bin_index_for_record(record.get(), bin_size);
 
-            if (state.current_tid < 0) {
-                state.current_tid = tid;
-                state.current_bin_index = bin_index;
-            }
-
-            if (tid != state.current_tid || bin_index != state.current_bin_index) {
-                flush_parallel_bin(
-                    tid != state.current_tid,
-                    tid == state.current_tid ? bin_index : state.current_bin_index);
-                state.current_tid = tid;
-                state.current_bin_index = bin_index;
-            }
-
             BufferedRecord buffered;
             buffered.ref_end = compute_ref_end(view);
             buffered.record = std::move(record);
-            state.current_bin_records.push_back(std::move(buffered));
+
+            process_ready(append_record_to_exact_bin_scan(
+                state,
+                std::move(buffered),
+                tid,
+                bin_index,
+                bin_size,
+                kCrossBinContextBins,
+                kWindowBinSlackBp));
         },
         progress_cb,
         config_.progress_interval);
 
-    flush_parallel_bin(true, state.current_bin_index);
+    process_ready(flush_exact_bin_scan(
+        state,
+        bin_size,
+        kCrossBinContextBins,
+        kWindowBinSlackBp));
+    finalize_final_calls(result);
+    return result;
+}
 
-    if (tasks.empty()) {
-        finalize_final_calls(result);
-        return result;
+PipelineResult Pipeline::run_parallel() const {
+    PipelineResult result;
+    const int32_t bin_size = std::max(1, config_.bin_size);
+    int32_t worker_count = config_.parallel_workers;
+    if (worker_count <= 0) {
+        worker_count = static_cast<int32_t>(std::thread::hardware_concurrency());
     }
-    if (tasks.size() == 1) {
-        const ExactBinTask& task = tasks.front();
-        std::vector<const bam1_t*> bin_records;
-        bin_records.reserve(task.records.size());
-        for (const auto& record_ref : task.records) {
-            if (record_ref.record) {
-                bin_records.push_back(record_ref.record);
+    worker_count = std::max(1, worker_count);
+
+    const size_t ready_capacity = static_cast<size_t>(
+        config_.parallel_queue_max_tasks > 0
+            ? config_.parallel_queue_max_tasks
+            : std::max(4, worker_count * 4));
+    const size_t result_capacity = static_cast<size_t>(
+        config_.parallel_result_buffer_max > 0
+            ? config_.parallel_result_buffer_max
+            : std::max(4, worker_count * 4));
+
+    ExactBinScanState scan_state;
+    CostAwareTaskQueue ready_queue(ready_capacity);
+    BoundedTaskQueue<ExactBinTaskResult> result_queue(result_capacity);
+    DeterministicBinReducer reducer;
+    std::mutex reducer_mutex;
+    std::mutex error_mutex;
+    std::exception_ptr first_error;
+    std::atomic<int64_t> tasks_materialized{0};
+    std::atomic<int64_t> tasks_running{0};
+    std::atomic<int64_t> tasks_completed{0};
+    std::atomic<int64_t> reducer_committed{0};
+    std::atomic<int64_t> raw_bins_discovered{0};
+    std::atomic<size_t> snapshot_window_size{0};
+
+    const auto set_error = [&](std::exception_ptr error) {
+        {
+            std::lock_guard<std::mutex> lock(error_mutex);
+            if (!first_error) {
+                first_error = error;
             }
         }
-        process_bin_records(
-            std::move(bin_records),
-            task.tid,
-            task.bin_index,
-            task.bin_start,
-            task.bin_end,
-            result);
-        finalize_final_calls(result);
-        return result;
-    }
+        ready_queue.close();
+        result_queue.close();
+    };
 
-    worker_count = std::min<int32_t>(
-        worker_count,
-        static_cast<int32_t>(tasks.size()));
-    std::vector<ExactBinTaskResult> task_results(tasks.size());
-    std::atomic<size_t> next_task_index{0};
-    std::exception_ptr worker_error;
-    std::mutex worker_error_mutex;
+    const auto rethrow_if_error = [&]() {
+        std::exception_ptr error;
+        {
+            std::lock_guard<std::mutex> lock(error_mutex);
+            error = first_error;
+        }
+        if (error) {
+            std::rethrow_exception(error);
+        }
+    };
+
+    std::thread reducer_thread([&]() {
+        try {
+            ExactBinTaskResult task_result;
+            while (result_queue.pop(task_result)) {
+                std::lock_guard<std::mutex> lock(reducer_mutex);
+                reducer.push_ready(
+                    task_result.tid,
+                    task_result.bin_index,
+                    std::move(task_result));
+                reducer.drain([&](
+                                  int32_t tid,
+                                  int32_t bin_index,
+                                  ExactBinTaskResult payload) {
+                    if (payload.tid != tid || payload.bin_index != bin_index) {
+                        throw std::runtime_error(
+                            "parallel reducer received mismatched task result");
+                    }
+                    append_partial_pipeline_result(result, std::move(payload.partial));
+                    reducer_committed.fetch_add(1);
+                });
+            }
+        } catch (...) {
+            set_error(std::current_exception());
+        }
+    });
+
     std::vector<std::thread> workers;
     workers.reserve(static_cast<size_t>(worker_count));
-
     for (int32_t worker_id = 0; worker_id < worker_count; ++worker_id) {
         workers.emplace_back([&, worker_id]() {
             (void)worker_id;
@@ -4076,135 +4074,144 @@ PipelineResult Pipeline::run_parallel() const {
                 auto worker_reader = bam_reader_->clone(1);
                 Pipeline worker_pipeline(worker_config, std::move(worker_reader));
 
-                while (true) {
-                    const size_t task_index = next_task_index.fetch_add(1);
-                    if (task_index >= tasks.size()) {
-                        break;
-                    }
-
-                    const ExactBinTask& task = tasks[task_index];
-                    std::vector<const bam1_t*> bin_records;
-                    bin_records.reserve(task.records.size());
-                    for (const auto& record_ref : task.records) {
-                        if (record_ref.record) {
-                            bin_records.push_back(record_ref.record);
-                        }
-                    }
-
+                ExactBinTask task;
+                while (ready_queue.pop(task)) {
+                    tasks_running.fetch_add(1);
                     PipelineResult partial;
                     const auto started = std::chrono::steady_clock::now();
-                    worker_pipeline.process_bin_records(
-                        std::move(bin_records),
-                        task.tid,
-                        task.bin_index,
-                        task.bin_start,
-                        task.bin_end,
-                        partial);
+                    std::vector<const bam1_t*> bin_records =
+                        collect_task_record_ptrs(task);
+                    if (!bin_records.empty()) {
+                        worker_pipeline.process_bin_records(
+                            std::move(bin_records),
+                            task.tid,
+                            task.bin_index,
+                            task.bin_start,
+                            task.bin_end,
+                            partial);
+                    }
+
                     ExactBinTaskResult task_result;
                     task_result.tid = task.tid;
                     task_result.bin_index = task.bin_index;
                     task_result.partial = std::move(partial);
                     task_result.elapsed_s = std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started).count();
-                    task_results[task_index] = std::move(task_result);
+                    tasks_running.fetch_sub(1);
+                    tasks_completed.fetch_add(1);
+                    if (!result_queue.push(std::move(task_result))) {
+                        break;
+                    }
                 }
             } catch (...) {
-                std::lock_guard<std::mutex> lock(worker_error_mutex);
-                if (!worker_error) {
-                    worker_error = std::current_exception();
-                }
+                tasks_running.store(0);
+                set_error(std::current_exception());
             }
         });
     }
 
+    const auto emit_ready_tasks = [&](std::vector<ExactBinTask> ready_tasks) {
+        for (auto& task : ready_tasks) {
+            {
+                std::lock_guard<std::mutex> lock(reducer_mutex);
+                reducer.expect(task.tid, task.bin_index);
+            }
+            raw_bins_discovered.fetch_add(1);
+            tasks_materialized.fetch_add(1);
+            if (!ready_queue.push(std::move(task))) {
+                rethrow_if_error();
+                throw std::runtime_error(
+                    "parallel ready queue closed before all tasks were submitted");
+            }
+            rethrow_if_error();
+        }
+        snapshot_window_size.store(scan_state.recent_snapshots.size());
+    };
+
+    const auto progress_cb = [this](int64_t processed, int32_t tid) {
+        std::cerr << "[Pipeline] processed=" << processed << " current_tid=" << tid << '\n';
+        return true;
+    };
+
+    try {
+        result.total_reads = bam_reader_->stream(
+            [this, &result, &scan_state, bin_size, &emit_ready_tasks, &rethrow_if_error](
+                BamRecordPtr&& record) {
+                rethrow_if_error();
+                if (!record) {
+                    return;
+                }
+
+                ReadView view(record.get());
+                if (!gate1_module_.pass_preliminary(view)) {
+                    return;
+                }
+
+                result.gate1_passed += 1;
+                const int32_t tid = view.tid();
+                const int32_t bin_index = exact_bin_index_for_record(record.get(), bin_size);
+
+                BufferedRecord buffered;
+                buffered.ref_end = compute_ref_end(view);
+                buffered.record = std::move(record);
+                emit_ready_tasks(append_record_to_exact_bin_scan(
+                    scan_state,
+                    std::move(buffered),
+                    tid,
+                    bin_index,
+                    bin_size,
+                    kCrossBinContextBins,
+                    kWindowBinSlackBp));
+            },
+            progress_cb,
+            config_.progress_interval);
+
+        emit_ready_tasks(flush_exact_bin_scan(
+            scan_state,
+            bin_size,
+            kCrossBinContextBins,
+            kWindowBinSlackBp));
+    } catch (...) {
+        set_error(std::current_exception());
+    }
+
+    ready_queue.close();
     for (auto& worker : workers) {
         if (worker.joinable()) {
             worker.join();
         }
     }
-    if (worker_error) {
-        std::rethrow_exception(worker_error);
+    result_queue.close();
+    if (reducer_thread.joinable()) {
+        reducer_thread.join();
     }
+    rethrow_if_error();
 
-    for (size_t i = 0; i < task_results.size(); ++i) {
-        const auto& expected = task_order[i];
-        const auto& actual = task_results[i];
-        if (actual.tid != expected.first || actual.bin_index != expected.second) {
-            throw std::runtime_error("parallel exact-bin task result order mismatch");
+    {
+        std::lock_guard<std::mutex> lock(reducer_mutex);
+        if (reducer.committed_count() != reducer.expected_count() ||
+            reducer.has_pending_ready()) {
+            throw std::runtime_error(
+                "parallel reducer finished with undrained task results");
         }
-        append_partial_pipeline_result(result, std::move(task_results[i].partial));
     }
 
     if (config_.log_parallel_progress) {
         ParallelProgressSnapshot snapshot;
         snapshot.reads_scanned = result.total_reads;
-        snapshot.raw_bins_discovered = static_cast<int64_t>(task_order.size());
-        snapshot.tasks_materialized = static_cast<int64_t>(tasks.size());
-        snapshot.tasks_completed = static_cast<int64_t>(task_results.size());
-        snapshot.reducer_committed = static_cast<int64_t>(task_results.size());
+        snapshot.raw_bins_discovered = raw_bins_discovered.load();
+        snapshot.tasks_materialized = tasks_materialized.load();
+        snapshot.tasks_running = tasks_running.load();
+        snapshot.tasks_completed = tasks_completed.load();
+        snapshot.reducer_committed = reducer_committed.load();
+        snapshot.snapshot_window_size = snapshot_window_size.load();
+        snapshot.ready_queue_depth = ready_queue.size();
+        snapshot.result_queue_depth = result_queue.size();
         emit_pipeline_log_line(render_parallel_progress(snapshot));
     }
 
     finalize_final_calls(result);
     return result;
-}
-
-void Pipeline::consume_record(
-    BamRecordPtr&& record,
-    StreamingState& state,
-    PipelineResult& result) const {
-    if (!record) {
-        return;
-    }
-
-    ReadView view(record.get());
-    if (!gate1_module_.pass_preliminary(view)) {
-        return;
-    }
-
-    result.gate1_passed += 1;
-
-    if (state.current_tid < 0) {
-        state.current_tid = view.tid();
-    }
-
-    if (view.tid() != state.current_tid) {
-        flush_current_bin(state, result);
-        state.current_tid = view.tid();
-    }
-
-    BufferedRecord buffered;
-    buffered.ref_end = compute_ref_end(view);
-    buffered.record = std::move(record);
-    state.current_bin_records.push_back(std::move(buffered));
-}
-
-void Pipeline::flush_current_bin(
-    StreamingState& state,
-    PipelineResult& result) const {
-    if (state.current_bin_records.empty()) {
-        return;
-    }
-
-    std::vector<const bam1_t*> contig_records;
-    contig_records.reserve(state.current_bin_records.size());
-    for (const auto& buffered : state.current_bin_records) {
-        if (buffered.record) {
-            contig_records.push_back(buffered.record.get());
-        }
-    }
-
-    if (!contig_records.empty()) {
-        process_bin_records(
-            std::move(contig_records),
-            state.current_tid,
-            0,
-            std::numeric_limits<int32_t>::min(),
-            std::numeric_limits<int32_t>::max(),
-            result);
-    }
-
-    state.current_bin_records.clear();
 }
 
 std::vector<int32_t> collect_alt_observed_lengths(

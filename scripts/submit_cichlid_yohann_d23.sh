@@ -51,17 +51,15 @@ export PLACER_SLURM_CPUS_PER_TASK="${PLACER_SLURM_CPUS_PER_TASK:-96}"
 export PLACER_SLURM_MEM="${PLACER_SLURM_MEM:-320G}"
 export PLACER_SLURM_TIME="${PLACER_SLURM_TIME:-7-00:00:00}"
 
-default_shard_workers=48
-if [[ "$PLACER_SLURM_CPUS_PER_TASK" =~ ^[0-9]+$ && "$PLACER_SLURM_CPUS_PER_TASK" -lt "$default_shard_workers" ]]; then
-    default_shard_workers="$PLACER_SLURM_CPUS_PER_TASK"
+default_taskgraph_workers=48
+if [[ "$PLACER_SLURM_CPUS_PER_TASK" =~ ^[0-9]+$ && "$PLACER_SLURM_CPUS_PER_TASK" -lt "$default_taskgraph_workers" ]]; then
+    default_taskgraph_workers="$PLACER_SLURM_CPUS_PER_TASK"
 fi
 
-# Production path: outer exact contig sharding only.
-# Keep internal PLACER_PARALLEL disabled until the real-data regression is resolved.
-export PLACER_SHARD_WORKERS="${PLACER_SHARD_WORKERS:-$default_shard_workers}"
-export PLACER_SAMTOOLS_THREADS="${PLACER_SAMTOOLS_THREADS:-1}"
-export PLACER_SHARD_HEARTBEAT_S="${PLACER_SHARD_HEARTBEAT_S:-60}"
-export PLACER_BAM_THREADS="${PLACER_BAM_THREADS:-1}"
+# Production path: one PLACER process with bounded C++ taskgraph parallelism.
+export PLACER_TASKGRAPH_WORKERS="${PLACER_TASKGRAPH_WORKERS:-$default_taskgraph_workers}"
+export PLACER_TASKGRAPH_QUEUE_MAX_TASKS="${PLACER_TASKGRAPH_QUEUE_MAX_TASKS:-$((PLACER_TASKGRAPH_WORKERS * 4))}"
+export PLACER_BAM_THREADS="${PLACER_BAM_THREADS:-2}"
 export PLACER_PROGRESS_INTERVAL="${PLACER_PROGRESS_INTERVAL:-5000}"
 export PLACER_LOG_STAGE_BINS="${PLACER_LOG_STAGE_BINS:-1}"
 export PLACER_LOG_STAGE_COMPONENTS="${PLACER_LOG_STAGE_COMPONENTS:-1}"
@@ -75,10 +73,9 @@ echo "[submit] BAM: $PLACER_BAM"
 echo "[submit] REF: $PLACER_REF"
 echo "[submit] TE: $PLACER_TE"
 echo "[submit] OUT: $PLACER_OUT_ROOT"
-echo "[submit] SHARD_WORKERS: $PLACER_SHARD_WORKERS"
-echo "[submit] SAMTOOLS_THREADS: $PLACER_SAMTOOLS_THREADS"
+echo "[submit] TASKGRAPH_WORKERS: $PLACER_TASKGRAPH_WORKERS"
+echo "[submit] TASKGRAPH_QUEUE_MAX_TASKS: $PLACER_TASKGRAPH_QUEUE_MAX_TASKS"
 echo "[submit] PLACER_BAM_THREADS: $PLACER_BAM_THREADS"
-echo "[submit] HEARTBEAT_S: $PLACER_SHARD_HEARTBEAT_S"
 echo "[submit] PARTITION: $PLACER_SLURM_PARTITION"
 echo "[submit] CPUS_PER_TASK: $PLACER_SLURM_CPUS_PER_TASK"
 echo "[submit] MEM: $PLACER_SLURM_MEM"

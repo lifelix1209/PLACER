@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -41,6 +42,14 @@ struct ExactBinTask {
     std::vector<SharedRecordBatch> owners;
 };
 
+struct ExactBinScanState {
+    int32_t current_tid = -1;
+    int32_t current_bin_index = -1;
+    std::vector<BufferedRecord> current_bin_records;
+    std::deque<ExactBinSnapshot> recent_snapshots;
+    size_t next_owner_offset = 0;
+};
+
 ExactBinTask build_exact_bin_task(
     int32_t tid,
     int32_t bin_index,
@@ -54,6 +63,21 @@ std::vector<ExactBinTask> materialize_ready_exact_bin_tasks(
     size_t& next_owner_offset,
     int32_t latest_completed_bin_index,
     bool flush_all,
+    int32_t bin_size,
+    int32_t cross_bin_context_bins,
+    int32_t window_bin_slack_bp);
+
+std::vector<ExactBinTask> append_record_to_exact_bin_scan(
+    ExactBinScanState& state,
+    BufferedRecord&& record,
+    int32_t tid,
+    int32_t bin_index,
+    int32_t bin_size,
+    int32_t cross_bin_context_bins,
+    int32_t window_bin_slack_bp);
+
+std::vector<ExactBinTask> flush_exact_bin_scan(
+    ExactBinScanState& state,
     int32_t bin_size,
     int32_t cross_bin_context_bins,
     int32_t window_bin_slack_bp);
@@ -76,17 +100,18 @@ public:
         return true;
     }
 
-    void push(T value) {
+    bool push(T value) {
         std::unique_lock<std::mutex> lock(mu_);
         cv_not_full_.wait(lock, [this]() {
             return closed_ || capacity_ == 0 || queue_.size() < capacity_;
         });
         if (closed_) {
-            return;
+            return false;
         }
         queue_.push(std::move(value));
         lock.unlock();
         cv_not_empty_.notify_one();
+        return true;
     }
 
     bool try_pop(T& out) {
@@ -133,6 +158,11 @@ public:
         return queue_.size();
     }
 
+    bool closed() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return closed_;
+    }
+
 private:
     std::queue<T> queue_;
     mutable std::mutex mu_;
@@ -157,7 +187,7 @@ public:
     explicit CostAwareTaskQueue(size_t capacity);
 
     bool try_push(ExactBinTask task);
-    void push(ExactBinTask task);
+    bool push(ExactBinTask task);
     bool pop(ExactBinTask& out);
     void close();
     size_t capacity() const;
@@ -206,10 +236,23 @@ public:
             if (it == ready_.end()) {
                 break;
             }
-            commit(it->second.tid, it->second.bin_index, it->second);
+            ExactBinTaskResult payload = std::move(it->second);
             ready_.erase(it);
             ++next_index_;
+            commit(payload.tid, payload.bin_index, std::move(payload));
         }
+    }
+
+    size_t expected_count() const {
+        return order_.size();
+    }
+
+    size_t committed_count() const {
+        return next_index_;
+    }
+
+    bool has_pending_ready() const {
+        return !ready_.empty();
     }
 
 private:

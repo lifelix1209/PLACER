@@ -111,7 +111,7 @@ class ClusterScriptTest(unittest.TestCase):
                 }
             )
 
-            subprocess.run(
+            cp = subprocess.run(
                 [
                     "bash",
                     str(REPO_ROOT / "scripts" / "submit_cichlid_yohann_d23.sh"),
@@ -131,6 +131,9 @@ class ClusterScriptTest(unittest.TestCase):
             args = sbatch_args.read_text(encoding="utf-8").splitlines()
             self.assertIn(str(REPO_ROOT / "scripts" / "submit_placer_urika_d23.slurm"), args)
             self.assertNotIn("scripts/scripts", "\n".join(args))
+            self.assertIn("[submit] TASKGRAPH_WORKERS:", cp.stdout)
+            self.assertIn("[submit] TASKGRAPH_QUEUE_MAX_TASKS:", cp.stdout)
+            self.assertNotIn("SHARD_WORKERS", cp.stdout)
 
 
 if __name__ == "__main__":
