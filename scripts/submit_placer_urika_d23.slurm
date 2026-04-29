@@ -123,7 +123,6 @@ python3 "$REPO_ROOT/scripts/run_sharded_placer.py" \
     --ref "$REF" \
     --te "$TE" \
     --placer "$REPO_ROOT/build/placer" \
-    --mode contig \
     --workers "$PLACER_SHARD_WORKERS" \
     --samtools-threads "$PLACER_SAMTOOLS_THREADS" \
     --outdir "$RUN_DIR" \

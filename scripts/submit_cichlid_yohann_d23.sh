@@ -56,7 +56,7 @@ if [[ "$PLACER_SLURM_CPUS_PER_TASK" =~ ^[0-9]+$ && "$PLACER_SLURM_CPUS_PER_TASK"
     default_shard_workers="$PLACER_SLURM_CPUS_PER_TASK"
 fi
 
-# Production path: outer exact contig sharding only.
+# Production path: outer exact region sharding over indexed BAM contigs.
 # Keep internal PLACER_PARALLEL disabled until the real-data regression is resolved.
 export PLACER_SHARD_WORKERS="${PLACER_SHARD_WORKERS:-$default_shard_workers}"
 export PLACER_SAMTOOLS_THREADS="${PLACER_SAMTOOLS_THREADS:-1}"

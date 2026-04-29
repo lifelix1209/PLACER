@@ -354,7 +354,7 @@ class RunShardedPlacerTest(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["te"], "MEMORY")
 
-    def test_discover_completed_shard_results_accepts_legacy_contig_shards(self):
+    def test_discover_completed_shard_results_rejects_shards_without_region_bounds(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             shard_root = root / "shards"
@@ -367,23 +367,18 @@ class RunShardedPlacerTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            results = MODULE.discover_completed_shard_results(shard_root)
-
-            self.assertEqual(len(results), 1)
-            self.assertEqual(results[0].spec.label, "0001_chr1")
-            self.assertEqual(results[0].spec.core_start, 0)
-            self.assertGreater(results[0].spec.core_end, 10**12)
-            self.assertEqual(results[0].rows[0]["te"], "LEGACY")
+            with self.assertRaisesRegex(RuntimeError, "missing region core bounds"):
+                MODULE.discover_completed_shard_results(shard_root)
 
     def test_merge_existing_shard_directory_can_delete_source_shards(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             shard_root = root / "shards"
-            workdir = shard_root / "0001_chr1"
+            workdir = shard_root / "0001_chr1_1_1000"
             workdir.mkdir(parents=True)
             write_scientific(workdir / "scientific.txt", make_summary(), [make_row(pos="250", te="FINAL")])
             (workdir / "shard.success.json").write_text(
-                '{"chrom":"chr1","label":"0001_chr1","state":"done"}\n',
+                '{"chrom":"chr1","label":"0001_chr1_1_1000","state":"done"}\n',
                 encoding="utf-8",
             )
             merged = root / "scientific.sharded.txt"

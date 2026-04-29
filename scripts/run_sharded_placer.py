@@ -456,6 +456,10 @@ def write_shard_success_marker(
     payload = {
         "label": spec.label,
         "chrom": spec.chrom,
+        "core_start": spec.core_start,
+        "core_end": spec.core_end,
+        "fetch_start": spec.fetch_start,
+        "fetch_end": spec.fetch_end,
         "elapsed_s": elapsed_s,
         "n_rows_raw": n_rows_raw,
         "scientific_path": str(scientific_path),
@@ -879,7 +883,9 @@ def infer_completed_shard_spec(
         if inferred is not None:
             core_start, core_end = inferred
         else:
-            core_start, core_end = 0, sys.maxsize
+            raise RuntimeError(
+                f"completed shard missing region core bounds: {workdir}"
+            )
 
     fetch_start = parse_int(str(payload.get("fetch_start", "")), core_start)
     fetch_end = parse_int(str(payload.get("fetch_end", "")), core_end)
