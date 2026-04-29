@@ -6,6 +6,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unistd.h>
 
 #define private public
@@ -98,6 +99,55 @@ int main() {
         assert(segmentation.right_flank_align_len == 70);
         assert(segmentation.left_flank_identity >= 0.99);
         assert(segmentation.right_flank_identity >= 0.99);
+    }
+
+    {
+        const std::string reference = build_reference(640);
+        write_fasta(fasta_path, reference);
+
+        PipelineConfig cfg;
+        cfg.reference_fasta_path = fasta_path;
+        Pipeline pipeline(cfg, nullptr);
+
+        ComponentCall component;
+        component.chrom = "chr1";
+        component.tid = 0;
+
+        const int32_t bp = 260;
+        const std::string left = reference.substr(190, 70);
+        const std::string insert = "AACCTTGGAACCTTGGAACC";
+        const std::string right = reference.substr(260, 70);
+
+        EventReadEvidence evidence;
+        evidence.bp_left = bp;
+        evidence.bp_right = bp;
+
+        EventConsensus consensus;
+        consensus.consensus_seq = left + insert + right;
+        consensus.consensus_len = static_cast<int32_t>(consensus.consensus_seq.size());
+        consensus.input_event_reads = 3;
+        consensus.qc_pass = true;
+        consensus.qc_reason = "PASS_EVENT_CONSENSUS";
+
+        std::unordered_map<std::string, EventSegmentation> cache;
+        const EventSegmentation first = pipeline.segment_event_consensus_cached(
+            component,
+            evidence,
+            consensus,
+            cache);
+        assert(first.pass);
+        assert(cache.size() == 1);
+
+        cache.begin()->second.insert_seq = "CACHED_INSERT_SENTINEL";
+        cache.begin()->second.qc_reason = "CACHED_SEGMENTATION_SENTINEL";
+        const EventSegmentation second = pipeline.segment_event_consensus_cached(
+            component,
+            evidence,
+            consensus,
+            cache);
+        assert(cache.size() == 1);
+        assert(second.insert_seq == "CACHED_INSERT_SENTINEL");
+        assert(second.qc_reason == "CACHED_SEGMENTATION_SENTINEL");
     }
 
     {

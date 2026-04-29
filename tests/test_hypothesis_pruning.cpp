@@ -95,6 +95,15 @@ placer::Pipeline::HypothesisSummary make_summary(
     summary.alt_struct_reads = alt_struct_reads;
     summary.ref_span_reads = ref_span_reads;
     summary.inferred_event_length = inferred_event_length;
+    summary.event_evidence.bp_left = bp_left;
+    summary.event_evidence.bp_right = bp_right;
+    summary.event_evidence.alt_split_reads = alt_split_reads;
+    summary.event_evidence.alt_indel_reads = alt_indel_reads;
+    summary.event_evidence.alt_left_clip_reads = alt_left_clip_reads;
+    summary.event_evidence.alt_right_clip_reads = alt_right_clip_reads;
+    summary.event_evidence.alt_struct_reads = alt_struct_reads;
+    summary.event_evidence.ref_span_reads = ref_span_reads;
+    summary.event_evidence.support_qnames = support_qnames;
     summary.support_qnames = std::move(support_qnames);
     return summary;
 }
@@ -209,6 +218,13 @@ int main() {
         assert(summary.inferred_event_length == 60);
         assert(summary.support_qnames.size() == 1);
         assert(summary.support_qnames.front() == "indel_read");
+        assert(summary.event_evidence.bp_left == 100);
+        assert(summary.event_evidence.bp_right == 100);
+        assert(summary.event_evidence.alt_indel_reads == 1);
+        assert(summary.event_evidence.alt_struct_reads == 1);
+        assert(summary.event_evidence.ref_span_reads == 1);
+        assert(summary.event_evidence.support_qnames.size() == 1);
+        assert(summary.event_evidence.support_qnames.front() == "indel_read");
     }
 
     {
@@ -439,6 +455,71 @@ int main() {
         assert(shortlist[1].validator.summary.original_index == 1);
         assert(!shortlist[2].is_primary);
         assert(shortlist[2].validator.summary.original_index == 2);
+    }
+
+    {
+        Pipeline::HypothesisSummary summary;
+        summary.original_index = 7;
+        summary.bp_left = 2000;
+        summary.bp_right = 2010;
+        summary.alt_split_reads = 1;
+        summary.alt_indel_reads = 2;
+        summary.alt_struct_reads = 5;
+        summary.support_qnames = {"cached_a", "cached_b"};
+
+        Pipeline::ConsensusInputCounts inputs;
+        inputs.full_context_input_reads = 1;
+        inputs.partial_context_input_reads = 3;
+        inputs.left_anchor_input_reads = 2;
+        inputs.right_anchor_input_reads = 2;
+        inputs.input_event_reads = 1;
+
+        EventReadEvidence evidence;
+        evidence.bp_left = 2000;
+        evidence.bp_right = 2010;
+        evidence.alt_split_reads = 1;
+        evidence.alt_indel_reads = 2;
+        evidence.alt_struct_reads = 5;
+        evidence.ref_span_reads = 4;
+        evidence.support_qnames = {"cached_a", "cached_b"};
+        summary.event_evidence = evidence;
+
+        const auto validator = pipeline.collect_hypothesis_validator_evidence(
+            summary,
+            inputs,
+            2004);
+        assert(validator.feasible_for_expensive_stage);
+        assert(validator.event_evidence.bp_left == 2000);
+        assert(validator.event_evidence.bp_right == 2010);
+        assert(validator.event_evidence.alt_struct_reads == 5);
+        assert(validator.event_evidence.ref_span_reads == 4);
+        assert(validator.event_evidence.support_qnames.size() == 2);
+        assert(validator.event_evidence.support_qnames.front() == "cached_a");
+
+        Pipeline::HypothesisValidatorEvidence primary = validator;
+        primary.summary.original_index = 0;
+        primary.summary.bp_left = 1000;
+        primary.summary.bp_right = 1000;
+        primary.summary.support_qnames = {"p1", "p2", "p3"};
+        primary.event_evidence.bp_left = 1000;
+        primary.event_evidence.bp_right = 1000;
+        primary.precise_support = 4;
+
+        Pipeline::HypothesisValidatorEvidence challenger = validator;
+        challenger.summary.original_index = 1;
+        challenger.summary.bp_left = 2000;
+        challenger.summary.bp_right = 2010;
+        challenger.summary.support_qnames = {"cached_a", "cached_b"};
+        challenger.event_evidence.bp_left = 2000;
+        challenger.event_evidence.bp_right = 2010;
+        challenger.precise_support = 2;
+
+        const auto shortlist = pipeline.build_expensive_stage_shortlist(
+            {primary, challenger});
+        assert(shortlist.size() == 2);
+        assert(shortlist[0].validator.event_evidence.bp_left == 1000);
+        assert(shortlist[1].validator.event_evidence.bp_left == 2000);
+        assert(shortlist[1].validator.event_evidence.support_qnames.front() == "cached_a");
     }
 
     {

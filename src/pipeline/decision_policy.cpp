@@ -113,6 +113,15 @@ bool is_one_sided_segmentation_pass(const EventSegmentationEvidence& segmentatio
            (segmentation.has_left_flank != segmentation.has_right_flank);
 }
 
+bool one_sided_unclosed_te_call_veto(
+    const EventExistenceEvidence& existence,
+    const EventSegmentationEvidence& segmentation,
+    const BoundaryEvidence& boundary) {
+    return is_one_sided_segmentation_pass(segmentation) &&
+           !boundary.geometry_defined &&
+           existence.ref_span_reads > 0;
+}
+
 double adjusted_nonref_existence_score(
     const EventExistenceEvidence& existence,
     const EventSegmentationEvidence& segmentation,
@@ -382,7 +391,9 @@ JointDecisionResult evaluate_joint_hypotheses(
     h2.boundary = 0.2 * te_boundary_support;
     h2.total = h2.existence + h2.segmentation + h2.te + h2.boundary;
     h2.reason = "TE_UNKNOWN";
-    h2.hard_veto = !segmentation.has_insert_seq || te_alignment.qc_reason == "NO_TE_ALIGNMENT";
+    h2.hard_veto = !segmentation.has_insert_seq ||
+                   te_alignment.qc_reason == "NO_TE_ALIGNMENT" ||
+                   one_sided_unclosed_te_call_veto(existence, segmentation, boundary);
 
     JointHypothesisScore h3 = make_hypothesis(FinalHypothesisKind::kTeResolved);
     h3.existence = existence_support;
@@ -392,7 +403,8 @@ JointDecisionResult evaluate_joint_hypotheses(
     h3.total = h3.existence + h3.segmentation + h3.te + h3.boundary;
     h3.reason = "TE_RESOLVED";
     h3.hard_veto = !segmentation.has_insert_seq || !te_alignment.pass ||
-                   te_alignment.qc_reason == "PASS_INSERT_TE_ALIGNMENT_UNKNOWN";
+                   te_alignment.qc_reason == "PASS_INSERT_TE_ALIGNMENT_UNKNOWN" ||
+                   one_sided_unclosed_te_call_veto(existence, segmentation, boundary);
 
     std::array<JointHypothesisScore, 4> all = {h0, h1, h2, h3};
     std::sort(all.begin(), all.end(), [](const JointHypothesisScore& lhs, const JointHypothesisScore& rhs) {

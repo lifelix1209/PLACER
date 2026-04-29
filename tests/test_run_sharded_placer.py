@@ -325,6 +325,82 @@ class RunShardedPlacerTest(unittest.TestCase):
             _, _, rows = MODULE.parse_scientific(merged_path)
             self.assertEqual([row["te"] for row in rows], ["KEEP", "STRONG"])
 
+    def test_merge_shard_results_uses_materialized_rows_after_shard_removed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            missing_scientific = root / "removed" / "scientific.txt"
+            merged_path = root / "merged.txt"
+
+            shard = MODULE.ShardResult(
+                spec=MODULE.ShardSpec(1, "0001_chr1", "chr1", 1, 1000, 1, 1000),
+                workdir=root / "removed",
+                scientific_path=missing_scientific,
+                summary=make_summary(),
+                n_rows_raw=1,
+                elapsed_s=1.0,
+                rows=[make_row(pos="250", te="MEMORY")],
+            )
+
+            MODULE.merge_shard_results(
+                [shard],
+                dedup_bp=50,
+                chrom_order={"chr1": 0},
+                region_size=1000,
+                overlap_bp=0,
+                out_path=merged_path,
+            )
+
+            _, _, rows = MODULE.parse_scientific(merged_path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["te"], "MEMORY")
+
+    def test_discover_completed_shard_results_accepts_legacy_contig_shards(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            shard_root = root / "shards"
+            workdir = shard_root / "0001_chr1"
+            workdir.mkdir(parents=True)
+            scientific = workdir / "scientific.txt"
+            write_scientific(scientific, make_summary(), [make_row(pos="250", te="LEGACY")])
+            (workdir / "shard.success.json").write_text(
+                '{"chrom":"chr1","label":"0001_chr1","state":"done"}\n',
+                encoding="utf-8",
+            )
+
+            results = MODULE.discover_completed_shard_results(shard_root)
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].spec.label, "0001_chr1")
+            self.assertEqual(results[0].spec.core_start, 0)
+            self.assertGreater(results[0].spec.core_end, 10**12)
+            self.assertEqual(results[0].rows[0]["te"], "LEGACY")
+
+    def test_merge_existing_shard_directory_can_delete_source_shards(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            shard_root = root / "shards"
+            workdir = shard_root / "0001_chr1"
+            workdir.mkdir(parents=True)
+            write_scientific(workdir / "scientific.txt", make_summary(), [make_row(pos="250", te="FINAL")])
+            (workdir / "shard.success.json").write_text(
+                '{"chrom":"chr1","label":"0001_chr1","state":"done"}\n',
+                encoding="utf-8",
+            )
+            merged = root / "scientific.sharded.txt"
+
+            MODULE.merge_existing_shard_directory(
+                shard_root,
+                out_path=merged,
+                dedup_bp=50,
+                delete_source_shards=True,
+            )
+
+            self.assertTrue(merged.exists())
+            self.assertFalse(workdir.exists())
+            _, _, rows = MODULE.parse_scientific(merged)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["te"], "FINAL")
+
     def test_try_resume_shard_requires_success_marker_and_scientific(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

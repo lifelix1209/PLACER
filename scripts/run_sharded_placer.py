@@ -104,6 +104,7 @@ class ShardResult:
     n_rows_raw: int
     elapsed_s: float
     reused: bool = False
+    rows: Optional[List[Dict[str, str]]] = None
 
 
 @dataclasses.dataclass
@@ -491,6 +492,7 @@ def try_resume_shard(spec: ShardSpec, workdir: Path) -> Optional[ShardResult]:
         n_rows_raw=len(rows),
         elapsed_s=float(payload.get("elapsed_s", 0.0)),
         reused=True,
+        rows=rows,
     )
 
 
@@ -598,22 +600,63 @@ def dedup_calls(
 
     ordered = sorted(rows, key=sort_key)
     out: List[Dict[str, str]] = []
+    index_by_locus_bucket: Dict[Tuple[str, int], List[int]] = {}
+    bucket_size = max(1, dedup_bp + 1)
+
+    def row_locus_coordinates(row: Dict[str, str]) -> List[int]:
+        coords: List[int] = []
+        pos = parse_int(row.get("pos", "-1"), -1)
+        if valid_pos(pos):
+            coords.append(pos)
+        bp_left = parse_int(row.get("bp_left", "-1"), -1)
+        bp_right = parse_int(row.get("bp_right", "-1"), -1)
+        if valid_pos(bp_left):
+            coords.append(bp_left)
+        if valid_pos(bp_right):
+            coords.append(bp_right)
+        if valid_pos(bp_left) and valid_pos(bp_right):
+            coords.append((bp_left + bp_right) // 2)
+        return coords
+
+    def row_locus_buckets(row: Dict[str, str]) -> List[Tuple[str, int]]:
+        chrom = row.get("chrom", "")
+        buckets = set()
+        for coord in row_locus_coordinates(row):
+            center_bucket = coord // bucket_size
+            for delta in (-1, 0, 1):
+                buckets.add((chrom, center_bucket + delta))
+        return list(buckets)
+
+    def index_row(row: Dict[str, str], idx: int) -> None:
+        for bucket in row_locus_buckets(row):
+            index_by_locus_bucket.setdefault(bucket, []).append(idx)
+
     for row in ordered:
         duplicate_index: Optional[int] = None
-        for idx in range(len(out) - 1, -1, -1):
-            if out[idx].get("chrom", "") != row.get("chrom", ""):
-                break
+        candidate_indices = set()
+        for bucket in row_locus_buckets(row):
+            candidate_indices.update(index_by_locus_bucket.get(bucket, []))
+
+        for idx in sorted(candidate_indices, reverse=True):
             if same_call_locus(row, out[idx], dedup_bp):
                 duplicate_index = idx
                 break
 
         if duplicate_index is None:
             out.append(row)
+            index_row(row, len(out) - 1)
             continue
 
         if prefer_new_call(row, out[duplicate_index]):
             out[duplicate_index] = row
     return sorted(out, key=sort_key)
+
+
+def rows_for_shard_result(shard: ShardResult) -> Tuple[List[str], List[Dict[str, str]]]:
+    if shard.rows is not None:
+        return EXPECTED_SCIENTIFIC_HEADER, shard.rows
+    _, header, rows = parse_scientific(shard.scientific_path)
+    return header, rows
 
 
 def merge_shard_results(
@@ -632,7 +675,7 @@ def merge_shard_results(
     merged_rows: List[Dict[str, str]] = []
 
     for shard in shards:
-        _, header, rows = parse_scientific(shard.scientific_path)
+        header, rows = rows_for_shard_result(shard)
         if base_header is None:
             base_header = header
         elif header != base_header:
@@ -786,11 +829,140 @@ def run_single_shard(
             n_rows_raw=len(rows),
             elapsed_s=elapsed_s,
             reused=False,
+            rows=rows,
         )
     except Exception as exc:
         if progress_cb is not None:
             progress_cb(spec, "failed", str(exc))
         raise
+
+
+def parse_shard_id_from_label(label: str, fallback: int) -> int:
+    match = re.match(r"^(\d+)", label)
+    if match:
+        return int(match.group(1))
+    return fallback
+
+
+def infer_core_bounds_from_label(label: str) -> Optional[Tuple[int, int]]:
+    parts = label.rsplit("_", 2)
+    if len(parts) != 3:
+        return None
+    try:
+        core_start = int(parts[1])
+        core_end = int(parts[2])
+    except ValueError:
+        return None
+    if core_start <= 0 or core_end < core_start:
+        return None
+    return core_start, core_end
+
+
+def infer_completed_shard_spec(
+    workdir: Path,
+    payload: Dict[str, object],
+    rows: Sequence[Dict[str, str]],
+    fallback_shard_id: int,
+) -> ShardSpec:
+    label = str(payload.get("label") or workdir.name)
+    chrom = str(payload.get("chrom") or "")
+    if not chrom and rows:
+        chrom = rows[0].get("chrom", "")
+    if not chrom:
+        raise RuntimeError(f"completed shard missing chrom: {workdir}")
+
+    shard_id = parse_shard_id_from_label(label, fallback_shard_id)
+    core_start = parse_int(str(payload.get("core_start", "")), -1)
+    core_end = parse_int(str(payload.get("core_end", "")), -1)
+    if core_start <= 0 or core_end < core_start:
+        inferred = infer_core_bounds_from_label(label)
+        if inferred is not None:
+            core_start, core_end = inferred
+        else:
+            core_start, core_end = 0, sys.maxsize
+
+    fetch_start = parse_int(str(payload.get("fetch_start", "")), core_start)
+    fetch_end = parse_int(str(payload.get("fetch_end", "")), core_end)
+    return ShardSpec(
+        shard_id=shard_id,
+        label=label,
+        chrom=chrom,
+        core_start=core_start,
+        core_end=core_end,
+        fetch_start=fetch_start,
+        fetch_end=fetch_end,
+    )
+
+
+def discover_completed_shard_results(shard_root: Path) -> List[ShardResult]:
+    if not shard_root.is_dir():
+        raise RuntimeError(f"shard directory not found: {shard_root}")
+
+    results: List[ShardResult] = []
+    for fallback_id, workdir in enumerate(sorted(shard_root.iterdir()), start=1):
+        if not workdir.is_dir():
+            continue
+        scientific = workdir / "scientific.txt"
+        marker = shard_success_marker_path(workdir)
+        if not scientific.exists() or not marker.exists():
+            continue
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        if payload.get("state") != "done":
+            continue
+        summary, _, rows = parse_scientific(scientific)
+        spec = infer_completed_shard_spec(workdir, payload, rows, fallback_id)
+        results.append(
+            ShardResult(
+                spec=spec,
+                workdir=workdir,
+                scientific_path=scientific,
+                summary=summary,
+                n_rows_raw=len(rows),
+                elapsed_s=float(payload.get("elapsed_s", 0.0)),
+                reused=True,
+                rows=rows,
+            )
+        )
+
+    if not results:
+        raise RuntimeError(f"no completed shard scientific outputs found in {shard_root}")
+    results.sort(key=lambda result: (result.spec.shard_id, result.spec.label))
+    return results
+
+
+def chrom_order_from_shards(shards: Sequence[ShardResult]) -> Dict[str, int]:
+    order: Dict[str, int] = {}
+    for shard in sorted(shards, key=lambda result: (result.spec.shard_id, result.spec.label)):
+        if shard.spec.chrom not in order:
+            order[shard.spec.chrom] = len(order)
+    return order
+
+
+def delete_shard_workdir(workdir: Path) -> None:
+    if workdir.exists():
+        shutil.rmtree(workdir)
+
+
+def merge_existing_shard_directory(
+    shard_root: Path,
+    *,
+    out_path: Path,
+    dedup_bp: int,
+    delete_source_shards: bool = False,
+) -> List[ShardResult]:
+    results = discover_completed_shard_results(shard_root)
+    merge_shard_results(
+        results,
+        dedup_bp=max(0, dedup_bp),
+        chrom_order=chrom_order_from_shards(results),
+        region_size=0,
+        overlap_bp=0,
+        out_path=out_path,
+    )
+    if delete_source_shards:
+        for result in results:
+            delete_shard_workdir(result.workdir)
+    return results
 
 
 def parse_env_kv(env_args: Sequence[str]) -> Dict[str, str]:
@@ -904,6 +1076,19 @@ def main() -> int:
     )
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
+    parser.add_argument(
+        "--delete-shards-after-success",
+        action="store_true",
+        help="After a shard has been parsed into memory, delete its work directory.",
+    )
+    parser.add_argument(
+        "--single-output",
+        action="store_true",
+        help=(
+            "Leave only the merged scientific output after a successful run. "
+            "Implies --delete-shards-after-success and removes the progress manifest."
+        ),
+    )
     args = parser.parse_args()
 
     bam = Path(args.bam).resolve()
@@ -973,6 +1158,7 @@ def main() -> int:
     }
     results_by_label: Dict[str, ShardResult] = {}
     failures_by_label: Dict[str, str] = {}
+    delete_shards_after_success = args.delete_shards_after_success or args.single_output
 
     print(
         f"[sharded] mode=region contigs={len(contigs)} shards={len(shards)} "
@@ -1014,6 +1200,8 @@ def main() -> int:
                     results_by_label=results_by_label,
                     failures_by_label=failures_by_label,
                 )
+                if delete_shards_after_success:
+                    delete_shard_workdir(resumed.workdir)
                 continue
         pending_specs.append(spec)
 
@@ -1068,6 +1256,8 @@ def main() -> int:
                         f"rows={result.n_rows_raw} time={result.elapsed_s:.2f}s",
                         flush=True,
                     )
+                    if delete_shards_after_success:
+                        delete_shard_workdir(result.workdir)
                 except Exception as exc:  # noqa: BLE001
                     failures.append((spec, str(exc)))
                     failures_by_label[spec.label] = str(exc)
@@ -1115,7 +1305,16 @@ def main() -> int:
     )
 
     print(f"[sharded] merged scientific: {merged_scientific}", flush=True)
-    print(f"[sharded] manifest: {manifest_path}", flush=True)
+    if args.single_output:
+        if manifest_path.exists():
+            manifest_path.unlink()
+        if shard_root.exists():
+            try:
+                shard_root.rmdir()
+            except OSError:
+                pass
+    else:
+        print(f"[sharded] manifest: {manifest_path}", flush=True)
     return 0
 
 

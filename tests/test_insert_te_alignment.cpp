@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <unistd.h>
 #include <vector>
 
@@ -122,6 +123,64 @@ int main() {
         assert(evidence.best_identity >= 0.99);
         assert(evidence.best_query_coverage >= 0.99);
         assert(evidence.cross_family_margin >= 0.09);
+    }
+
+    {
+        const std::string gypsy = build_sequence(140, 17u);
+        const std::string copia = build_sequence(140, 97u);
+        write_te_fasta(
+            fasta_path,
+            {
+                {"SubGypsyCached#LTR/Gypsy", gypsy},
+                {"SubCopiaCached#LTR/Copia", copia},
+            });
+
+        PipelineConfig cfg;
+        cfg.te_fasta_path = fasta_path;
+        cfg.te_kmer_size = 9;
+        cfg.te_kmer_sizes_csv = "9,11";
+        cfg.te_family_margin_min = 0.05;
+        cfg.te_subfamily_margin_min = 0.04;
+        Pipeline pipeline(cfg, nullptr);
+
+        std::unordered_map<std::string, TEAlignmentEvidence> cache;
+
+        EventSegmentation failed_segmentation;
+        failed_segmentation.insert_seq = gypsy;
+        failed_segmentation.pass = false;
+        failed_segmentation.qc_reason = "NO_EVENT_SEGMENTATION";
+        const TEAlignmentEvidence failed = pipeline.align_insert_seq_to_te_cached(
+            failed_segmentation,
+            cache);
+        assert(!failed.pass);
+        assert(failed.qc_reason == "NO_EVENT_SEGMENTATION_FOR_TE_ALIGNMENT");
+        assert(cache.empty());
+
+        EventSegmentation segmentation;
+        segmentation.insert_seq = gypsy;
+        segmentation.pass = true;
+        segmentation.qc_reason = "PASS_EVENT_SEGMENTATION";
+
+        const TEAlignmentEvidence first = pipeline.align_insert_seq_to_te_cached(
+            segmentation,
+            cache);
+        assert(first.pass);
+        assert(first.best_family == "Gypsy");
+        assert(first.best_subfamily == "SubGypsyCached");
+        assert(cache.size() == 1);
+        assert(pipeline.te_classifier_module_.last_exact_alignments_ > 0);
+
+        pipeline.te_classifier_module_.last_exact_alignments_ = -123;
+        const TEAlignmentEvidence second = pipeline.align_insert_seq_to_te_cached(
+            segmentation,
+            cache);
+        assert(second.pass);
+        assert(second.qc_reason == first.qc_reason);
+        assert(second.best_family == first.best_family);
+        assert(second.best_subfamily == first.best_subfamily);
+        assert(second.best_identity == first.best_identity);
+        assert(cache.size() == 1);
+        assert(pipeline.te_classifier_module_.last_exact_alignments_ == -123);
     }
 
     {

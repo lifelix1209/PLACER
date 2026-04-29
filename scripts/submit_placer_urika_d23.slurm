@@ -16,8 +16,17 @@ set -euo pipefail
 #   sbatch --cpus-per-task=64 --mem=192G --export=ALL,PLACER_BAM,PLACER_REF,PLACER_TE,PLACER_OUT_ROOT,PLACER_RUN_NAME \
 #   scripts/submit_placer_urika_d23.slurm
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Derive SCRIPT_DIR from the script's absolute path, not BASH_SOURCE[0] which
+# can be just a filename when Slurm prepends path components.
+_this_script="$0"
+if [[ "$_this_script" = /* ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "$_this_script")" && pwd)"
+else
+    SCRIPT_DIR="$(cd "$(dirname "$(pwd)/$_this_script")" && pwd)"
+fi
+# REPO_ROOT: use env var if set (passed through --export=ALL by submit script),
+# otherwise derive from SCRIPT_DIR as a fallback for direct sbatch invocations.
+REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 require_env() {
     local name="$1"
@@ -59,6 +68,7 @@ for path in \
     "$REF_FAI" \
     "$TE" \
     "$TE_FAI" \
+    "$REPO_ROOT/scripts/run_sharded_placer.py" \
     "$REPO_ROOT/scripts/build_latest_placer.sh"; do
     if [[ ! -e "$path" ]]; then
         echo "[slurm] missing required path: $path" >&2
@@ -67,13 +77,13 @@ for path in \
 done
 
 TOTAL_CPUS="${SLURM_CPUS_PER_TASK:-1}"
-DEFAULT_TASKGRAPH_WORKERS=48
-if [[ "$TOTAL_CPUS" =~ ^[0-9]+$ && "$TOTAL_CPUS" -lt "$DEFAULT_TASKGRAPH_WORKERS" ]]; then
-    DEFAULT_TASKGRAPH_WORKERS="$TOTAL_CPUS"
+DEFAULT_SHARD_WORKERS=48
+if [[ "$TOTAL_CPUS" =~ ^[0-9]+$ && "$TOTAL_CPUS" -lt "$DEFAULT_SHARD_WORKERS" ]]; then
+    DEFAULT_SHARD_WORKERS="$TOTAL_CPUS"
 fi
-PLACER_TASKGRAPH_WORKERS="${PLACER_TASKGRAPH_WORKERS:-$DEFAULT_TASKGRAPH_WORKERS}"
-PLACER_TASKGRAPH_QUEUE_MAX_TASKS="${PLACER_TASKGRAPH_QUEUE_MAX_TASKS:-$((PLACER_TASKGRAPH_WORKERS * 4))}"
-PLACER_BAM_THREADS="${PLACER_BAM_THREADS:-2}"
+PLACER_SHARD_WORKERS="${PLACER_SHARD_WORKERS:-$DEFAULT_SHARD_WORKERS}"
+PLACER_SAMTOOLS_THREADS="${PLACER_SAMTOOLS_THREADS:-1}"
+PLACER_SHARD_HEARTBEAT_S="${PLACER_SHARD_HEARTBEAT_S:-60}"
 
 export PLACER_BUILD_JOBS="${PLACER_BUILD_JOBS:-$TOTAL_CPUS}"
 export PLACER_PROGRESS_INTERVAL="${PLACER_PROGRESS_INTERVAL:-5000}"
@@ -84,13 +94,9 @@ export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
-if [[ -n "${HTSLIB_ROOT:-}" ]]; then
-    export PATH="$HTSLIB_ROOT/bin:$PATH"
-    export LD_LIBRARY_PATH="$HTSLIB_ROOT/lib:${LD_LIBRARY_PATH:-}"
-elif [[ -n "${CONDA_PREFIX:-}" ]]; then
-    export PATH="$CONDA_PREFIX/bin:$PATH"
-    export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
-fi
+# Prepend system libstdc++ to avoid conda's older version conflicts.
+# htslib in the conda env needs its libs, but libstdc++ must be the system one.
+export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
 
 echo "[slurm] bam=$BAM"
 echo "[slurm] ref=$REF"
@@ -99,9 +105,10 @@ echo "[slurm] htslib_root=${HTSLIB_ROOT:-NA}"
 echo "[slurm] htslib_include_dir=${HTSLIB_INCLUDE_DIR:-NA}"
 echo "[slurm] htslib_library=${HTSLIB_LIBRARY:-NA}"
 echo "[slurm] PLACER_BUILD_JOBS=$PLACER_BUILD_JOBS"
-echo "[slurm] PLACER_TASKGRAPH_WORKERS=$PLACER_TASKGRAPH_WORKERS"
-echo "[slurm] PLACER_TASKGRAPH_QUEUE_MAX_TASKS=$PLACER_TASKGRAPH_QUEUE_MAX_TASKS"
-echo "[slurm] PLACER_BAM_THREADS=$PLACER_BAM_THREADS"
+echo "[slurm] PLACER_PARALLEL=disabled"
+echo "[slurm] PLACER_SHARD_WORKERS=$PLACER_SHARD_WORKERS"
+echo "[slurm] PLACER_SAMTOOLS_THREADS=$PLACER_SAMTOOLS_THREADS"
+echo "[slurm] PLACER_SHARD_HEARTBEAT_S=$PLACER_SHARD_HEARTBEAT_S"
 echo "[slurm] PLACER_PROGRESS_INTERVAL=$PLACER_PROGRESS_INTERVAL"
 echo "[slurm] PLACER_LOG_STAGE_BINS=$PLACER_LOG_STAGE_BINS"
 echo "[slurm] PLACER_LOG_STAGE_COMPONENTS=$PLACER_LOG_STAGE_COMPONENTS"
@@ -111,15 +118,23 @@ if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --is-inside-w
 fi
 
 cd "$RUN_DIR"
-PLACER_PARALLEL=1 \
-PLACER_PARALLEL_WORKERS="$PLACER_TASKGRAPH_WORKERS" \
-PLACER_PARALLEL_QUEUE_MAX_TASKS="$PLACER_TASKGRAPH_QUEUE_MAX_TASKS" \
-PLACER_BAM_THREADS="$PLACER_BAM_THREADS" \
-PLACER_PROGRESS_INTERVAL="$PLACER_PROGRESS_INTERVAL" \
-PLACER_LOG_STAGE_BINS="$PLACER_LOG_STAGE_BINS" \
-PLACER_LOG_STAGE_COMPONENTS="$PLACER_LOG_STAGE_COMPONENTS" \
-PLACER_LOG_PARALLEL_PROGRESS=1 \
-"$REPO_ROOT/build/placer" "$BAM" "$REF" "$TE"
+python3 "$REPO_ROOT/scripts/run_sharded_placer.py" \
+    --bam "$BAM" \
+    --ref "$REF" \
+    --te "$TE" \
+    --placer "$REPO_ROOT/build/placer" \
+    --mode contig \
+    --workers "$PLACER_SHARD_WORKERS" \
+    --samtools-threads "$PLACER_SAMTOOLS_THREADS" \
+    --outdir "$RUN_DIR" \
+    --progress-heartbeat-s "$PLACER_SHARD_HEARTBEAT_S" \
+    --resume \
+    --env "PLACER_PARALLEL=0" \
+    --env "PLACER_BAM_THREADS=1" \
+    --env "PLACER_PROGRESS_INTERVAL=$PLACER_PROGRESS_INTERVAL" \
+    --env "PLACER_LOG_STAGE_BINS=$PLACER_LOG_STAGE_BINS" \
+    --env "PLACER_LOG_STAGE_COMPONENTS=$PLACER_LOG_STAGE_COMPONENTS"
 
 echo "[slurm] finished_time=$(date '+%Y-%m-%d %H:%M:%S %Z')"
-echo "[slurm] scientific_txt=$RUN_DIR/scientific.txt"
+echo "[slurm] scientific_sharded_txt=$RUN_DIR/scientific.sharded.txt"
+echo "[slurm] shard_manifest_tsv=$RUN_DIR/shard_manifest.tsv"

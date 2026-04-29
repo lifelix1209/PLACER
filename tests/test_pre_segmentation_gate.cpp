@@ -91,6 +91,14 @@ int main() {
         inputs.left_anchor_input_reads = 1;
         inputs.right_anchor_input_reads = 0;
 
+        EventReadEvidence evidence;
+        evidence.bp_left = summary.bp_left;
+        evidence.bp_right = summary.bp_right;
+        evidence.alt_split_reads = summary.alt_split_reads;
+        evidence.alt_indel_reads = summary.alt_indel_reads;
+        evidence.alt_struct_reads = summary.alt_struct_reads;
+        summary.event_evidence = evidence;
+
         const auto validator = pipeline.collect_hypothesis_validator_evidence(
             summary,
             inputs,
@@ -109,6 +117,14 @@ int main() {
         Pipeline::ConsensusInputCounts inputs;
         inputs.left_anchor_input_reads = 1;
         inputs.right_anchor_input_reads = 1;
+
+        EventReadEvidence evidence;
+        evidence.bp_left = summary.bp_left;
+        evidence.bp_right = summary.bp_right;
+        evidence.alt_split_reads = summary.alt_split_reads;
+        evidence.alt_indel_reads = summary.alt_indel_reads;
+        evidence.alt_struct_reads = summary.alt_struct_reads;
+        summary.event_evidence = evidence;
 
         const auto validator = pipeline.collect_hypothesis_validator_evidence(
             summary,
@@ -130,6 +146,14 @@ int main() {
         inputs.left_anchor_input_reads = 1;
         inputs.right_anchor_input_reads = 0;
 
+        EventReadEvidence evidence;
+        evidence.bp_left = summary.bp_left;
+        evidence.bp_right = summary.bp_right;
+        evidence.alt_split_reads = summary.alt_split_reads;
+        evidence.alt_indel_reads = summary.alt_indel_reads;
+        evidence.alt_struct_reads = summary.alt_struct_reads;
+        summary.event_evidence = evidence;
+
         const auto validator = pipeline.collect_hypothesis_validator_evidence(
             summary,
             inputs,
@@ -150,6 +174,14 @@ int main() {
         inputs.right_anchor_input_reads = 2;
         inputs.input_event_reads = 4;
 
+        EventReadEvidence evidence;
+        evidence.bp_left = summary.bp_left;
+        evidence.bp_right = summary.bp_right;
+        evidence.alt_split_reads = summary.alt_split_reads;
+        evidence.alt_indel_reads = summary.alt_indel_reads;
+        evidence.alt_struct_reads = summary.alt_struct_reads;
+        summary.event_evidence = evidence;
+
         const auto validator = pipeline.collect_hypothesis_validator_evidence(
             summary,
             inputs,
@@ -169,6 +201,14 @@ int main() {
         inputs.left_anchor_input_reads = 2;
         inputs.right_anchor_input_reads = 2;
         inputs.input_event_reads = 3;
+
+        EventReadEvidence evidence;
+        evidence.bp_left = summary.bp_left;
+        evidence.bp_right = summary.bp_right;
+        evidence.alt_split_reads = summary.alt_split_reads;
+        evidence.alt_indel_reads = summary.alt_indel_reads;
+        evidence.alt_struct_reads = summary.alt_struct_reads;
+        summary.event_evidence = evidence;
 
         const auto validator = pipeline.collect_hypothesis_validator_evidence(
             summary,

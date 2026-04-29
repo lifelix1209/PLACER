@@ -241,7 +241,25 @@ python3 scripts/random_truth_interval_eval.py \
   --outdir placer_out/random_truth_eval_parallel
 ```
 
-`evaluation.tsv` records per-sample detection calls, timing fields, and parsed joint-decision diagnostics from `run.log`.
+To remove repeated PLACER subprocess and TE/reference initialization while
+keeping each sampled locus as a separate input, run exact batch mode:
+
+```bash
+python3 scripts/random_truth_interval_eval.py \
+  --ground-truth <truth.tsv> \
+  --bam <input.bam> \
+  --ref <ref.fa> \
+  --te <te.fa> \
+  --placer ./build/placer \
+  --sampled-truth-tsv placer_out/random_truth_eval_serial/sampled_truth.tsv \
+  --seed 20260330 \
+  --threads 1 \
+  --workers 1 \
+  --batch-placer-run \
+  --outdir placer_out/random_truth_eval_batch
+```
+
+`evaluation.tsv` records per-sample detection calls, timing fields, and parsed joint-decision diagnostics from each per-sample `run.log`.
 This script is the evaluation engine used by the release-readiness wrapper.
 
 ## Release Readiness

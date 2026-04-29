@@ -285,6 +285,16 @@ add_test(
 )
 
 add_test(
+    NAME test_random_truth_interval_eval
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_random_truth_interval_eval.py
+)
+
+add_test(
+    NAME test_blast_insert_sequence
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_blast_insert_sequence.py
+)
+
+add_test(
     NAME test_release_readiness_gate
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_release_readiness_gate.py
 )

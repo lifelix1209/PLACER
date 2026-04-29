@@ -70,6 +70,13 @@ class PreparedSubset:
     extract_elapsed_s: float
 
 
+@dataclass(frozen=True)
+class BatchPlacerStatus:
+    sample_id: str
+    exit_code: int
+    elapsed_s: float
+
+
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Randomly sample TLDR truth loci and check whether PLACER rediscovers them."
@@ -161,6 +168,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         type=int,
         default=1,
         help="Number of sampled loci evaluated concurrently.",
+    )
+    parser.add_argument(
+        "--batch-placer-run",
+        action="store_true",
+        help=(
+            "Run PLACER once in exact batch mode over the per-sample subset BAMs. "
+            "This preserves per-sample inputs and outputs while avoiding repeated "
+            "PLACER process/library initialization."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -679,8 +695,8 @@ def parse_scientific_summary(path: Path) -> Dict[str, int]:
     return summary
 
 
-def parse_joint_component_metrics(log_path: Path) -> Dict[str, str]:
-    metrics = {
+def default_joint_component_metrics() -> Dict[str, str]:
+    return {
         "joint_best_kind": "NA",
         "joint_runner_up_kind": "NA",
         "joint_final_qc": "NA",
@@ -693,31 +709,43 @@ def parse_joint_component_metrics(log_path: Path) -> Dict[str, str]:
         "te_qc": "NA",
         "te_pass": "NA",
     }
+
+
+def parse_pipeline_key_values(raw_line: str) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for token in raw_line.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        parsed[key] = value
+    return parsed
+
+
+def joint_metrics_from_fields(parsed: Dict[str, str]) -> Dict[str, str]:
+    return {
+        "joint_best_kind": parsed.get("best_kind", "NA"),
+        "joint_runner_up_kind": parsed.get("runner_kind", "NA"),
+        "joint_final_qc": parsed.get("final_qc", "NA"),
+        "joint_emit_te": parsed.get("emit_te", "NA"),
+        "joint_emit_unknown": parsed.get("emit_unknown", "NA"),
+        "consensus_qc": parsed.get("consensus_qc", "NA"),
+        "consensus_len": parsed.get("consensus_len", "NA"),
+        "seg_qc": parsed.get("seg_qc", "NA"),
+        "seg_insert_len": parsed.get("seg_insert_len", "NA"),
+        "te_qc": parsed.get("te_qc", "NA"),
+        "te_pass": parsed.get("te_pass", "NA"),
+    }
+
+
+def parse_joint_component_metrics(log_path: Path) -> Dict[str, str]:
+    metrics = default_joint_component_metrics()
     if not log_path.is_file():
         return metrics
 
     for raw_line in log_path.read_text(encoding="utf-8").splitlines():
         if "[Pipeline][joint]" not in raw_line:
             continue
-        parsed: Dict[str, str] = {}
-        for token in raw_line.split():
-            if "=" not in token:
-                continue
-            key, value = token.split("=", 1)
-            parsed[key] = value
-        metrics = {
-            "joint_best_kind": parsed.get("best_kind", "NA"),
-            "joint_runner_up_kind": parsed.get("runner_kind", "NA"),
-            "joint_final_qc": parsed.get("final_qc", "NA"),
-            "joint_emit_te": parsed.get("emit_te", "NA"),
-            "joint_emit_unknown": parsed.get("emit_unknown", "NA"),
-            "consensus_qc": parsed.get("consensus_qc", "NA"),
-            "consensus_len": parsed.get("consensus_len", "NA"),
-            "seg_qc": parsed.get("seg_qc", "NA"),
-            "seg_insert_len": parsed.get("seg_insert_len", "NA"),
-            "te_qc": parsed.get("te_qc", "NA"),
-            "te_pass": parsed.get("te_pass", "NA"),
-        }
+        metrics = joint_metrics_from_fields(parse_pipeline_key_values(raw_line))
     return metrics
 
 
@@ -998,6 +1026,155 @@ def run_placer_sample(
     )
 
 
+def write_batch_placer_manifest(
+    *,
+    prepared_subsets: Dict[str, PreparedSubset],
+    outdir: Path,
+) -> Path:
+    manifest_path = outdir / "placer_batch_manifest.tsv"
+    rows: List[Dict[str, str]] = []
+    for sample_id in sorted(prepared_subsets):
+        subset = prepared_subsets[sample_id]
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "bam": str(subset.subset_bam),
+                "run_dir": str(subset.sample_dir),
+            }
+        )
+    write_tsv(manifest_path, rows)
+    return manifest_path
+
+
+def parse_batch_placer_stdout(stdout: str) -> Dict[str, BatchPlacerStatus]:
+    statuses: Dict[str, BatchPlacerStatus] = {}
+    reader = csv.DictReader(stdout.splitlines(), delimiter="\t")
+    if reader.fieldnames is None:
+        return statuses
+    required = {"sample_id", "exit_code", "elapsed_s"}
+    missing = required.difference(reader.fieldnames)
+    if missing:
+        fail(f"batch PLACER stdout missing columns {sorted(missing)}")
+    for row in reader:
+        sample_id = row["sample_id"].strip()
+        if not sample_id:
+            continue
+        try:
+            exit_code = int(row["exit_code"])
+            elapsed_s = float(row["elapsed_s"])
+        except ValueError:
+            fail(f"invalid batch PLACER status row: {row}")
+        statuses[sample_id] = BatchPlacerStatus(
+            sample_id=sample_id,
+            exit_code=exit_code,
+            elapsed_s=elapsed_s,
+        )
+    return statuses
+
+
+def run_batch_placer_samples(
+    *,
+    args: argparse.Namespace,
+    outdir: Path,
+    prepared_subsets: Dict[str, PreparedSubset],
+) -> Dict[str, BatchPlacerStatus]:
+    manifest_path = write_batch_placer_manifest(
+        prepared_subsets=prepared_subsets,
+        outdir=outdir,
+    )
+    log_path = outdir / "placer_batch.log"
+    completed = subprocess.run(
+        [str(args.placer), "batch", str(manifest_path), str(args.ref), str(args.te)],
+        cwd=str(outdir),
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "$ "
+            + " ".join(
+                [str(args.placer), "batch", str(manifest_path), str(args.ref), str(args.te)]
+            )
+            + "\n"
+        )
+        handle.write(f"[batch_exit_code]\t{completed.returncode}\n")
+        if completed.stdout:
+            handle.write(completed.stdout)
+            if not completed.stdout.endswith("\n"):
+                handle.write("\n")
+        if completed.stderr:
+            handle.write(completed.stderr)
+            if not completed.stderr.endswith("\n"):
+                handle.write("\n")
+
+    statuses = parse_batch_placer_stdout(completed.stdout)
+    missing = set(prepared_subsets).difference(statuses)
+    if missing:
+        fail("batch PLACER did not report sample ids: " + ", ".join(sorted(missing)))
+    return statuses
+
+
+def evaluate_batched_sample(
+    *,
+    row: TruthRow,
+    window: WindowSpec,
+    args: argparse.Namespace,
+    outdir: Path,
+) -> Dict[str, str]:
+    sample_dir = outdir / row.sample_id
+    if not sample_dir.is_dir():
+        fail(f"batched sample directory not found: {sample_dir}")
+    log_path = sample_dir / "run.log"
+    read_names_path = sample_dir / "window_qnames.txt"
+    subset_bam = sample_dir / "subset.bam"
+    scientific_path = sample_dir / "scientific.txt"
+
+    prepared_subsets = getattr(args, "_prepared_subsets", {})
+    prepared_subset = prepared_subsets.get(row.sample_id)
+    statuses = getattr(args, "_batch_placer_statuses", {})
+    status = statuses.get(row.sample_id)
+    if not isinstance(status, BatchPlacerStatus):
+        fail(f"batch PLACER status not found for sample: {row.sample_id}")
+
+    qname_count = (
+        prepared_subset.qname_count
+        if isinstance(prepared_subset, PreparedSubset)
+        else count_nonempty_lines(read_names_path)
+    )
+    extract_elapsed_s = (
+        prepared_subset.extract_elapsed_s
+        if isinstance(prepared_subset, PreparedSubset)
+        else 0.0
+    )
+    scientific_summary = parse_scientific_summary(scientific_path) if status.exit_code == 0 else {}
+    calls = parse_scientific_txt(scientific_path) if status.exit_code == 0 else []
+    best_call = choose_best_call(row, calls)
+    detected = (
+        best_call is not None
+        and int(best_call["interval_distance_bp"]) <= args.match_distance_bp
+    )
+    joint_metrics = parse_joint_component_metrics(log_path)
+    return build_result_row(
+        row=row,
+        window=window,
+        sample_dir=sample_dir,
+        read_names_path=read_names_path,
+        subset_bam=subset_bam,
+        scientific_path=scientific_path,
+        qname_count=qname_count,
+        placer_exit_code=str(status.exit_code),
+        calls=calls,
+        best_call=best_call,
+        detected=detected,
+        extract_elapsed_s=extract_elapsed_s,
+        placer_elapsed_s=status.elapsed_s,
+        sample_elapsed_s=extract_elapsed_s + status.elapsed_s,
+        joint_metrics=joint_metrics,
+        scientific_summary=scientific_summary,
+    )
+
+
 def evaluate_existing_sample(
     *,
     row: TruthRow,
@@ -1094,7 +1271,12 @@ def evaluate_sample_rows(
 
     eval_fn = evaluator
     if eval_fn is None:
-        eval_fn = evaluate_existing_sample if args.reuse_existing_samples else run_placer_sample
+        if args.reuse_existing_samples:
+            eval_fn = evaluate_existing_sample
+        elif args.batch_placer_run:
+            eval_fn = evaluate_batched_sample
+        else:
+            eval_fn = run_placer_sample
 
     windows_by_sample_id = {
         row.sample_id: window
@@ -1109,6 +1291,13 @@ def evaluate_sample_rows(
             outdir=outdir,
         )
         setattr(args, "_prepared_subsets", prepared_subsets)
+        if args.batch_placer_run:
+            batch_statuses = run_batch_placer_samples(
+                args=args,
+                outdir=outdir,
+                prepared_subsets=prepared_subsets,
+            )
+            setattr(args, "_batch_placer_statuses", batch_statuses)
 
     ordered_results: List[Optional[Dict[str, str]]] = [None] * len(tasks)
     worker_count = max(1, args.workers)
@@ -1164,6 +1353,9 @@ def build_summary(
         "failure_stage_counts": failure_stage_counts,
         "workers": args.workers,
         "samtools_threads": args.threads,
+        "placer_run_mode": (
+            "batch_per_sample" if args.batch_placer_run else "per_sample"
+        ),
         "total_elapsed_s": total_elapsed_s,
         "ground_truth": str(args.ground_truth),
         "bam": str(args.bam),
@@ -1172,6 +1364,15 @@ def build_summary(
         "placer": str(args.placer),
         "outdir": str(outdir),
     }
+    batch_statuses = getattr(args, "_batch_placer_statuses", None)
+    if isinstance(batch_statuses, dict):
+        summary["batch_manifest"] = str(outdir / "placer_batch_manifest.tsv")
+        summary["batch_log"] = str(outdir / "placer_batch.log")
+        summary["batch_placer_elapsed_s"] = sum(
+            status.elapsed_s
+            for status in batch_statuses.values()
+            if isinstance(status, BatchPlacerStatus)
+        )
     if args.sampled_truth_tsv is not None:
         summary["sampled_truth_tsv"] = str(args.sampled_truth_tsv)
     return summary
@@ -1198,6 +1399,8 @@ def main(argv: Sequence[str]) -> int:
         fail("--workers must be > 0")
     if args.reuse_existing_samples and args.sampled_truth_tsv is None:
         fail("--reuse-existing-samples requires --sampled-truth-tsv")
+    if args.batch_placer_run and args.reuse_existing_samples:
+        fail("--batch-placer-run cannot be combined with --reuse-existing-samples")
 
     if args.sampled_truth_tsv is None:
         seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1, 2**31)

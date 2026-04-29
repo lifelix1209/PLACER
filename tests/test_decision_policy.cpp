@@ -763,6 +763,94 @@ int main() {
     }
 
     {
+        EventExistenceEvidence existence;
+        existence.best_gt = "0/1";
+        existence.af = 0.375;
+        existence.gq = 99;
+        existence.alt_struct_reads = 6;
+        existence.ref_span_reads = 10;
+        existence.depth = 16;
+        existence.score = 3.0;
+
+        EventSegmentation seg_input;
+        seg_input.pass = true;
+        seg_input.qc_reason = "PASS_EVENT_SEGMENTATION_ONE_SIDED_LEFT";
+        seg_input.left_flank_align_len = 50;
+        seg_input.right_flank_align_len = 0;
+        seg_input.left_flank_identity = 0.96;
+        seg_input.right_flank_identity = 0.0;
+        seg_input.insert_seq = std::string(125, 'A');
+        const auto seg = analyze_event_segmentation_for_test(true, seg_input);
+
+        TEAlignmentEvidence te;
+        te.best_family = "UNKNOWN";
+        te.best_subfamily = "UNKNOWN";
+        te.best_identity = 0.62406;
+        te.best_query_coverage = 0.96;
+        te.cross_family_margin = 0.0880977;
+        te.pass = true;
+        te.qc_reason = "PASS_INSERT_TE_ALIGNMENT_UNKNOWN";
+
+        BoundaryEvidence boundary;
+        boundary.geometry_defined = false;
+        boundary.canonical_pass = false;
+        boundary.evidence_consistent = false;
+        boundary.boundary_type = "REJECT";
+        boundary.boundary_len = 0;
+        boundary.score = -2.0;
+        boundary.qc = "REJECT_BOUNDARY_INVALID_REF_SEGMENTS";
+
+        const auto joint = evaluate_joint_hypotheses(existence, seg, te, boundary);
+        assert(!joint.emit_te_call);
+        assert(joint.best.kind != FinalHypothesisKind::kTeUnknown);
+        assert(joint.best.kind != FinalHypothesisKind::kTeResolved);
+    }
+
+    {
+        EventExistenceEvidence existence;
+        existence.best_gt = "0/1";
+        existence.af = 0.2;
+        existence.gq = 53;
+        existence.alt_struct_reads = 2;
+        existence.ref_span_reads = 8;
+        existence.depth = 10;
+        existence.score = 1.65;
+
+        EventSegmentation seg_input;
+        seg_input.pass = true;
+        seg_input.qc_reason = "PASS_EVENT_SEGMENTATION_ONE_SIDED_LEFT";
+        seg_input.left_flank_align_len = 80;
+        seg_input.right_flank_align_len = 0;
+        seg_input.left_flank_identity = 0.96;
+        seg_input.right_flank_identity = 0.0;
+        seg_input.insert_seq = std::string(1986, 'C');
+        const auto seg = analyze_event_segmentation_for_test(true, seg_input);
+
+        TEAlignmentEvidence te;
+        te.best_family = "L2";
+        te.best_subfamily = "NA";
+        te.best_identity = 0.778575;
+        te.best_query_coverage = 0.997986;
+        te.cross_family_margin = 0.561628;
+        te.pass = true;
+        te.qc_reason = "PASS_INSERT_TE_ALIGNMENT_FAMILY_ONLY";
+
+        BoundaryEvidence boundary;
+        boundary.geometry_defined = false;
+        boundary.canonical_pass = false;
+        boundary.evidence_consistent = false;
+        boundary.boundary_type = "REJECT";
+        boundary.boundary_len = 0;
+        boundary.score = -2.0;
+        boundary.qc = "REJECT_BOUNDARY_INVALID_REF_SEGMENTS";
+
+        const auto joint = evaluate_joint_hypotheses(existence, seg, te, boundary);
+        assert(!joint.emit_te_call);
+        assert(joint.best.kind != FinalHypothesisKind::kTeUnknown);
+        assert(joint.best.kind != FinalHypothesisKind::kTeResolved);
+    }
+
+    {
         FinalBoundaryInput in;
         in.left_ref_start = 100;
         in.left_ref_end = 220;

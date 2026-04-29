@@ -435,6 +435,7 @@ public:
 private:
     struct HypothesisSummary {
         size_t original_index = 0;
+        EventReadEvidence event_evidence;
         int32_t bp_left = -1;
         int32_t bp_right = -1;
         int32_t alt_split_reads = 0;
@@ -499,6 +500,7 @@ private:
 
     struct HypothesisValidatorEvidence {
         HypothesisSummary summary;
+        EventReadEvidence event_evidence;
         int32_t precise_support = 0;
         int32_t breakpoint_width = 0;
         int32_t anchor_distance = 0;
@@ -650,12 +652,22 @@ private:
         const EventReadEvidence& event_evidence,
         const EventConsensus& event_consensus) const;
 
+    EventSegmentation segment_event_consensus_cached(
+        const ComponentCall& component,
+        const EventReadEvidence& event_evidence,
+        const EventConsensus& event_consensus,
+        std::unordered_map<std::string, EventSegmentation>& segmentation_cache) const;
+
     EventSegmentationEvidence analyze_event_segmentation(
         const EventConsensus& event_consensus,
         const EventSegmentation& event_segmentation) const;
 
     TEAlignmentEvidence align_insert_seq_to_te(
         const EventSegmentation& event_segmentation) const;
+
+    TEAlignmentEvidence align_insert_seq_to_te_cached(
+        const EventSegmentation& event_segmentation,
+        std::unordered_map<std::string, TEAlignmentEvidence>& te_alignment_cache) const;
 
     GenotypeCall genotype_call(
         const ComponentCall& component,

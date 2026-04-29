@@ -335,6 +335,31 @@ std::string display_or_na(const std::string& value) {
     return value.empty() ? "NA" : value;
 }
 
+std::string event_segmentation_cache_key(
+    const ComponentCall& component,
+    const EventReadEvidence& event_evidence,
+    const EventConsensus& event_consensus) {
+    const int32_t bp_left = std::min(event_evidence.bp_left, event_evidence.bp_right);
+    const int32_t bp_right = std::max(event_evidence.bp_left, event_evidence.bp_right);
+    std::string key;
+    key.reserve(
+        component.chrom.size() +
+        event_consensus.consensus_seq.size() +
+        64);
+    key.append(std::to_string(component.chrom.size()));
+    key.push_back(':');
+    key.append(component.chrom);
+    key.push_back('|');
+    key.append(std::to_string(bp_left));
+    key.push_back('|');
+    key.append(std::to_string(bp_right));
+    key.push_back('|');
+    key.append(std::to_string(event_consensus.consensus_seq.size()));
+    key.push_back(':');
+    key.append(event_consensus.consensus_seq);
+    return key;
+}
+
 std::string summarize_seq_ends(const std::string& seq, size_t keep = 24) {
     if (seq.empty()) {
         return "NA";
@@ -3113,6 +3138,7 @@ Pipeline::HypothesisValidatorEvidence Pipeline::collect_hypothesis_validator_evi
     int32_t anchor_pos) const {
     HypothesisValidatorEvidence out;
     out.summary = summary;
+    out.event_evidence = summary.event_evidence;
     out.precise_support = summary.alt_split_reads + summary.alt_indel_reads;
     out.breakpoint_width = std::max(0, summary.bp_right - summary.bp_left);
     out.anchor_distance = std::min(
@@ -3813,6 +3839,27 @@ EventSegmentation Pipeline::segment_event_consensus(
     return segmentation;
 }
 
+EventSegmentation Pipeline::segment_event_consensus_cached(
+    const ComponentCall& component,
+    const EventReadEvidence& event_evidence,
+    const EventConsensus& event_consensus,
+    std::unordered_map<std::string, EventSegmentation>& segmentation_cache) const {
+    const std::string key = event_segmentation_cache_key(
+        component,
+        event_evidence,
+        event_consensus);
+    const auto cached = segmentation_cache.find(key);
+    if (cached != segmentation_cache.end()) {
+        return cached->second;
+    }
+    EventSegmentation segmentation = segment_event_consensus(
+        component,
+        event_evidence,
+        event_consensus);
+    segmentation_cache.emplace(key, segmentation);
+    return segmentation;
+}
+
 EventSegmentationEvidence Pipeline::analyze_event_segmentation(
     const EventConsensus& event_consensus,
     const EventSegmentation& event_segmentation) const {
@@ -3829,6 +3876,21 @@ TEAlignmentEvidence Pipeline::align_insert_seq_to_te(
         return evidence;
     }
     return te_classifier_module_.align_insert_sequence(event_segmentation.insert_seq);
+}
+
+TEAlignmentEvidence Pipeline::align_insert_seq_to_te_cached(
+    const EventSegmentation& event_segmentation,
+    std::unordered_map<std::string, TEAlignmentEvidence>& te_alignment_cache) const {
+    if (!event_segmentation.pass || event_segmentation.insert_seq.empty()) {
+        return align_insert_seq_to_te(event_segmentation);
+    }
+    const auto cached = te_alignment_cache.find(event_segmentation.insert_seq);
+    if (cached != te_alignment_cache.end()) {
+        return cached->second;
+    }
+    TEAlignmentEvidence evidence = align_insert_seq_to_te(event_segmentation);
+    te_alignment_cache.emplace(event_segmentation.insert_seq, evidence);
+    return evidence;
 }
 
 void finalize_final_calls(PipelineResult& result) {
@@ -4280,6 +4342,7 @@ Pipeline::HypothesisSummary Pipeline::build_hypothesis_summary(
 
     HypothesisSummary summary;
     summary.original_index = original_index;
+    summary.event_evidence = event_evidence;
     summary.bp_left = event_evidence.bp_left;
     summary.bp_right = event_evidence.bp_right;
     summary.alt_split_reads = event_evidence.alt_split_reads;
@@ -4688,6 +4751,9 @@ void Pipeline::process_bin_records(
         emit_pipeline_log_line(oss.str());
     };
 
+    std::unordered_map<std::string, EventSegmentation> event_segmentation_cache;
+    std::unordered_map<std::string, TEAlignmentEvidence> te_alignment_cache;
+
     for (size_t ci = 0; ci < components.size(); ++ci) {
         const auto& component = components[ci];
         const std::vector<InsertionFragment> empty_fragments;
@@ -4792,19 +4858,11 @@ void Pipeline::process_bin_records(
         std::vector<HypothesisValidatorEvidence> validator_candidates;
         validator_candidates.reserve(coarse_survivors.size());
         for (const auto& summary : coarse_survivors) {
-            const EventReadEvidence event_evidence = collect_event_read_evidence_for_bounds_cached(
-                component,
-                signal_cache,
-                fragments,
-                summary.bp_left,
-                summary.bp_right,
-                summary.bp_left,
-                summary.bp_right);
             const auto validator_input_started = std::chrono::steady_clock::now();
             const ConsensusInputCounts inputs = collect_event_consensus_input_counts(
                 projection.records,
                 fragments,
-                event_evidence);
+                summary.event_evidence);
             bin_stats.validator_input_count_seconds += std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - validator_input_started).count();
             validator_candidates.push_back(
@@ -4893,18 +4951,8 @@ void Pipeline::process_bin_records(
         final_call_candidates.reserve(shortlist.size());
 
         for (const auto& shortlisted : shortlist) {
-            const auto& summary = shortlisted.validator.summary;
-            const auto event_evidence_started = std::chrono::steady_clock::now();
-            const EventReadEvidence event_evidence = collect_event_read_evidence_for_bounds_cached(
-                component,
-                signal_cache,
-                fragments,
-                summary.bp_left,
-                summary.bp_right,
-                summary.bp_left,
-                summary.bp_right);
-            bin_stats.event_evidence_seconds += std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - event_evidence_started).count();
+            const EventReadEvidence& event_evidence =
+                shortlisted.validator.event_evidence;
             const auto consensus_started = std::chrono::steady_clock::now();
             const EventConsensus event_consensus = build_event_consensus(
                 component,
@@ -4949,16 +4997,27 @@ void Pipeline::process_bin_records(
                     ++bin_stats.pre_segmentation_gate_no_precise_or_full_context;
                 }
             } else {
-                const auto segmentation_started = std::chrono::steady_clock::now();
-                event_segmentation = segment_event_consensus(
+                const std::string segmentation_key = event_segmentation_cache_key(
                     component,
                     event_evidence,
                     event_consensus);
-                bin_stats.timing.event_segmentation_seconds += std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - segmentation_started).count();
-                bin_stats.event_segmentation_calls += 1;
-                if (!event_segmentation.pass) {
-                    bin_stats.event_segmentation_rejected += 1;
+                const bool segmentation_cache_hit =
+                    event_segmentation_cache.find(segmentation_key) != event_segmentation_cache.end();
+                if (segmentation_cache_hit) {
+                    event_segmentation = event_segmentation_cache.at(segmentation_key);
+                } else {
+                    const auto segmentation_started = std::chrono::steady_clock::now();
+                    event_segmentation = segment_event_consensus_cached(
+                        component,
+                        event_evidence,
+                        event_consensus,
+                        event_segmentation_cache);
+                    bin_stats.timing.event_segmentation_seconds += std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - segmentation_started).count();
+                    bin_stats.event_segmentation_calls += 1;
+                    if (!event_segmentation.pass) {
+                        bin_stats.event_segmentation_rejected += 1;
+                    }
                 }
             }
             const EventSegmentationEvidence seg_evidence = analyze_event_segmentation(
@@ -4967,13 +5026,24 @@ void Pipeline::process_bin_records(
 
             TEAlignmentEvidence te_alignment;
             if (seg_evidence.has_insert_seq) {
-                const auto te_started = std::chrono::steady_clock::now();
-                te_alignment = align_insert_seq_to_te(event_segmentation);
-                bin_stats.timing.te_alignment_seconds += std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - te_started).count();
-                bin_stats.te_alignment_calls += 1;
-                if (!te_alignment.pass) {
-                    bin_stats.te_alignment_rejected += 1;
+                const bool cacheable_te_alignment =
+                    event_segmentation.pass && !event_segmentation.insert_seq.empty();
+                const auto cached_te_alignment = cacheable_te_alignment
+                    ? te_alignment_cache.find(event_segmentation.insert_seq)
+                    : te_alignment_cache.end();
+                if (cached_te_alignment != te_alignment_cache.end()) {
+                    te_alignment = cached_te_alignment->second;
+                } else {
+                    const auto te_started = std::chrono::steady_clock::now();
+                    te_alignment = align_insert_seq_to_te_cached(
+                        event_segmentation,
+                        te_alignment_cache);
+                    bin_stats.timing.te_alignment_seconds += std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - te_started).count();
+                    bin_stats.te_alignment_calls += 1;
+                    if (!te_alignment.pass) {
+                        bin_stats.te_alignment_rejected += 1;
+                    }
                 }
             }
 
