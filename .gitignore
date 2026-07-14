@@ -1,0 +1,129 @@
+# Build artifacts
+build/
+build_release/
+build_*/
+cmake-build-*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Compiler / test outputs
+*.o
+*.o.d
+*.a
+*.so
+*.dylib
+*.out
+*.err
+*.log
+
+# Generated figures / plots
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+*.gif
+*.tif
+*.tiff
+
+# Generated analysis / benchmark outputs (not part of the publishable core)
+analysis/
+archive/analysis/
+
+# Runtime outputs
+scientific.txt
+coverage_candidates.tsv
+evidence_ledger.tsv
+null_controls.tsv
+ins_fragments.fasta
+ins_fragment_hits.tsv
+tuning_results.tsv
+event_debug.tsv
+placer_out/
+test_data/poly_n_distribution/
+benchmark_steller_out/
+benchmark_steller_sweep/
+benchmark_scientific_vs_yohann/
+benchmark_stress_out/
+sharded_placer_out/
+shards/
+shard_manifest.tsv
+scientific.sharded.txt
+*.cluster.msa.fa.progress.log
+pass1_bootstrap_consensus.fasta
+pass1_bootstrap_calls.tsv
+bootstrap_pass2/
+
+# Local large datasets (keep small test fixtures in test_data/ tracked)
+test_data/Astatotilapia_calliptera.fAstCal1.3.dna.toplevel.fa
+test_data/Astatotilapia_calliptera.fAstCal1.3.dna.toplevel.fa.fai
+test_data/MWCichlidTE-3.2.splitted.namefixed_renamed_all_all.fa
+test_data/MWCichlidTE-3.2.splitted.namefixed_renamed_all_all.fa.fai
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Editors / local tooling
+.idea/
+.vscode/
+*.swp
+*.swo
+*.tmp
+*.bak
+*.orig
+
+# Machine-local scripts / provenance (hardcode personal cluster paths; not for publication)
+scripts/truthset_matrix.sh
+scripts/README_truthset_matrix.md
+
+# Unpublished benchmark-paper material (keep off GitHub)
+paper/
+scripts/plot_placer_benchmark.py
+
+# Local planning / assistant notes
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+COPILOT.md
+CURSOR.md
+plan.md
+*.private.md
+*.local.md
+
+# Local analysis / assistant workspace
+.*/
+!.github/
+!.github/**
+.understand-anything/
+Testing/
+build-debug/
+/docs/
+/doc/
+
+# Local large evaluation datasets
+test_data/final_merged_Yohann_D23.bam
+test_data/final_merged_Yohann_D23.bam.bai
+test_data/Yohann_D23.table.txt
+test_data/D1.table.txt
+test_data/D2.bam
+test_data/D2.bam.bai
+test_data/fAstCal671.primary.fa
+test_data/fAstCal671.primary.fa.fai
+test_data/fTroMau28.20251115.P.fa
+test_data/fTroMau28.20251115.P.fa.fai
+test_data/public_benchmarks/
+test_data/*.fa.gz
+
+# Local Python environments / package caches
+.venv/
+.conda-home/
+.conda-pkgs/

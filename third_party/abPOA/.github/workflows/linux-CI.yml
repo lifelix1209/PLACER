@@ -1,0 +1,32 @@
+name: linux
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-linux:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm] # test on x64 and arm64
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Preparing Repositories
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+
+    - name: make
+      run: make
+
+    - name: Run Test Data
+      run: | 
+         ./bin/abpoa ./test_data/test.fa
+         ./bin/abpoa ./test_data/heter.fa -d2
+         ./bin/abpoa ./test_data/seq.fa -a1
+         ./bin/abpoa ./test_data/seq.fa -r5 -a1
+         ./bin/abpoa ./test_data/heter.fq -d2 -Q
+         ./bin/abpoa ./test_data/heter.fq -d2 -r2 -Q -a1

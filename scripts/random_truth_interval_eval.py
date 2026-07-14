@@ -1,0 +1,2081 @@
+#!/usr/bin/env python3
+"""Randomly sample truth loci and evaluate whether PLACER rediscovers them.
+
+Evaluation semantics:
+- Truth pool defaults to rows with `Filter == PASS` from the TLDR table.
+- Each sampled locus is evaluated independently on a read-complete subset BAM.
+  The subset keeps every alignment record for reads with any mapped alignment
+  overlapping the local truth window, so supplementary/secondary breakpoint
+  evidence is preserved together with each read's remote alignments.
+- A PLACER call is counted as detected when it is on the same chromosome and
+  the minimum distance between `[bp_left, bp_right]` and `[Start, End]` is
+  less than or equal to `--match-distance-bp`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import csv
+import json
+import os
+import random
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional, Sequence
+
+import pysam
+
+
+@dataclass(frozen=True)
+class TruthRow:
+    sample_id: str
+    uuid: str
+    chrom: str
+    start: int
+    end: int
+    strand: str
+    family: str
+    subfamily: str
+    filter_value: str
+    raw: Dict[str, str]
+    length_ins: int = 0
+
+
+@dataclass(frozen=True)
+class WindowSpec:
+    chrom: str
+    truth_start: int
+    truth_end: int
+    window_start: int
+    window_end: int
+
+    @property
+    def region(self) -> str:
+        return f"{self.chrom}:{self.window_start}-{self.window_end}"
+
+
+@dataclass(frozen=True)
+class PreparedSubset:
+    sample_id: str
+    sample_dir: Path
+    log_path: Path
+    read_names_path: Path
+    subset_bam: Path
+    qname_count: int
+    extract_elapsed_s: float
+
+
+@dataclass(frozen=True)
+class PipelinePlacerStatus:
+    sample_id: str
+    exit_code: int
+    elapsed_s: float
+
+
+# Backward-compatible name for callers/tests that still refer to the old
+# explicit batch runner.
+BatchPlacerStatus = PipelinePlacerStatus
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Randomly sample TLDR truth loci and check whether PLACER rediscovers them."
+    )
+    parser.add_argument("--ground-truth", required=True, type=Path, help="TLDR table path.")
+    parser.add_argument("--bam", required=True, type=Path, help="Input BAM path.")
+    parser.add_argument("--ref", required=True, type=Path, help="Reference FASTA path.")
+    parser.add_argument("--te", required=True, type=Path, help="TE FASTA path.")
+    parser.add_argument(
+        "--placer",
+        type=Path,
+        default=Path("build/placer"),
+        help="PLACER executable path.",
+    )
+    parser.add_argument(
+        "--outdir",
+        type=Path,
+        default=None,
+        help=(
+            "Output directory. Default: placer_out/random_truth_eval_<timestamp>_seed<seed>. "
+            "Must already exist when --reuse-existing-samples is set."
+        ),
+    )
+    parser.add_argument(
+        "--sampled-truth-tsv",
+        type=Path,
+        default=None,
+        help=(
+            "Replay an existing sampled cohort from sampled_truth.tsv instead of drawing a new "
+            "random sample."
+        ),
+    )
+    parser.add_argument(
+        "--reuse-existing-samples",
+        action="store_true",
+        help=(
+            "Do not rerun samtools/PLACER. Re-evaluate the existing SXX sample directories under "
+            "--outdir using --sampled-truth-tsv and overwrite the top-level reports."
+        ),
+    )
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=10,
+        help="Number of truth rows to sample per run.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed. Default: generated automatically and recorded in the report.",
+    )
+    parser.add_argument(
+        "--truth-filter",
+        default="PASS",
+        help="Only sample rows whose Filter column equals this value.",
+    )
+    parser.add_argument(
+        "--min-length-ins",
+        type=int,
+        default=None,
+        help="Only sample truth rows whose LengthIns is >= this threshold.",
+    )
+    parser.add_argument(
+        "--window-flank-bp",
+        type=int,
+        default=2000,
+        help="Flank size added to each side of the truth interval when extracting the local BAM.",
+    )
+    parser.add_argument(
+        "--match-distance-bp",
+        type=int,
+        default=100,
+        help="Max interval distance for counting a PLACER call as detected.",
+    )
+    parser.add_argument(
+        "--samtools",
+        default="samtools",
+        help="samtools executable path.",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=None,
+        help="samtools threads used for view/index. Default: all detected CPUs.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of sampled loci evaluated concurrently.",
+    )
+    parser.add_argument(
+        "--batch-placer-run",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--placer-min-final-raw-cigar-insert-len-bp",
+        type=int,
+        default=None,
+        help=(
+            "Override PLACER_MIN_FINAL_RAW_CIGAR_INSERT_LEN_BP for PLACER "
+            "subprocesses spawned by this script."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def use_pipeline_placer_runner(args: argparse.Namespace) -> bool:
+    """Return whether this evaluation should execute PLACER through the pipeline runner."""
+    return not getattr(args, "reuse_existing_samples", False)
+
+
+def fail(message: str) -> "NoReturn":
+    raise SystemExit(message)
+
+
+def require_file(path: Path, label: str) -> Path:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        fail(f"{label} not found: {resolved}")
+    return resolved
+
+
+def require_executable(path: Path, label: str) -> Path:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        fail(f"{label} not found: {resolved}")
+    if not os.access(resolved, os.X_OK):
+        fail(f"{label} is not executable: {resolved}")
+    return resolved
+
+
+def resolve_outdir(outdir: Optional[Path], seed: int) -> Path:
+    if outdir is not None:
+        resolved = outdir.expanduser().resolve()
+    else:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        resolved = Path("placer_out") / f"random_truth_eval_{stamp}_seed{seed}"
+        resolved = resolved.resolve()
+    if resolved.exists():
+        fail(f"output directory already exists: {resolved}")
+    return resolved
+
+
+def load_contig_lengths(reference_fasta: Path) -> Dict[str, int]:
+    fai_path = Path(str(reference_fasta) + ".fai")
+    if not fai_path.is_file():
+        fail(f"reference FASTA index not found: {fai_path}")
+
+    contig_lengths: Dict[str, int] = {}
+    with fai_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 2:
+                continue
+            chrom = fields[0]
+            try:
+                contig_lengths[chrom] = int(fields[1])
+            except ValueError as exc:
+                fail(f"invalid contig length in {fai_path}: {line.rstrip()}")
+    if not contig_lengths:
+        fail(f"no contig lengths loaded from {fai_path}")
+    return contig_lengths
+
+
+def load_truth_rows(
+    path: Path,
+    truth_filter: str,
+    min_length_ins: Optional[int] = None,
+) -> List[TruthRow]:
+    rows: List[TruthRow] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if reader.fieldnames is None:
+            fail(f"missing header in truth table: {path}")
+        required = {"UUID", "Chrom", "Start", "End", "Strand", "Family", "Subfamily", "Filter"}
+        if min_length_ins is not None:
+            required.add("LengthIns")
+        missing = required.difference(reader.fieldnames)
+        if missing:
+            fail(f"truth table missing columns {sorted(missing)}: {path}")
+        for row_index, row in enumerate(reader, start=1):
+            if row["Filter"] != truth_filter:
+                continue
+            try:
+                start = int(row["Start"])
+                end = int(row["End"])
+            except ValueError:
+                fail(f"invalid Start/End at truth row {row_index + 1}")
+            if end < start:
+                start, end = end, start
+
+            length_ins = 0
+            if "LengthIns" in row and row["LengthIns"] not in {"", "NA"}:
+                try:
+                    length_ins = int(row["LengthIns"])
+                except ValueError:
+                    fail(f"invalid LengthIns at truth row {row_index + 1}")
+            if min_length_ins is not None:
+                if length_ins < min_length_ins:
+                    continue
+
+            rows.append(
+                TruthRow(
+                    sample_id="",
+                    uuid=row["UUID"],
+                    chrom=row["Chrom"],
+                    start=start,
+                    end=end,
+                    strand=row["Strand"],
+                    family=row["Family"],
+                    subfamily=row["Subfamily"],
+                    filter_value=row["Filter"],
+                    raw=dict(row),
+                    length_ins=length_ins,
+                )
+            )
+    if not rows:
+        fail(f"no truth rows matched Filter == {truth_filter!r} in {path}")
+    return rows
+
+
+def load_sampled_truth_rows(path: Path) -> List[TruthRow]:
+    rows: List[TruthRow] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if reader.fieldnames is None:
+            fail(f"missing header in sampled truth TSV: {path}")
+        standard_required = {
+            "sample_id",
+            "uuid",
+            "chrom",
+            "truth_start",
+            "truth_end",
+            "truth_strand",
+            "truth_family",
+            "truth_subfamily",
+            "truth_filter",
+            "truth_length_ins",
+        }
+        igv_sampled_calls_required = {
+            "chrom",
+            "strand",
+            "label",
+            "candidate_start",
+            "candidate_end",
+            "source_id",
+            "family",
+            "subfamily",
+            "insert_len",
+        }
+        fieldnames = set(reader.fieldnames)
+        if standard_required.issubset(fieldnames):
+            input_format = "sampled_truth"
+        elif igv_sampled_calls_required.issubset(fieldnames):
+            input_format = "sampled_calls"
+        else:
+            missing = standard_required.difference(fieldnames)
+            fail(f"sampled truth TSV missing columns {sorted(missing)}: {path}")
+        for row_index, row in enumerate(reader, start=1):
+            if input_format == "sampled_truth":
+                sample_id = row["sample_id"].strip()
+                uuid = row["uuid"]
+                chrom = row["chrom"]
+                strand = row["truth_strand"]
+                family = row["truth_family"]
+                subfamily = row["truth_subfamily"]
+                filter_value = row["truth_filter"]
+                start_raw = row["truth_start"]
+                end_raw = row["truth_end"]
+                length_raw = row["truth_length_ins"]
+            else:
+                sample_id = row.get("label", "").strip()
+                if not sample_id:
+                    sample_id = row.get("name", "").split("|", 1)[0].strip()
+                uuid = row.get("source_id", "").strip() or row.get("name", "")
+                chrom = row["chrom"]
+                strand = row["strand"]
+                family = row.get("family", "NA")
+                subfamily = row.get("subfamily", "NA")
+                filter_value = (
+                    row.get("tldr_filter", "").strip()
+                    or row.get("placer_qc", "").strip()
+                    or row.get("source", "").strip()
+                    or "NA"
+                )
+                start_raw = row["candidate_start"]
+                end_raw = row["candidate_end"]
+                length_raw = row.get("insert_len", "0")
+
+            if not sample_id:
+                fail(f"empty sample_id at sampled truth row {row_index + 1}")
+            try:
+                start = int(start_raw)
+                end = int(end_raw)
+                length_ins = int(length_raw) if length_raw not in {"", "NA"} else 0
+            except ValueError:
+                fail(f"invalid sampled truth numeric field at row {row_index + 1}")
+            if end < start:
+                start, end = end, start
+            rows.append(
+                TruthRow(
+                    sample_id=sample_id,
+                    uuid=uuid,
+                    chrom=chrom,
+                    start=start,
+                    end=end,
+                    strand=strand,
+                    family=family,
+                    subfamily=subfamily,
+                    filter_value=filter_value,
+                    raw=dict(row),
+                    length_ins=length_ins,
+                )
+            )
+    if not rows:
+        fail(f"no sampled rows loaded from {path}")
+    return rows
+
+
+def sample_truth_rows(rows: Sequence[TruthRow], sample_size: int, seed: int) -> List[TruthRow]:
+    if sample_size <= 0:
+        fail("--sample-size must be > 0")
+    if sample_size > len(rows):
+        fail(
+            f"--sample-size={sample_size} exceeds truth pool size {len(rows)} "
+            f"for the selected filter"
+        )
+    rng = random.Random(seed)
+    sampled = rng.sample(list(rows), sample_size)
+    labelled: List[TruthRow] = []
+    for index, row in enumerate(sampled, start=1):
+        labelled.append(
+            TruthRow(
+                sample_id=f"S{index:02d}",
+                uuid=row.uuid,
+                chrom=row.chrom,
+                start=row.start,
+                end=row.end,
+                strand=row.strand,
+                family=row.family,
+                subfamily=row.subfamily,
+                filter_value=row.filter_value,
+                raw=row.raw,
+                length_ins=row.length_ins,
+            )
+        )
+    return labelled
+
+
+def build_window(row: TruthRow, flank_bp: int, contig_lengths: Dict[str, int]) -> WindowSpec:
+    if flank_bp < 0:
+        fail("--window-flank-bp must be >= 0")
+    contig_len = contig_lengths.get(row.chrom)
+    if contig_len is None:
+        fail(f"truth contig not present in reference index: {row.chrom}")
+    window_start = max(1, row.start - flank_bp)
+    window_end = min(contig_len, row.end + flank_bp)
+    if window_end < window_start:
+        fail(
+            f"invalid extraction window for {row.sample_id} {row.chrom}:{row.start}-{row.end}"
+        )
+    return WindowSpec(
+        chrom=row.chrom,
+        truth_start=row.start,
+        truth_end=row.end,
+        window_start=window_start,
+        window_end=window_end,
+    )
+
+
+def extract_region_qnames_from_region_view(region_stdout: str, region: str) -> List[str]:
+    qnames: List[str] = []
+    seen: set[str] = set()
+    for line in region_stdout.splitlines():
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) < 2:
+            fail(f"malformed samtools view row for region {region}: {line}")
+        qname = fields[0]
+        try:
+            flag = int(fields[1])
+        except ValueError:
+            fail(f"invalid FLAG in samtools view row for region {region}: {line}")
+        if flag & 0x4:
+            continue
+        if qname not in seen:
+            seen.add(qname)
+            qnames.append(qname)
+    return qnames
+
+
+def extract_primary_qnames_from_region_view(region_stdout: str, region: str) -> List[str]:
+    return extract_region_qnames_from_region_view(region_stdout, region)
+
+
+def resolve_samtools_threads(requested_threads: Optional[int]) -> int:
+    if requested_threads is not None:
+        return requested_threads
+    detected_threads = os.cpu_count() or 1
+    return max(1, detected_threads)
+
+
+def build_qname_membership_maps(
+    sample_to_qnames: Dict[str, Sequence[str]],
+) -> tuple[Dict[str, List[str]], Dict[str, List[str]], List[str]]:
+    normalized: Dict[str, List[str]] = {
+        sample_id: list(qnames)
+        for sample_id, qnames in sample_to_qnames.items()
+    }
+    qname_to_sample_ids: Dict[str, List[str]] = {}
+    union_qnames: List[str] = []
+    seen_union: set[str] = set()
+
+    for sample_id, qnames in normalized.items():
+        for qname in qnames:
+            sample_ids = qname_to_sample_ids.setdefault(qname, [])
+            sample_ids.append(sample_id)
+            if qname not in seen_union:
+                seen_union.add(qname)
+                union_qnames.append(qname)
+
+    return normalized, qname_to_sample_ids, union_qnames
+
+
+def run_command(
+    cmd: Sequence[str],
+    *,
+    cwd: Optional[Path] = None,
+    log_path: Optional[Path] = None,
+) -> None:
+    completed = subprocess.run(
+        list(cmd),
+        cwd=str(cwd) if cwd else None,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if log_path is not None:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write("$ " + " ".join(cmd) + "\n")
+            if completed.stdout:
+                handle.write(completed.stdout)
+                if not completed.stdout.endswith("\n"):
+                    handle.write("\n")
+            if completed.stderr:
+                handle.write(completed.stderr)
+                if not completed.stderr.endswith("\n"):
+                    handle.write("\n")
+    if completed.returncode != 0:
+        fail(
+            f"command failed with exit code {completed.returncode}: "
+            f"{' '.join(cmd)}"
+        )
+
+
+def build_placer_env(args: argparse.Namespace) -> Dict[str, str]:
+    env = os.environ.copy()
+    threshold = getattr(args, "placer_min_final_raw_cigar_insert_len_bp", None)
+    if threshold is not None:
+        env["PLACER_MIN_FINAL_RAW_CIGAR_INSERT_LEN_BP"] = str(threshold)
+    return env
+
+
+def split_union_subset_bam(
+    *,
+    union_subset_bam: Path,
+    qname_to_sample_ids: Dict[str, Sequence[str]],
+    sample_to_subset_bam: Dict[str, Path],
+) -> Dict[str, int]:
+    writers: Dict[str, pysam.AlignmentFile] = {}
+    record_counts: Dict[str, int] = {
+        sample_id: 0
+        for sample_id in sample_to_subset_bam
+    }
+    seen_qnames: set[str] = set()
+    try:
+        with pysam.AlignmentFile(union_subset_bam, "rb") as in_handle:
+            for sample_id, subset_bam in sample_to_subset_bam.items():
+                writers[sample_id] = pysam.AlignmentFile(
+                    subset_bam,
+                    "wb",
+                    template=in_handle,
+                )
+
+            for record in in_handle:
+                sample_ids = qname_to_sample_ids.get(record.query_name)
+                if not sample_ids:
+                    continue
+                seen_qnames.add(record.query_name)
+                for sample_id in sample_ids:
+                    writers[sample_id].write(record)
+                    record_counts[sample_id] += 1
+    finally:
+        for writer in writers.values():
+            writer.close()
+
+    missing_qnames = set(qname_to_sample_ids).difference(seen_qnames)
+    if missing_qnames:
+        fail(
+            "union BAM split missed qnames: "
+            + ", ".join(sorted(missing_qnames))
+        )
+
+    return record_counts
+
+
+def prepare_sample_subset_bams(
+    *,
+    sampled_rows: Sequence[TruthRow],
+    windows_by_sample_id: Dict[str, WindowSpec],
+    args: argparse.Namespace,
+    outdir: Path,
+) -> Dict[str, PreparedSubset]:
+    sample_to_qnames: Dict[str, List[str]] = {}
+    prepared: Dict[str, PreparedSubset] = {}
+    sample_to_subset_bam: Dict[str, Path] = {}
+
+    for row in sampled_rows:
+        window = windows_by_sample_id[row.sample_id]
+        sample_dir = outdir / row.sample_id
+        sample_dir.mkdir(parents=True, exist_ok=False)
+        log_path = sample_dir / "run.log"
+        read_names_path = sample_dir / "window_qnames.txt"
+        subset_bam = sample_dir / "subset.bam"
+
+        started = time.time()
+        region_fetch = subprocess.run(
+            [
+                args.samtools,
+                "view",
+                "-@",
+                str(args.threads),
+                str(args.bam),
+                window.region,
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "$ "
+                + " ".join(
+                    [
+                        args.samtools,
+                        "view",
+                        "-@",
+                        str(args.threads),
+                        str(args.bam),
+                        window.region,
+                    ]
+                )
+                + "\n"
+            )
+            if region_fetch.stdout:
+                handle.write(
+                    f"[window_records_stdout_lines]\t{len(region_fetch.stdout.splitlines())}\n"
+                )
+            if region_fetch.stderr:
+                handle.write(region_fetch.stderr)
+                if not region_fetch.stderr.endswith("\n"):
+                    handle.write("\n")
+        if region_fetch.returncode != 0:
+            fail(
+                f"command failed with exit code {region_fetch.returncode}: "
+                f"{args.samtools} view -@ {args.threads} {args.bam} {window.region}"
+            )
+
+        qnames = extract_region_qnames_from_region_view(region_fetch.stdout, window.region)
+        if not qnames:
+            fail(f"no primary overlapping read names found for region {window.region}")
+        read_names_path.write_text("".join(name + "\n" for name in qnames), encoding="utf-8")
+        sample_to_qnames[row.sample_id] = qnames
+        prepared[row.sample_id] = PreparedSubset(
+            sample_id=row.sample_id,
+            sample_dir=sample_dir,
+            log_path=log_path,
+            read_names_path=read_names_path,
+            subset_bam=subset_bam,
+            qname_count=len(qnames),
+            extract_elapsed_s=time.time() - started,
+        )
+        sample_to_subset_bam[row.sample_id] = subset_bam
+
+    _, qname_to_sample_ids, union_qnames = build_qname_membership_maps(sample_to_qnames)
+    union_qnames_path = outdir / "union_qnames.txt"
+    union_subset_bam = outdir / "union_subset.bam"
+    extraction_log = outdir / "subset_extraction.log"
+    union_qnames_path.write_text("".join(qname + "\n" for qname in union_qnames), encoding="utf-8")
+
+    run_command(
+        [
+            args.samtools,
+            "view",
+            "-@",
+            str(args.threads),
+            "-N",
+            str(union_qnames_path),
+            "-b",
+            "-o",
+            str(union_subset_bam),
+            str(args.bam),
+        ],
+        log_path=extraction_log,
+    )
+    split_union_subset_bam(
+        union_subset_bam=union_subset_bam,
+        qname_to_sample_ids=qname_to_sample_ids,
+        sample_to_subset_bam=sample_to_subset_bam,
+    )
+    for subset in prepared.values():
+        run_command(
+            [args.samtools, "index", "-@", str(args.threads), str(subset.subset_bam)],
+            log_path=subset.log_path,
+        )
+
+    return prepared
+
+
+def parse_scientific_txt(path: Path) -> List[Dict[str, str]]:
+    if not path.is_file():
+        return []
+
+    header: Optional[List[str]] = None
+    rows: List[Dict[str, str]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+            if line.startswith("#chrom\t"):
+                header = line[1:].split("\t")
+                continue
+            if line.startswith("#"):
+                continue
+            if header is None:
+                continue
+            fields = line.split("\t")
+            if len(fields) != len(header):
+                fail(f"malformed scientific row in {path}: {line}")
+            rows.append(dict(zip(header, fields)))
+    if header is None:
+        fail(f"scientific header not found in {path}")
+    return rows
+
+
+ROBUST_OPTIONAL_FIELDS = (
+    "robust_mechanistic_qc",
+    "robust_mechanistic_worst_case_lfdr",
+    "mechanistic_lower_log_bf_te_vs_artifact",
+    "mechanistic_lower_log_bf_te_vs_non_te",
+    "conformal_null_p",
+    "conformal_by_threshold",
+    "conformal_qc",
+)
+
+
+def parse_float_or_none(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value or value == "NA":
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def parse_int_or_zero(value: Optional[str]) -> int:
+    if value is None:
+        return 0
+    value = value.strip()
+    if not value or value == "NA":
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def parse_int_or_none(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value or value == "NA":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def optional_field(row: Optional[Dict[str, str]], field: str) -> str:
+    if row is None:
+        return "NA"
+    value = row.get(field, "NA")
+    return value if value != "" else "NA"
+
+
+def parse_evidence_ledger_tsv(path: Path) -> List[Dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if reader.fieldnames is None:
+            return []
+        return [dict(row) for row in reader]
+
+
+def parse_null_controls_tsv(path: Path) -> List[Dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if reader.fieldnames is None:
+            return []
+        return [dict(row) for row in reader]
+
+
+def is_final_te_qc(qc: str) -> bool:
+    return qc.startswith("PASS_TE")
+
+
+def evidence_ledger_interval(row: Dict[str, str]) -> Optional[tuple[int, int]]:
+    coverage_left = parse_int_or_none(row.get("coverage_left"))
+    coverage_right = parse_int_or_none(row.get("coverage_right"))
+    if (
+        coverage_left is not None and coverage_right is not None
+        and coverage_left >= 0 and coverage_right >= 0
+    ):
+        return (min(coverage_left, coverage_right), max(coverage_left, coverage_right))
+    left = parse_int_or_none(row.get("bp_left"))
+    right = parse_int_or_none(row.get("bp_right"))
+    if left is not None and right is not None and left >= 0 and right >= 0:
+        return (min(left, right), max(left, right))
+    pos = parse_int_or_none(row.get("pos"))
+    if pos is not None and pos >= 0:
+        return (pos, pos)
+    return None
+
+
+def matching_evidence_ledger_rows(
+    truth: TruthRow,
+    rows: Sequence[Dict[str, str]],
+    match_distance_bp: int,
+) -> List[Dict[str, str]]:
+    matched: List[Dict[str, str]] = []
+    for row in rows:
+        if row.get("chrom") != truth.chrom:
+            continue
+        interval = evidence_ledger_interval(row)
+        if interval is None:
+            continue
+        distance = interval_distance(truth.start, truth.end, interval[0], interval[1])
+        if distance <= match_distance_bp:
+            matched.append(row)
+    return matched
+
+
+def robust_lfdr_values(calls: Sequence[Dict[str, str]]) -> List[float]:
+    values: List[float] = []
+    for call in calls:
+        value = parse_float_or_none(call.get("robust_mechanistic_worst_case_lfdr"))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def conformal_null_p_values(calls: Sequence[Dict[str, str]]) -> List[float]:
+    values: List[float] = []
+    for call in calls:
+        value = parse_float_or_none(call.get("conformal_null_p"))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def final_call_null_tail_values(rows: Sequence[Dict[str, str]]) -> List[float]:
+    values: List[float] = []
+    for row in rows:
+        if row.get("row_type") != "final_call_tail_query":
+            continue
+        value = parse_float_or_none(row.get("empirical_null_upper_tail_p"))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def parse_scientific_summary(path: Path) -> Dict[str, int]:
+    if not path.is_file():
+        return {}
+
+    summary: Dict[str, int] = {}
+    wanted_keys = {
+        "total_reads",
+        "gate1_passed",
+        "processed_bins",
+        "components",
+        "event_consensus_calls",
+        "genotype_calls",
+        "final_pass_calls",
+    }
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+            if line.startswith("#chrom\t"):
+                break
+            if line.startswith("#"):
+                continue
+            fields = line.split("\t")
+            if len(fields) != 2:
+                continue
+            key, value = fields
+            if key not in wanted_keys:
+                continue
+            try:
+                summary[key] = int(value)
+            except ValueError:
+                fail(f"invalid scientific summary value for {key} in {path}: {line}")
+    return summary
+
+
+def default_joint_component_metrics() -> Dict[str, str]:
+    return {
+        "joint_best_kind": "NA",
+        "joint_runner_up_kind": "NA",
+        "joint_final_qc": "NA",
+        "joint_emit_te": "NA",
+        "joint_emit_unknown": "NA",
+        "consensus_qc": "NA",
+        "consensus_len": "NA",
+        "seg_qc": "NA",
+        "seg_insert_len": "NA",
+        "te_qc": "NA",
+        "te_pass": "NA",
+    }
+
+
+def parse_pipeline_key_values(raw_line: str) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for token in raw_line.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        parsed[key] = value
+    return parsed
+
+
+def joint_metrics_from_fields(parsed: Dict[str, str]) -> Dict[str, str]:
+    return {
+        "joint_best_kind": parsed.get("best_kind", "NA"),
+        "joint_runner_up_kind": parsed.get("runner_kind", "NA"),
+        "joint_final_qc": parsed.get("final_qc", "NA"),
+        "joint_emit_te": parsed.get("emit_te", "NA"),
+        "joint_emit_unknown": parsed.get("emit_unknown", "NA"),
+        "consensus_qc": parsed.get("consensus_qc", "NA"),
+        "consensus_len": parsed.get("consensus_len", "NA"),
+        "seg_qc": parsed.get("seg_qc", "NA"),
+        "seg_insert_len": parsed.get("seg_insert_len", "NA"),
+        "te_qc": parsed.get("te_qc", "NA"),
+        "te_pass": parsed.get("te_pass", "NA"),
+    }
+
+
+def parse_joint_component_metrics(log_path: Path) -> Dict[str, str]:
+    metrics = default_joint_component_metrics()
+    if not log_path.is_file():
+        return metrics
+
+    for raw_line in log_path.read_text(encoding="utf-8").splitlines():
+        if "[Pipeline][joint]" not in raw_line:
+            continue
+        metrics = joint_metrics_from_fields(parse_pipeline_key_values(raw_line))
+    return metrics
+
+
+def interval_distance(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
+    if a_end < a_start:
+        a_start, a_end = a_end, a_start
+    if b_end < b_start:
+        b_start, b_end = b_end, b_start
+    if a_end < b_start:
+        return b_start - a_end
+    if b_end < a_start:
+        return a_start - b_end
+    return 0
+
+
+def call_interval(call: Dict[str, str]) -> Optional[tuple[int, int]]:
+    left = parse_int_or_none(call.get("bp_left"))
+    right = parse_int_or_none(call.get("bp_right"))
+    if left is not None and right is not None and left >= 0 and right >= 0:
+        return (min(left, right), max(left, right))
+    pos = parse_int_or_none(call.get("pos"))
+    if pos is not None and pos >= 0:
+        return (pos, pos)
+    return None
+
+
+def window_final_calls(
+    window: WindowSpec,
+    calls: Sequence[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    local_calls: List[Dict[str, str]] = []
+    for call in calls:
+        if call.get("chrom") != window.chrom:
+            continue
+        interval = call_interval(call)
+        if interval is None:
+            continue
+        if interval_distance(
+            window.window_start,
+            window.window_end,
+            interval[0],
+            interval[1],
+        ) == 0:
+            local_calls.append(call)
+    return local_calls
+
+
+def choose_best_call(
+    truth: TruthRow,
+    calls: Iterable[Dict[str, str]],
+) -> Optional[Dict[str, str]]:
+    best_row: Optional[Dict[str, str]] = None
+    best_distance: Optional[int] = None
+    for call in calls:
+        if call.get("chrom") != truth.chrom:
+            continue
+        try:
+            bp_left = int(call["bp_left"])
+            bp_right = int(call["bp_right"])
+        except (KeyError, ValueError):
+            fail(f"scientific.txt missing valid bp_left/bp_right: {call}")
+        distance = interval_distance(truth.start, truth.end, bp_left, bp_right)
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_row = dict(call)
+            best_row["interval_distance_bp"] = str(distance)
+    return best_row
+
+
+def count_nonempty_lines(path: Path) -> int:
+    if not path.is_file():
+        fail(f"required file not found: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        return sum(1 for line in handle if line.strip())
+
+
+def classify_failure_stage(
+    *,
+    detected: bool,
+    joint_metrics: Dict[str, str],
+    scientific_summary: Optional[Dict[str, int]],
+    best_call: Optional[Dict[str, str]] = None,
+) -> str:
+    if detected:
+        return "DETECTED"
+
+    if joint_metrics["joint_final_qc"] == "NA":
+        summary = scientific_summary or {}
+        if summary.get("final_pass_calls", 0) > 0 and best_call is not None:
+            return "FINAL_CALL_ELSEWHERE"
+        if summary.get("genotype_calls", 0) > 0:
+            return "GENOTYPED_BUT_NO_FINAL_CALL"
+        if summary.get("event_consensus_calls", 0) > 0:
+            return "EVENT_CONSENSUS_BUT_NO_FINAL_CALL"
+        return "NO_EVENT_SIGNAL"
+
+    if joint_metrics["consensus_qc"] not in {"NA", "PASS_EVENT_CONSENSUS"}:
+        return "EVENT_BUT_NO_CONSENSUS"
+
+    if joint_metrics["seg_qc"] not in {"NA", "PASS_EVENT_SEGMENTATION"}:
+        return "CONSENSUS_BUT_NO_SEGMENTATION"
+
+    seg_insert_len = joint_metrics["seg_insert_len"]
+    if (
+        seg_insert_len != "NA"
+        and int(seg_insert_len) > 0
+        and joint_metrics["te_qc"] not in {
+            "PASS_INSERT_TE_ALIGNMENT",
+            "PASS_INSERT_TE_ALIGNMENT_UNKNOWN",
+        }
+    ):
+        return "SEGMENTED_BUT_NO_TE_ALIGNMENT"
+
+    if (
+        joint_metrics["joint_best_kind"] == "NON_TE_INSERTION"
+        and (
+            joint_metrics["te_qc"] in {
+                "PASS_INSERT_TE_ALIGNMENT",
+                "PASS_INSERT_TE_ALIGNMENT_UNKNOWN",
+            }
+            or joint_metrics["joint_runner_up_kind"] in {"TE_UNKNOWN", "TE_RESOLVED"}
+        )
+    ):
+        return "TE_EVIDENCE_BUT_NON_TE_WINS"
+
+    return "UNCLASSIFIED"
+
+
+def build_result_row(
+    *,
+    row: TruthRow,
+    window: WindowSpec,
+    sample_dir: Path,
+    read_names_path: Path,
+    subset_bam: Path,
+    scientific_path: Path,
+    qname_count: int,
+    placer_exit_code: str,
+    calls: Sequence[Dict[str, str]],
+    best_call: Optional[Dict[str, str]],
+    detected: bool,
+    extract_elapsed_s: float,
+    placer_elapsed_s: float,
+    sample_elapsed_s: float,
+    joint_metrics: Dict[str, str],
+    scientific_summary: Optional[Dict[str, int]] = None,
+    evidence_ledger_path: Optional[Path] = None,
+    evidence_ledger_rows: Sequence[Dict[str, str]] = (),
+    null_controls_path: Optional[Path] = None,
+    null_control_rows: Sequence[Dict[str, str]] = (),
+    match_distance_bp: int = 100,
+) -> Dict[str, str]:
+    normalized_joint_metrics = {
+        "joint_best_kind": joint_metrics.get("joint_best_kind", "NA"),
+        "joint_runner_up_kind": joint_metrics.get("joint_runner_up_kind", "NA"),
+        "joint_final_qc": joint_metrics.get("joint_final_qc", "NA"),
+        "joint_emit_te": joint_metrics.get("joint_emit_te", "NA"),
+        "joint_emit_unknown": joint_metrics.get("joint_emit_unknown", "NA"),
+        "consensus_qc": joint_metrics.get("consensus_qc", "NA"),
+        "consensus_len": joint_metrics.get("consensus_len", "NA"),
+        "seg_qc": joint_metrics.get("seg_qc", "NA"),
+        "seg_insert_len": joint_metrics.get("seg_insert_len", "NA"),
+        "te_qc": joint_metrics.get("te_qc", "NA"),
+        "te_pass": joint_metrics.get("te_pass", "NA"),
+    }
+    failure_stage = classify_failure_stage(
+        detected=detected,
+        joint_metrics=normalized_joint_metrics,
+        scientific_summary=scientific_summary,
+        best_call=best_call,
+    )
+    normalized_scientific_summary = scientific_summary or {}
+    same_event_ledger_rows = matching_evidence_ledger_rows(
+        row,
+        evidence_ledger_rows,
+        match_distance_bp,
+    )
+    same_event_evidence_only_count = sum(
+        1
+        for ledger_row in same_event_ledger_rows
+        if not is_final_te_qc(ledger_row.get("final_qc", ""))
+    )
+    same_event_robust_lfdr_high_count = sum(
+        1
+        for ledger_row in same_event_ledger_rows
+        if ledger_row.get("robust_mechanistic_qc") == "TE_LFDR_HIGH"
+    )
+    final_robust_values = robust_lfdr_values(calls)
+    local_window_calls = window_final_calls(window, calls)
+    final_robust_sum = sum(final_robust_values)
+    final_robust_max = max(final_robust_values) if final_robust_values else None
+    final_conformal_values = conformal_null_p_values(calls)
+    final_conformal_sum = sum(final_conformal_values)
+    final_conformal_max = (
+        max(final_conformal_values)
+        if final_conformal_values
+        else None
+    )
+    final_null_tail_values = final_call_null_tail_values(null_control_rows)
+    final_null_tail_sum = sum(final_null_tail_values)
+    final_null_tail_max = (
+        max(final_null_tail_values)
+        if final_null_tail_values
+        else None
+    )
+    null_control_row_count = sum(
+        1
+        for null_row in null_control_rows
+        if null_row.get("row_type") == "null_control"
+    )
+    return {
+        "sample_id": row.sample_id,
+        "uuid": row.uuid,
+        "chrom": row.chrom,
+        "truth_start": str(row.start),
+        "truth_end": str(row.end),
+        "truth_strand": row.strand,
+        "truth_family": row.family,
+        "truth_subfamily": row.subfamily,
+        "truth_filter": row.filter_value,
+        "truth_length_ins": str(row.length_ins),
+        "truth_subset": row.raw.get("subset", row.raw.get("source", "NA")),
+        "truth_source": row.raw.get("source", "NA"),
+        "window_start": str(window.window_start),
+        "window_end": str(window.window_end),
+        "window_region": window.region,
+        "window_qname_count": str(qname_count),
+        "window_qnames_txt": str(read_names_path),
+        "subset_bam": str(subset_bam),
+        "scientific_txt": str(scientific_path),
+        "evidence_ledger_tsv": str(evidence_ledger_path) if evidence_ledger_path else "NA",
+        "null_controls_tsv": str(null_controls_path) if null_controls_path else "NA",
+        "run_dir": str(sample_dir),
+        "placer_exit_code": placer_exit_code,
+        "placer_call_count": str(len(calls)),
+        "window_placer_call_count": str(len(local_window_calls)),
+        "detected": "1" if detected else "0",
+        "nearest_call_distance_bp": best_call["interval_distance_bp"] if best_call else "NA",
+        "nearest_call_pos": best_call["pos"] if best_call else "NA",
+        "nearest_call_bp_left": best_call["bp_left"] if best_call else "NA",
+        "nearest_call_bp_right": best_call["bp_right"] if best_call else "NA",
+        "nearest_call_te": best_call["te"] if best_call else "NA",
+        "nearest_call_family": best_call["family"] if best_call else "NA",
+        "nearest_call_subfamily": best_call["subfamily"] if best_call else "NA",
+        "nearest_call_gt": best_call["gt"] if best_call else "NA",
+        "nearest_call_af": best_call["af"] if best_call else "NA",
+        "nearest_call_gq": best_call["gq"] if best_call else "NA",
+        "nearest_call_qc": best_call["qc"] if best_call else "NA",
+        "nearest_call_robust_mechanistic_qc": optional_field(
+            best_call,
+            "robust_mechanistic_qc",
+        ),
+        "nearest_call_robust_mechanistic_worst_case_lfdr": optional_field(
+            best_call,
+            "robust_mechanistic_worst_case_lfdr",
+        ),
+        "nearest_call_mechanistic_lower_log_bf_te_vs_artifact": optional_field(
+            best_call,
+            "mechanistic_lower_log_bf_te_vs_artifact",
+        ),
+        "nearest_call_mechanistic_lower_log_bf_te_vs_non_te": optional_field(
+            best_call,
+            "mechanistic_lower_log_bf_te_vs_non_te",
+        ),
+        "nearest_call_conformal_null_p": optional_field(
+            best_call,
+            "conformal_null_p",
+        ),
+        "nearest_call_conformal_by_threshold": optional_field(
+            best_call,
+            "conformal_by_threshold",
+        ),
+        "nearest_call_conformal_qc": optional_field(
+            best_call,
+            "conformal_qc",
+        ),
+        "evidence_ledger_row_count": str(len(evidence_ledger_rows)),
+        "same_event_evidence_ledger_count": str(len(same_event_ledger_rows)),
+        "same_event_evidence_only_count": str(same_event_evidence_only_count),
+        "same_event_robust_lfdr_high_count": str(same_event_robust_lfdr_high_count),
+        "final_call_robust_worst_case_lfdr_count": str(len(final_robust_values)),
+        "final_call_robust_worst_case_lfdr_sum": str(final_robust_sum),
+        "final_call_robust_worst_case_lfdr_mean": (
+            str(final_robust_sum / len(final_robust_values))
+            if final_robust_values else "NA"
+        ),
+        "final_call_robust_worst_case_lfdr_max": (
+            str(final_robust_max) if final_robust_max is not None else "NA"
+        ),
+        "final_call_conformal_null_p_count": str(len(final_conformal_values)),
+        "final_call_conformal_null_p_sum": str(final_conformal_sum),
+        "final_call_conformal_null_p_mean": (
+            str(final_conformal_sum / len(final_conformal_values))
+            if final_conformal_values else "NA"
+        ),
+        "final_call_conformal_null_p_max": (
+            str(final_conformal_max) if final_conformal_max is not None else "NA"
+        ),
+        "null_control_row_count": str(null_control_row_count),
+        "final_call_empirical_null_tail_p_count": str(len(final_null_tail_values)),
+        "final_call_empirical_null_tail_p_sum": str(final_null_tail_sum),
+        "final_call_empirical_null_tail_p_mean": (
+            str(final_null_tail_sum / len(final_null_tail_values))
+            if final_null_tail_values else "NA"
+        ),
+        "final_call_empirical_null_tail_p_max": (
+            str(final_null_tail_max) if final_null_tail_max is not None else "NA"
+        ),
+        "extract_elapsed_s": f"{extract_elapsed_s:.6f}",
+        "placer_elapsed_s": f"{placer_elapsed_s:.6f}",
+        "sample_elapsed_s": f"{sample_elapsed_s:.6f}",
+        "joint_best_kind": normalized_joint_metrics["joint_best_kind"],
+        "joint_runner_up_kind": normalized_joint_metrics["joint_runner_up_kind"],
+        "joint_final_qc": normalized_joint_metrics["joint_final_qc"],
+        "joint_emit_te": normalized_joint_metrics["joint_emit_te"],
+        "joint_emit_unknown": normalized_joint_metrics["joint_emit_unknown"],
+        "consensus_qc": normalized_joint_metrics["consensus_qc"],
+        "consensus_len": normalized_joint_metrics["consensus_len"],
+        "seg_qc": normalized_joint_metrics["seg_qc"],
+        "seg_insert_len": normalized_joint_metrics["seg_insert_len"],
+        "te_qc": normalized_joint_metrics["te_qc"],
+        "te_pass": normalized_joint_metrics["te_pass"],
+        "summary_event_consensus_calls": str(
+            normalized_scientific_summary.get("event_consensus_calls", "NA")
+        ),
+        "summary_genotype_calls": str(
+            normalized_scientific_summary.get("genotype_calls", "NA")
+        ),
+        "summary_final_pass_calls": str(
+            normalized_scientific_summary.get("final_pass_calls", "NA")
+        ),
+        "failure_stage": failure_stage,
+    }
+
+
+def run_placer_sample(
+    *,
+    row: TruthRow,
+    window: WindowSpec,
+    args: argparse.Namespace,
+    outdir: Path,
+) -> Dict[str, str]:
+    sample_dir = outdir / row.sample_id
+    if not sample_dir.is_dir():
+        fail(f"sample directory not prepared: {sample_dir}")
+    log_path = sample_dir / "run.log"
+    read_names_path = sample_dir / "window_qnames.txt"
+    subset_bam = sample_dir / "subset.bam"
+    if not subset_bam.is_file():
+        fail(f"prepared subset BAM not found: {subset_bam}")
+    if not read_names_path.is_file():
+        fail(f"prepared qname list not found: {read_names_path}")
+
+    prepared_subsets = getattr(args, "_prepared_subsets", {})
+    prepared_subset = prepared_subsets.get(row.sample_id)
+
+    sample_started = time.time()
+    qname_count = (
+        prepared_subset.qname_count
+        if isinstance(prepared_subset, PreparedSubset)
+        else count_nonempty_lines(read_names_path)
+    )
+    extract_elapsed_s = (
+        prepared_subset.extract_elapsed_s
+        if isinstance(prepared_subset, PreparedSubset)
+        else 0.0
+    )
+
+    placer_started = time.time()
+    completed = subprocess.run(
+        [str(args.placer), str(subset_bam), str(args.ref), str(args.te)],
+        cwd=str(sample_dir),
+        env=build_placer_env(args),
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    placer_elapsed_s = time.time() - placer_started
+    sample_elapsed_s = extract_elapsed_s + (time.time() - sample_started)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "$ " + " ".join([str(args.placer), str(subset_bam), str(args.ref), str(args.te)]) + "\n"
+        )
+        if completed.stdout:
+            handle.write(completed.stdout)
+            if not completed.stdout.endswith("\n"):
+                handle.write("\n")
+        if completed.stderr:
+            handle.write(completed.stderr)
+            if not completed.stderr.endswith("\n"):
+                handle.write("\n")
+
+    scientific_path = sample_dir / "scientific.txt"
+    evidence_ledger_path = sample_dir / "evidence_ledger.tsv"
+    null_controls_path = sample_dir / "null_controls.tsv"
+    scientific_summary = parse_scientific_summary(scientific_path) if completed.returncode == 0 else {}
+    calls = parse_scientific_txt(scientific_path) if completed.returncode == 0 else []
+    evidence_ledger_rows = (
+        parse_evidence_ledger_tsv(evidence_ledger_path)
+        if completed.returncode == 0
+        else []
+    )
+    null_control_rows = (
+        parse_null_controls_tsv(null_controls_path)
+        if completed.returncode == 0
+        else []
+    )
+    best_call = choose_best_call(row, calls)
+    detected = (
+        best_call is not None
+        and int(best_call["interval_distance_bp"]) <= args.match_distance_bp
+    )
+    joint_metrics = parse_joint_component_metrics(log_path)
+    return build_result_row(
+        row=row,
+        window=window,
+        sample_dir=sample_dir,
+        read_names_path=read_names_path,
+        subset_bam=subset_bam,
+        scientific_path=scientific_path,
+        qname_count=qname_count,
+        placer_exit_code=str(completed.returncode),
+        calls=calls,
+        best_call=best_call,
+        detected=detected,
+        extract_elapsed_s=extract_elapsed_s,
+        placer_elapsed_s=placer_elapsed_s,
+        sample_elapsed_s=sample_elapsed_s,
+        joint_metrics=joint_metrics,
+        scientific_summary=scientific_summary,
+        evidence_ledger_path=evidence_ledger_path,
+        evidence_ledger_rows=evidence_ledger_rows,
+        null_controls_path=null_controls_path,
+        null_control_rows=null_control_rows,
+        match_distance_bp=args.match_distance_bp,
+    )
+
+
+def write_pipeline_placer_manifest(
+    *,
+    prepared_subsets: Dict[str, PreparedSubset],
+    outdir: Path,
+) -> Path:
+    manifest_path = outdir / "placer_pipeline_manifest.tsv"
+    rows: List[Dict[str, str]] = []
+    for sample_id in sorted(prepared_subsets):
+        subset = prepared_subsets[sample_id]
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "bam": str(subset.subset_bam),
+                "run_dir": str(subset.sample_dir),
+            }
+        )
+    write_tsv(manifest_path, rows)
+    return manifest_path
+
+
+def write_batch_placer_manifest(
+    *,
+    prepared_subsets: Dict[str, PreparedSubset],
+    outdir: Path,
+) -> Path:
+    return write_pipeline_placer_manifest(
+        prepared_subsets=prepared_subsets,
+        outdir=outdir,
+    )
+
+
+def parse_pipeline_placer_stdout(stdout: str) -> Dict[str, PipelinePlacerStatus]:
+    statuses: Dict[str, PipelinePlacerStatus] = {}
+    reader = csv.DictReader(stdout.splitlines(), delimiter="\t")
+    if reader.fieldnames is None:
+        return statuses
+    required = {"sample_id", "exit_code", "elapsed_s"}
+    missing = required.difference(reader.fieldnames)
+    if missing:
+        fail(f"batch PLACER stdout missing columns {sorted(missing)}")
+    for row in reader:
+        sample_id = row["sample_id"].strip()
+        if not sample_id:
+            continue
+        try:
+            exit_code = int(row["exit_code"])
+            elapsed_s = float(row["elapsed_s"])
+        except ValueError:
+            fail(f"invalid pipeline PLACER status row: {row}")
+        statuses[sample_id] = PipelinePlacerStatus(
+            sample_id=sample_id,
+            exit_code=exit_code,
+            elapsed_s=elapsed_s,
+        )
+    return statuses
+
+
+def parse_batch_placer_stdout(stdout: str) -> Dict[str, BatchPlacerStatus]:
+    return parse_pipeline_placer_stdout(stdout)
+
+
+def run_pipeline_placer_samples(
+    *,
+    args: argparse.Namespace,
+    outdir: Path,
+    prepared_subsets: Dict[str, PreparedSubset],
+) -> Dict[str, PipelinePlacerStatus]:
+    manifest_path = write_pipeline_placer_manifest(
+        prepared_subsets=prepared_subsets,
+        outdir=outdir,
+    )
+    log_path = outdir / "placer_pipeline.log"
+    completed = subprocess.run(
+        [str(args.placer), "batch", str(manifest_path), str(args.ref), str(args.te)],
+        cwd=str(outdir),
+        env=build_placer_env(args),
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "$ "
+            + " ".join(
+                [str(args.placer), "batch", str(manifest_path), str(args.ref), str(args.te)]
+            )
+            + "\n"
+        )
+        handle.write(f"[batch_exit_code]\t{completed.returncode}\n")
+        if completed.stdout:
+            handle.write(completed.stdout)
+            if not completed.stdout.endswith("\n"):
+                handle.write("\n")
+        if completed.stderr:
+            handle.write(completed.stderr)
+            if not completed.stderr.endswith("\n"):
+                handle.write("\n")
+
+    statuses = parse_pipeline_placer_stdout(completed.stdout)
+    missing = set(prepared_subsets).difference(statuses)
+    if missing:
+        fail("pipeline PLACER did not report sample ids: " + ", ".join(sorted(missing)))
+    return statuses
+
+
+def run_batch_placer_samples(
+    *,
+    args: argparse.Namespace,
+    outdir: Path,
+    prepared_subsets: Dict[str, PreparedSubset],
+) -> Dict[str, BatchPlacerStatus]:
+    return run_pipeline_placer_samples(
+        args=args,
+        outdir=outdir,
+        prepared_subsets=prepared_subsets,
+    )
+
+
+def evaluate_pipeline_sample(
+    *,
+    row: TruthRow,
+    window: WindowSpec,
+    args: argparse.Namespace,
+    outdir: Path,
+) -> Dict[str, str]:
+    sample_dir = outdir / row.sample_id
+    if not sample_dir.is_dir():
+        fail(f"batched sample directory not found: {sample_dir}")
+    log_path = sample_dir / "run.log"
+    read_names_path = sample_dir / "window_qnames.txt"
+    subset_bam = sample_dir / "subset.bam"
+    scientific_path = sample_dir / "scientific.txt"
+    evidence_ledger_path = sample_dir / "evidence_ledger.tsv"
+    null_controls_path = sample_dir / "null_controls.tsv"
+
+    prepared_subsets = getattr(args, "_prepared_subsets", {})
+    prepared_subset = prepared_subsets.get(row.sample_id)
+    statuses = getattr(args, "_pipeline_placer_statuses", {})
+    status = statuses.get(row.sample_id)
+    if not isinstance(status, PipelinePlacerStatus):
+        fail(f"pipeline PLACER status not found for sample: {row.sample_id}")
+
+    qname_count = (
+        prepared_subset.qname_count
+        if isinstance(prepared_subset, PreparedSubset)
+        else count_nonempty_lines(read_names_path)
+    )
+    extract_elapsed_s = (
+        prepared_subset.extract_elapsed_s
+        if isinstance(prepared_subset, PreparedSubset)
+        else 0.0
+    )
+    scientific_summary = parse_scientific_summary(scientific_path) if status.exit_code == 0 else {}
+    calls = parse_scientific_txt(scientific_path) if status.exit_code == 0 else []
+    evidence_ledger_rows = (
+        parse_evidence_ledger_tsv(evidence_ledger_path)
+        if status.exit_code == 0
+        else []
+    )
+    null_control_rows = (
+        parse_null_controls_tsv(null_controls_path)
+        if status.exit_code == 0
+        else []
+    )
+    best_call = choose_best_call(row, calls)
+    detected = (
+        best_call is not None
+        and int(best_call["interval_distance_bp"]) <= args.match_distance_bp
+    )
+    joint_metrics = parse_joint_component_metrics(log_path)
+    return build_result_row(
+        row=row,
+        window=window,
+        sample_dir=sample_dir,
+        read_names_path=read_names_path,
+        subset_bam=subset_bam,
+        scientific_path=scientific_path,
+        qname_count=qname_count,
+        placer_exit_code=str(status.exit_code),
+        calls=calls,
+        best_call=best_call,
+        detected=detected,
+        extract_elapsed_s=extract_elapsed_s,
+        placer_elapsed_s=status.elapsed_s,
+        sample_elapsed_s=extract_elapsed_s + status.elapsed_s,
+        joint_metrics=joint_metrics,
+        scientific_summary=scientific_summary,
+        evidence_ledger_path=evidence_ledger_path,
+        evidence_ledger_rows=evidence_ledger_rows,
+        null_controls_path=null_controls_path,
+        null_control_rows=null_control_rows,
+        match_distance_bp=args.match_distance_bp,
+    )
+
+
+def evaluate_batched_sample(
+    *,
+    row: TruthRow,
+    window: WindowSpec,
+    args: argparse.Namespace,
+    outdir: Path,
+) -> Dict[str, str]:
+    return evaluate_pipeline_sample(
+        row=row,
+        window=window,
+        args=args,
+        outdir=outdir,
+    )
+
+
+def evaluate_existing_sample(
+    *,
+    row: TruthRow,
+    window: WindowSpec,
+    args: argparse.Namespace,
+    outdir: Path,
+) -> Dict[str, str]:
+    sample_dir = outdir / row.sample_id
+    if not sample_dir.is_dir():
+        fail(f"existing sample directory not found: {sample_dir}")
+    read_names_path = sample_dir / "window_qnames.txt"
+    subset_bam = sample_dir / "subset.bam"
+    scientific_path = sample_dir / "scientific.txt"
+    evidence_ledger_path = sample_dir / "evidence_ledger.tsv"
+    null_controls_path = sample_dir / "null_controls.tsv"
+    log_path = sample_dir / "run.log"
+    if not subset_bam.is_file():
+        fail(f"existing subset BAM not found: {subset_bam}")
+    if not scientific_path.is_file():
+        fail(f"existing scientific.txt not found: {scientific_path}")
+
+    qname_count = count_nonempty_lines(read_names_path)
+    scientific_summary = parse_scientific_summary(scientific_path)
+    calls = parse_scientific_txt(scientific_path)
+    evidence_ledger_rows = parse_evidence_ledger_tsv(evidence_ledger_path)
+    null_control_rows = parse_null_controls_tsv(null_controls_path)
+    best_call = choose_best_call(row, calls)
+    detected = (
+        best_call is not None
+        and int(best_call["interval_distance_bp"]) <= args.match_distance_bp
+    )
+    joint_metrics = parse_joint_component_metrics(log_path)
+    return build_result_row(
+        row=row,
+        window=window,
+        sample_dir=sample_dir,
+        read_names_path=read_names_path,
+        subset_bam=subset_bam,
+        scientific_path=scientific_path,
+        qname_count=qname_count,
+        placer_exit_code="0",
+        calls=calls,
+        best_call=best_call,
+        detected=detected,
+        extract_elapsed_s=0.0,
+        placer_elapsed_s=0.0,
+        sample_elapsed_s=0.0,
+        joint_metrics=joint_metrics,
+        scientific_summary=scientific_summary,
+        evidence_ledger_path=evidence_ledger_path,
+        evidence_ledger_rows=evidence_ledger_rows,
+        null_controls_path=null_controls_path,
+        null_control_rows=null_control_rows,
+        match_distance_bp=args.match_distance_bp,
+    )
+
+
+def write_tsv(path: Path, rows: Sequence[Dict[str, str]]) -> None:
+    if not rows:
+        fail(f"no rows available for TSV output: {path}")
+    fieldnames = list(rows[0].keys())
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=fieldnames,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def evaluate_sample_rows(
+    *,
+    sampled_rows: Sequence[TruthRow],
+    contig_lengths: Dict[str, int],
+    args: argparse.Namespace,
+    outdir: Path,
+    evaluator: Optional[Callable[..., Dict[str, str]]] = None,
+) -> tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    sampled_manifest: List[Dict[str, str]] = []
+    tasks: List[tuple[int, TruthRow, WindowSpec]] = []
+    for index, row in enumerate(sampled_rows):
+        window = build_window(row, args.window_flank_bp, contig_lengths)
+        sampled_manifest.append(
+            {
+                "sample_id": row.sample_id,
+                "uuid": row.uuid,
+                "chrom": row.chrom,
+                "truth_start": str(row.start),
+                "truth_end": str(row.end),
+                "truth_strand": row.strand,
+                "truth_family": row.family,
+                "truth_subfamily": row.subfamily,
+                "truth_filter": row.filter_value,
+                "truth_length_ins": str(row.length_ins),
+                "window_start": str(window.window_start),
+                "window_end": str(window.window_end),
+                "window_region": window.region,
+            }
+        )
+        tasks.append((index, row, window))
+
+    eval_fn = evaluator
+    use_pipeline_runner = use_pipeline_placer_runner(args)
+    if eval_fn is None:
+        if args.reuse_existing_samples:
+            eval_fn = evaluate_existing_sample
+        elif use_pipeline_runner:
+            eval_fn = evaluate_pipeline_sample
+        else:
+            eval_fn = run_placer_sample
+
+    windows_by_sample_id = {
+        row.sample_id: window
+        for _, row, window in tasks
+    }
+
+    if evaluator is None and not args.reuse_existing_samples:
+        prepared_subsets = prepare_sample_subset_bams(
+            sampled_rows=sampled_rows,
+            windows_by_sample_id=windows_by_sample_id,
+            args=args,
+            outdir=outdir,
+        )
+        setattr(args, "_prepared_subsets", prepared_subsets)
+        if use_pipeline_runner:
+            pipeline_statuses = run_pipeline_placer_samples(
+                args=args,
+                outdir=outdir,
+                prepared_subsets=prepared_subsets,
+            )
+            setattr(args, "_pipeline_placer_statuses", pipeline_statuses)
+
+    ordered_results: List[Optional[Dict[str, str]]] = [None] * len(tasks)
+    worker_count = max(1, args.workers)
+
+    if worker_count == 1 or len(tasks) <= 1:
+        for index, row, window in tasks:
+            ordered_results[index] = eval_fn(
+                row=row,
+                window=window,
+                args=args,
+                outdir=outdir,
+            )
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_index = {
+                executor.submit(
+                    eval_fn,
+                    row=row,
+                    window=window,
+                    args=args,
+                    outdir=outdir,
+                ): index
+                for index, row, window in tasks
+            }
+            for future in concurrent.futures.as_completed(future_to_index):
+                ordered_results[future_to_index[future]] = future.result()
+
+    return sampled_manifest, [result for result in ordered_results if result is not None]
+
+
+def build_summary(
+    *,
+    seed: Optional[int],
+    sampled_rows: Sequence[TruthRow],
+    truth_pool_size: int,
+    detected_count: int,
+    failure_stage_counts: Dict[str, int],
+    args: argparse.Namespace,
+    outdir: Path,
+    total_elapsed_s: float,
+    results: Sequence[Dict[str, str]] = (),
+) -> Dict[str, object]:
+    final_lfdr_count = sum(
+        parse_int_or_zero(row.get("final_call_robust_worst_case_lfdr_count"))
+        for row in results
+    )
+    final_lfdr_sum = sum(
+        parse_float_or_none(row.get("final_call_robust_worst_case_lfdr_sum")) or 0.0
+        for row in results
+    )
+    final_lfdr_max_values = [
+        value
+        for value in (
+            parse_float_or_none(row.get("final_call_robust_worst_case_lfdr_max"))
+            for row in results
+        )
+        if value is not None
+    ]
+    final_null_tail_count = sum(
+        parse_int_or_zero(row.get("final_call_empirical_null_tail_p_count"))
+        for row in results
+    )
+    final_null_tail_sum = sum(
+        parse_float_or_none(row.get("final_call_empirical_null_tail_p_sum")) or 0.0
+        for row in results
+    )
+    final_null_tail_max_values = [
+        value
+        for value in (
+            parse_float_or_none(row.get("final_call_empirical_null_tail_p_max"))
+            for row in results
+        )
+        if value is not None
+    ]
+    final_conformal_count = sum(
+        parse_int_or_zero(row.get("final_call_conformal_null_p_count"))
+        for row in results
+    )
+    final_conformal_sum = sum(
+        parse_float_or_none(row.get("final_call_conformal_null_p_sum")) or 0.0
+        for row in results
+    )
+    final_conformal_max_values = [
+        value
+        for value in (
+            parse_float_or_none(row.get("final_call_conformal_null_p_max"))
+            for row in results
+        )
+        if value is not None
+    ]
+    all_final_pass_count = sum(
+        parse_int_or_zero(row.get("placer_call_count"))
+        for row in results
+    )
+    final_pass_count = sum(
+        parse_int_or_zero(row.get("window_placer_call_count"))
+        for row in results
+    )
+    if final_pass_count == 0 and all_final_pass_count > 0:
+        final_pass_count = all_final_pass_count
+    truth_coverage_rate = detected_count / len(sampled_rows)
+    truth_fraction_of_placer_final_calls = (
+        detected_count / final_pass_count
+        if final_pass_count > 0
+        else None
+    )
+    subset_metrics: Dict[str, Dict[str, int]] = {}
+    for result in results:
+        subset = result.get("truth_subset", "NA") or "NA"
+        metrics = subset_metrics.setdefault(
+            subset,
+            {
+                "sample_count": 0,
+                "final_pass_count": 0,
+                "all_final_pass_count": 0,
+                "same_event_final_count": 0,
+                "same_event_evidence_only_count": 0,
+                "same_event_robust_lfdr_high_count": 0,
+            },
+        )
+        metrics["sample_count"] += 1
+        metrics["final_pass_count"] += parse_int_or_zero(
+            result.get("window_placer_call_count")
+        )
+        metrics["all_final_pass_count"] += parse_int_or_zero(
+            result.get("placer_call_count")
+        )
+        if result.get("detected") == "1":
+            metrics["same_event_final_count"] += 1
+        metrics["same_event_evidence_only_count"] += parse_int_or_zero(
+            result.get("same_event_evidence_only_count")
+        )
+        metrics["same_event_robust_lfdr_high_count"] += parse_int_or_zero(
+            result.get("same_event_robust_lfdr_high_count")
+        )
+
+    summary: Dict[str, object] = {
+        "seed": seed,
+        "sample_size": len(sampled_rows),
+        "truth_filter": args.truth_filter,
+        "min_length_ins": args.min_length_ins,
+        "truth_pool_size": truth_pool_size,
+        "window_flank_bp": args.window_flank_bp,
+        "match_distance_bp": args.match_distance_bp,
+        "placer_min_final_raw_cigar_insert_len_bp": getattr(
+            args,
+            "placer_min_final_raw_cigar_insert_len_bp",
+            None,
+        ),
+        "detected_count": detected_count,
+        "undetected_count": len(sampled_rows) - detected_count,
+        "detection_rate": detected_count / len(sampled_rows),
+        "truth_coverage_rate": truth_coverage_rate,
+        "passes_truth_coverage_95pct": truth_coverage_rate >= 0.95,
+        "final_pass_count": final_pass_count,
+        "all_final_pass_count": all_final_pass_count,
+        "same_event_final_count": detected_count,
+        "truth_fraction_of_placer_final_calls": truth_fraction_of_placer_final_calls,
+        "passes_truth_fraction_80pct": (
+            truth_fraction_of_placer_final_calls is not None and
+            truth_fraction_of_placer_final_calls >= 0.80
+        ),
+        "same_event_evidence_ledger_count": sum(
+            parse_int_or_zero(row.get("same_event_evidence_ledger_count"))
+            for row in results
+        ),
+        "same_event_evidence_only_count": sum(
+            parse_int_or_zero(row.get("same_event_evidence_only_count"))
+            for row in results
+        ),
+        "same_event_robust_lfdr_high_count": sum(
+            parse_int_or_zero(row.get("same_event_robust_lfdr_high_count"))
+            for row in results
+        ),
+        "evidence_ledger_row_count": sum(
+            parse_int_or_zero(row.get("evidence_ledger_row_count"))
+            for row in results
+        ),
+        "null_control_row_count": sum(
+            parse_int_or_zero(row.get("null_control_row_count"))
+            for row in results
+        ),
+        "final_call_robust_worst_case_lfdr_count": final_lfdr_count,
+        "final_call_robust_worst_case_lfdr_mean": (
+            final_lfdr_sum / final_lfdr_count
+            if final_lfdr_count > 0
+            else None
+        ),
+        "final_call_robust_worst_case_lfdr_max": (
+            max(final_lfdr_max_values)
+            if final_lfdr_max_values
+            else None
+        ),
+        "final_call_empirical_null_tail_p_count": final_null_tail_count,
+        "final_call_empirical_null_tail_p_mean": (
+            final_null_tail_sum / final_null_tail_count
+            if final_null_tail_count > 0
+            else None
+        ),
+        "final_call_empirical_null_tail_p_max": (
+            max(final_null_tail_max_values)
+            if final_null_tail_max_values
+            else None
+        ),
+        "final_call_conformal_null_p_count": final_conformal_count,
+        "final_call_conformal_null_p_mean": (
+            final_conformal_sum / final_conformal_count
+            if final_conformal_count > 0
+            else None
+        ),
+        "final_call_conformal_null_p_max": (
+            max(final_conformal_max_values)
+            if final_conformal_max_values
+            else None
+        ),
+        "truth_subset_metrics": subset_metrics,
+        "failure_stage_counts": failure_stage_counts,
+        "workers": args.workers,
+        "samtools_threads": args.threads,
+        "placer_run_mode": (
+            "pipeline" if use_pipeline_placer_runner(args) else "reuse_existing"
+        ),
+        "total_elapsed_s": total_elapsed_s,
+        "ground_truth": str(args.ground_truth),
+        "bam": str(args.bam),
+        "ref": str(args.ref),
+        "te": str(args.te),
+        "placer": str(args.placer),
+        "outdir": str(outdir),
+    }
+    pipeline_statuses = getattr(args, "_pipeline_placer_statuses", None)
+    if isinstance(pipeline_statuses, dict):
+        summary["placer_pipeline_manifest"] = str(outdir / "placer_pipeline_manifest.tsv")
+        summary["placer_pipeline_log"] = str(outdir / "placer_pipeline.log")
+        summary["placer_pipeline_elapsed_s"] = sum(
+            status.elapsed_s
+            for status in pipeline_statuses.values()
+            if isinstance(status, PipelinePlacerStatus)
+        )
+    if args.sampled_truth_tsv is not None:
+        summary["sampled_truth_tsv"] = str(args.sampled_truth_tsv)
+    return summary
+
+
+def main(argv: Sequence[str]) -> int:
+    started = time.time()
+    args = parse_args(argv)
+    args.threads = resolve_samtools_threads(args.threads)
+    if args.sampled_truth_tsv is not None:
+        args.sampled_truth_tsv = require_file(args.sampled_truth_tsv, "sampled truth TSV")
+    args.ground_truth = require_file(args.ground_truth, "ground truth table")
+    args.bam = require_file(args.bam, "BAM")
+    args.ref = require_file(args.ref, "reference FASTA")
+    args.te = require_file(args.te, "TE FASTA")
+    args.placer = require_executable(args.placer, "PLACER executable")
+    if args.match_distance_bp < 0:
+        fail("--match-distance-bp must be >= 0")
+    if args.min_length_ins is not None and args.min_length_ins < 0:
+        fail("--min-length-ins must be >= 0")
+    if (args.placer_min_final_raw_cigar_insert_len_bp is not None and
+            args.placer_min_final_raw_cigar_insert_len_bp < 0):
+        fail("--placer-min-final-raw-cigar-insert-len-bp must be >= 0")
+    if args.threads <= 0:
+        fail("--threads must be > 0")
+    if args.workers <= 0:
+        fail("--workers must be > 0")
+    if args.reuse_existing_samples and args.sampled_truth_tsv is None:
+        fail("--reuse-existing-samples requires --sampled-truth-tsv")
+    if args.sampled_truth_tsv is None:
+        seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1, 2**31)
+    else:
+        seed = args.seed
+
+    if args.reuse_existing_samples:
+        if args.outdir is None:
+            fail("--reuse-existing-samples requires --outdir")
+        outdir = args.outdir.expanduser().resolve()
+        if not outdir.is_dir():
+            fail(f"existing output directory not found: {outdir}")
+    else:
+        if seed is None and args.outdir is None:
+            fail("--sampled-truth-tsv without --seed requires an explicit --outdir")
+        outdir = resolve_outdir(args.outdir, seed if seed is not None else 0)
+        outdir.mkdir(parents=True, exist_ok=False)
+
+    contig_lengths = load_contig_lengths(args.ref)
+    truth_pool = load_truth_rows(
+        args.ground_truth,
+        args.truth_filter,
+        min_length_ins=args.min_length_ins,
+    )
+    if args.sampled_truth_tsv is not None:
+        sampled_rows = load_sampled_truth_rows(args.sampled_truth_tsv)
+    else:
+        sampled_rows = sample_truth_rows(truth_pool, args.sample_size, seed)
+
+    sampled_manifest, results = evaluate_sample_rows(
+        sampled_rows=sampled_rows,
+        contig_lengths=contig_lengths,
+        args=args,
+        outdir=outdir,
+    )
+
+    write_tsv(outdir / "sampled_truth.tsv", sampled_manifest)
+    write_tsv(outdir / "evaluation.tsv", results)
+
+    detected_count = sum(1 for row in results if row["detected"] == "1")
+    failure_stage_counts: Dict[str, int] = {}
+    for row in results:
+        stage = row["failure_stage"]
+        failure_stage_counts[stage] = failure_stage_counts.get(stage, 0) + 1
+    total_elapsed_s = time.time() - started
+    summary = build_summary(
+        seed=seed,
+        sampled_rows=sampled_rows,
+        truth_pool_size=len(truth_pool),
+        detected_count=detected_count,
+        failure_stage_counts=failure_stage_counts,
+        args=args,
+        outdir=outdir,
+        total_elapsed_s=total_elapsed_s,
+        results=results,
+    )
+    (outdir / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    print(f"evaluation_tsv\t{outdir / 'evaluation.tsv'}")
+    print(f"sampled_truth_tsv\t{outdir / 'sampled_truth.tsv'}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

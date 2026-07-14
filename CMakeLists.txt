@@ -1,0 +1,195 @@
+cmake_minimum_required(VERSION 3.16)
+project(PLACER VERSION 0.0.4 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# ============================================================================
+# htslib discovery
+# ============================================================================
+set(HTSLIB_ROOT "" CACHE PATH "Root directory of htslib installation")
+set(HTSLIB_INCLUDE_DIR "" CACHE PATH "Directory containing htslib/sam.h")
+set(HTSLIB_LIBRARY "" CACHE FILEPATH "Path to libhts library file")
+set(PLACER_PYTHON_EXECUTABLE "" CACHE FILEPATH "Python interpreter used to query pysam")
+if(NOT PLACER_PYTHON_EXECUTABLE)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_EXECUTABLE)
+        set(PLACER_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH
+            "Python interpreter used to query pysam" FORCE)
+    endif()
+endif()
+
+set(_HTSLIB_INCLUDE_HINTS)
+if(NOT HTSLIB_INCLUDE_DIR AND PLACER_PYTHON_EXECUTABLE)
+    execute_process(
+        COMMAND "${PLACER_PYTHON_EXECUTABLE}" -c "import pysam; print(';'.join(pysam.get_include()))"
+        OUTPUT_VARIABLE _PYSAM_INCLUDE_HINTS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _PYSAM_INCLUDE_STATUS
+        ERROR_QUIET
+    )
+    if(_PYSAM_INCLUDE_STATUS EQUAL 0 AND _PYSAM_INCLUDE_HINTS)
+        list(APPEND _HTSLIB_INCLUDE_HINTS ${_PYSAM_INCLUDE_HINTS})
+    endif()
+endif()
+
+set(_HTSLIB_HINT_ROOTS
+    ${HTSLIB_ROOT}
+    $ENV{HTSLIB_ROOT}
+    $ENV{CONDA_PREFIX}
+    /opt/homebrew
+    /usr/local
+    /usr
+    /opt/anaconda3
+)
+
+if(NOT HTSLIB_INCLUDE_DIR)
+    find_path(_HTSLIB_INCLUDE_DIR_FOUND
+        NAMES htslib/sam.h
+        HINTS ${_HTSLIB_INCLUDE_HINTS}
+        PATHS ${_HTSLIB_HINT_ROOTS}
+        PATH_SUFFIXES include include/htslib htslib
+    )
+    if(_HTSLIB_INCLUDE_DIR_FOUND)
+        set(HTSLIB_INCLUDE_DIR "${_HTSLIB_INCLUDE_DIR_FOUND}" CACHE PATH
+            "Directory containing htslib/sam.h" FORCE)
+    endif()
+endif()
+
+if(NOT HTSLIB_LIBRARY)
+    find_library(_HTSLIB_LIBRARY_FOUND
+        NAMES hts libhts
+        PATHS ${_HTSLIB_HINT_ROOTS}
+        PATH_SUFFIXES lib lib64
+    )
+    if(_HTSLIB_LIBRARY_FOUND)
+        set(HTSLIB_LIBRARY "${_HTSLIB_LIBRARY_FOUND}" CACHE FILEPATH
+            "Path to libhts library file" FORCE)
+    endif()
+endif()
+
+if(NOT HTSLIB_INCLUDE_DIR OR NOT HTSLIB_LIBRARY)
+    message(FATAL_ERROR
+        "Cannot find htslib.\n"
+        "Detected HTSLIB_INCLUDE_DIR='${HTSLIB_INCLUDE_DIR}'\n"
+        "Detected HTSLIB_LIBRARY='${HTSLIB_LIBRARY}'\n"
+        "Install htslib or pass explicit paths:\n"
+        "  -DHTSLIB_ROOT=<prefix>\n"
+        "  -DHTSLIB_INCLUDE_DIR=<path containing htslib/sam.h>\n"
+        "  -DHTSLIB_LIBRARY=<full path to libhts>"
+    )
+endif()
+
+message(STATUS "Found htslib headers: ${HTSLIB_INCLUDE_DIR}")
+message(STATUS "Found htslib library: ${HTSLIB_LIBRARY}")
+
+# ============================================================================
+# BLAST+ discovery
+# ============================================================================
+set(BLASTN_EXECUTABLE "" CACHE FILEPATH "Path to the BLAST+ blastn executable")
+set(MAKEBLASTDB_EXECUTABLE "" CACHE FILEPATH "Path to the BLAST+ makeblastdb executable")
+
+if(NOT BLASTN_EXECUTABLE)
+    find_program(_BLASTN_EXECUTABLE_FOUND NAMES blastn)
+    if(_BLASTN_EXECUTABLE_FOUND)
+        set(BLASTN_EXECUTABLE "${_BLASTN_EXECUTABLE_FOUND}" CACHE FILEPATH
+            "Path to the BLAST+ blastn executable" FORCE)
+    endif()
+endif()
+
+if(NOT MAKEBLASTDB_EXECUTABLE)
+    find_program(_MAKEBLASTDB_EXECUTABLE_FOUND NAMES makeblastdb)
+    if(_MAKEBLASTDB_EXECUTABLE_FOUND)
+        set(MAKEBLASTDB_EXECUTABLE "${_MAKEBLASTDB_EXECUTABLE_FOUND}" CACHE FILEPATH
+            "Path to the BLAST+ makeblastdb executable" FORCE)
+    endif()
+endif()
+
+if(NOT BLASTN_EXECUTABLE OR NOT MAKEBLASTDB_EXECUTABLE)
+    message(FATAL_ERROR
+        "PLACER requires BLAST+ for consensus insert TE classification.\n"
+        "Detected BLASTN_EXECUTABLE='${BLASTN_EXECUTABLE}'\n"
+        "Detected MAKEBLASTDB_EXECUTABLE='${MAKEBLASTDB_EXECUTABLE}'\n"
+        "Install BLAST+ or pass explicit paths:\n"
+        "  -DBLASTN_EXECUTABLE=<full path to blastn>\n"
+        "  -DMAKEBLASTDB_EXECUTABLE=<full path to makeblastdb>"
+    )
+endif()
+
+message(STATUS "Found BLAST+ blastn: ${BLASTN_EXECUTABLE}")
+message(STATUS "Found BLAST+ makeblastdb: ${MAKEBLASTDB_EXECUTABLE}")
+
+add_library(hts::htslib UNKNOWN IMPORTED)
+set_target_properties(hts::htslib PROPERTIES
+    IMPORTED_LOCATION "${HTSLIB_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${HTSLIB_INCLUDE_DIR}"
+)
+
+# ============================================================================
+# PLACER modules
+# ============================================================================
+add_library(placer_bam_io
+    src/stream/bam_io.cpp
+)
+target_include_directories(placer_bam_io
+    PUBLIC
+        include
+        ${HTSLIB_INCLUDE_DIR}
+)
+target_link_libraries(placer_bam_io PUBLIC hts::htslib)
+
+add_library(placer_pipeline
+    src/pipeline/pipeline.cpp
+    src/pipeline/parallel_executor.cpp
+    src/pipeline/local_interval_cache.cpp
+    src/pipeline/decision_policy.cpp
+    src/pipeline/event_explanation.cpp
+    src/pipeline/mechanistic_evidence.cpp
+    src/pipeline/null_control.cpp
+    src/pipeline/conformal_selector.cpp
+    src/gate1/gate1_module.cpp
+    src/component/dbscan_component_module.cpp
+    src/component/insert_fragment_module.cpp
+    src/component/te_family_alignment.cpp
+    src/component/te_quick_classifier.cpp
+    src/component/te_sequence_explainer.cpp
+    src/component/tsd_detector.cpp
+)
+target_include_directories(placer_pipeline PUBLIC include)
+target_link_libraries(placer_pipeline PUBLIC placer_bam_io)
+target_compile_definitions(placer_pipeline
+    PUBLIC
+        PLACER_BLASTN_EXECUTABLE="${BLASTN_EXECUTABLE}"
+        PLACER_MAKEBLASTDB_EXECUTABLE="${MAKEBLASTDB_EXECUTABLE}"
+)
+
+add_subdirectory(third_party/abPOA)
+# Ensure abPOA builds consistently across platforms from top-level config.
+target_include_directories(abpoa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/abPOA/include)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+    target_compile_definitions(abpoa PUBLIC USE_SIMDE SIMDE_ENABLE_NATIVE_ALIASES __AVX2__)
+endif()
+target_link_libraries(placer_pipeline PUBLIC abpoa)
+
+add_library(placer_denovo
+    src/denovo/indexed_bam_reader.cpp
+    src/denovo/parent_pool_scanner.cpp
+    src/denovo/denovo_cli.cpp
+)
+target_include_directories(placer_denovo
+    PUBLIC
+        include
+        ${HTSLIB_INCLUDE_DIR}
+)
+target_link_libraries(placer_denovo PUBLIC hts::htslib placer_pipeline)
+
+add_executable(placer
+    src/main.cpp
+)
+target_include_directories(placer PRIVATE include)
+target_link_libraries(placer PRIVATE placer_denovo)
+
+enable_testing()
+add_subdirectory(tests)
